@@ -376,13 +376,18 @@ export function solToLamports(sol: number): Lamports {
 - [x] Structured logging with PII redaction
 - [x] Non-custodial key management
 
-**Day 11-12: Jupiter Integration**
+**Day 11-12: Jupiter Integration** ✅ (COMPLETED)
 
-- [ ] Get quote from Jupiter v6
-- [ ] Build swap transaction
-- [ ] Sign with session key
-- [ ] Send transaction
-- [ ] Confirm on-chain
+- [x] Get quote from Jupiter v6
+- [x] Build swap transaction
+- [x] Sign with session key
+- [x] Send transaction
+- [x] Confirm on-chain
+- [x] Solana connection service with health monitoring
+- [x] Jupiter service with retry logic and error handling
+- [x] `/swap` Telegram command with password protection
+- [x] Token price fetching
+- [x] Complete swap flow (quote → sign → execute → confirm)
 
 **Day 13: Basic Honeypot Detection**
 
@@ -396,7 +401,7 @@ export function solToLamports(sol: number): Lamports {
 - [x] Unit tests for encryption
 - [x] Session management tests
 - [x] E2E wallet flow tests
-- [ ] Jupiter integration tests
+- [x] Jupiter integration tests
 - [ ] Honeypot detection tests
 
 ---

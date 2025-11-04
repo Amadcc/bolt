@@ -4,6 +4,7 @@ import {
   handleCreateWallet,
   handlePasswordInput,
 } from "./commands/createWallet.js";
+import { handleSwap, handleSwapPasswordInput } from "./commands/swap.js";
 import { logger } from "../utils/logger.js";
 
 interface SessionData {
@@ -15,6 +16,17 @@ interface SessionData {
   };
   // Conversation state
   awaitingPasswordForWallet?: boolean;
+  awaitingPasswordForSwap?: {
+    inputMint: string;
+    outputMint: string;
+    amount: string;
+  };
+  swapConversationStep?: "inputMint" | "outputMint" | "amount" | "password";
+  swapConversationData?: {
+    inputMint?: string;
+    outputMint?: string;
+    amount?: string;
+  };
 }
 
 type MyContext = Context & SessionFlavor<SessionData>;
@@ -97,6 +109,8 @@ bot.command("createwallet", async (ctx) => {
   await handleCreateWallet(ctx);
 });
 
+bot.command("swap", handleSwap);
+
 bot.command("help", async (ctx) => {
   await ctx.reply(
     "📚 *Help & Support*\n\n" +
@@ -104,6 +118,7 @@ bot.command("help", async (ctx) => {
       "Available commands:\n" +
       "/createwallet - Create a new wallet\n" +
       "/wallet - View your wallet\n" +
+      "/swap - Swap tokens using Jupiter\n" +
       "/balance - Check balance\n" +
       "/settings - Configure bot\n\n" +
       "More features coming soon!",
@@ -113,7 +128,7 @@ bot.command("help", async (ctx) => {
 
 // Handle text messages (for password input)
 bot.on("message:text", async (ctx, next) => {
-  // Check if we're waiting for password input
+  // Check if we're waiting for password input for wallet creation
   if (ctx.session.awaitingPasswordForWallet) {
     const password = ctx.message.text;
 
@@ -122,6 +137,15 @@ bot.on("message:text", async (ctx, next) => {
 
     // Handle password input
     await handlePasswordInput(ctx, password);
+    return; // Don't call next() - we handled this message
+  }
+
+  // Check if we're waiting for password input for swap
+  if (ctx.session.awaitingPasswordForSwap) {
+    const password = ctx.message.text;
+
+    // Handle swap password input
+    await handleSwapPasswordInput(ctx, password);
     return; // Don't call next() - we handled this message
   }
 
