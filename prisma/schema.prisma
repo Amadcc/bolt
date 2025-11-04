@@ -1,0 +1,65 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String   @id @default(uuid())
+  telegramId       BigInt   @unique
+  username         String?
+  subscriptionTier String   @default("free") // free, premium
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  wallets Wallet[]
+  orders  Order[]
+}
+
+model Wallet {
+  id                  String   @id @default(uuid())
+  userId              String
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publicKey           String   @unique
+  encryptedPrivateKey String
+  chain               String   @default("solana")
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Order {
+  id                   String   @id @default(uuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id])
+  tokenMint            String
+  side                 String // buy, sell
+  amount               Decimal  @db.Decimal(20, 8)
+  status               String   @default("pending") // pending, filled, failed
+  transactionSignature String?  @unique
+  commissionUsd        Decimal? @db.Decimal(10, 2)
+  createdAt            DateTime @default(now())
+
+  @@index([userId, status])
+  @@index([createdAt])
+}
+
+model HoneypotCheck {
+  tokenMint  String   @id
+  riskScore  Int
+  isHoneypot Boolean
+  checkedAt  DateTime @default(now())
+  details    Json?
+
+  @@index([checkedAt])
+}
