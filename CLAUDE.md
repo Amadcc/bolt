@@ -392,12 +392,15 @@ export function solToLamports(sol: number): Lamports {
 - [x] Complete swap flow (quote → sign → execute → confirm)
 - [x] Known token symbols (SOL, USDC, USDT, BONK, WIF)
 
-**Day 13: Basic Honeypot Detection**
+**Day 13: Basic Honeypot Detection** ✅ (COMPLETED)
 
-- [ ] GoPlus API integration
-- [ ] Check mint/freeze authority
-- [ ] Calculate risk score
-- [ ] Cache results
+- [x] GoPlus API integration
+- [x] Check mint/freeze authority (on-chain)
+- [x] Calculate weighted risk score (0-100)
+- [x] Redis caching (1 hour TTL)
+- [x] Multi-layer detection (API + on-chain)
+- [x] Integrated into /buy command
+- [x] Auto-block high-risk tokens (score >= 70)
 
 **Day 14: Testing**
 

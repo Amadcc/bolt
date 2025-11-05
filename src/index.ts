@@ -7,6 +7,7 @@ import { redis } from "./utils/redis.js";
 import { initializeSolana } from "./services/blockchain/solana.js";
 import { initializeJupiter } from "./services/trading/jupiter.js";
 import { initializeTradingExecutor } from "./services/trading/executor.js";
+import { initializeHoneypotDetector } from "./services/honeypot/detector.js";
 import { logger } from "./utils/logger.js";
 
 const app = Fastify({
@@ -91,6 +92,18 @@ const start = async () => {
       minCommissionUsd: 0.01, // $0.01
     });
     logger.info("Trading Executor initialized");
+
+    // Initialize Honeypot Detector
+    logger.info("Initializing Honeypot Detector...");
+    initializeHoneypotDetector({
+      goPlusTimeout: 5000,
+      highRiskThreshold: 70,
+      cacheTTL: 3600, // 1 hour
+      cacheEnabled: true,
+      enableGoPlusAPI: true,
+      enableOnChainChecks: true,
+    });
+    logger.info("Honeypot Detector initialized");
 
     // Start Fastify server
     await app.listen({

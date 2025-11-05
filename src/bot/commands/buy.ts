@@ -6,6 +6,7 @@
 import type { Context as GrammyContext, SessionFlavor } from "grammy";
 import { logger } from "../../utils/logger.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
+import { getHoneypotDetector } from "../../services/honeypot/detector.js";
 import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
 
@@ -102,6 +103,60 @@ export async function handleBuy(ctx: Context): Promise<void> {
 
     // Convert SOL to lamports
     const lamports = Math.floor(solAmount * 1e9).toString();
+
+    // Honeypot check before executing trade
+    await ctx.reply("🔍 Analyzing token safety...");
+
+    try {
+      const detector = getHoneypotDetector();
+      const honeypotCheck = await detector.check(tokenMint);
+
+      if (!honeypotCheck.success) {
+        await ctx.reply("⚠️ Could not verify token safety. Proceeding with caution...");
+      } else {
+        const analysis = honeypotCheck.value;
+
+        // Format risk level
+        let riskEmoji = "🟢";
+        let riskLevel = "Low Risk";
+
+        if (analysis.riskScore >= 70) {
+          riskEmoji = "🔴";
+          riskLevel = "High Risk";
+        } else if (analysis.riskScore >= 30) {
+          riskEmoji = "🟡";
+          riskLevel = "Medium Risk";
+        }
+
+        await ctx.reply(
+          `${riskEmoji} *Token Safety Analysis*\n\n` +
+          `Risk Level: **${riskLevel}** (${analysis.riskScore}/100)\n` +
+          `Confidence: ${analysis.confidence}%\n` +
+          `Analysis Time: ${analysis.analysisTimeMs}ms\n\n` +
+          (analysis.flags.length > 0
+            ? `⚠️ Flags: ${analysis.flags.join(", ")}\n\n`
+            : "") +
+          (analysis.riskScore >= 70
+            ? `❌ *TRADE CANCELLED*\n\nThis token appears to be a honeypot. Trading is blocked for your safety.`
+            : `✅ Safety check passed. Proceeding with trade...`),
+          { parse_mode: "Markdown" }
+        );
+
+        // Block high-risk trades
+        if (analysis.riskScore >= 70) {
+          logger.warn("Trade blocked: high risk token", {
+            userId,
+            tokenMint,
+            riskScore: analysis.riskScore,
+            flags: analysis.flags,
+          });
+          return;
+        }
+      }
+    } catch (error) {
+      logger.error("Honeypot check failed", { error, tokenMint });
+      await ctx.reply("⚠️ Safety check unavailable. Please verify token manually before trading.");
+    }
 
     // Execute buy (password is optional if session is active)
     await executeBuy(ctx, userId, tokenMint, lamports, solAmount, tokenArg, password);
