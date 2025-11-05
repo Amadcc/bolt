@@ -4,7 +4,10 @@ import {
   handleCreateWallet,
   handlePasswordInput,
 } from "./commands/createWallet.js";
-import { handleSwap, handleSwapPasswordInput } from "./commands/swap.js";
+import { handleSwap } from "./commands/swap.js";
+import { handleBuy } from "./commands/buy.js";
+import { handleSell } from "./commands/sell.js";
+import { handleUnlock, handleLock, handleStatus, handleUnlockPasswordInput } from "./commands/session.js";
 import { logger } from "../utils/logger.js";
 
 interface SessionData {
@@ -16,11 +19,7 @@ interface SessionData {
   };
   // Conversation state
   awaitingPasswordForWallet?: boolean;
-  awaitingPasswordForSwap?: {
-    inputMint: string;
-    outputMint: string;
-    amount: string;
-  };
+  awaitingPasswordForUnlock?: boolean;
   swapConversationStep?: "inputMint" | "outputMint" | "amount" | "password";
   swapConversationData?: {
     inputMint?: string;
@@ -71,11 +70,14 @@ bot.command("start", async (ctx) => {
   await ctx.reply(
     `🚀 *Token Sniper Bot*\n\n` +
       `Welcome! I help you snipe new tokens safely.\n\n` +
-      `Available commands:\n` +
+      `Quick Actions:\n` +
+      `/buy BONK 0.1 - Buy tokens with SOL\n` +
+      `/sell BONK 1000000 - Sell tokens for SOL\n\n` +
+      `Other Commands:\n` +
       `/createwallet - Create a new wallet\n` +
       `/wallet - View your wallet\n` +
+      `/swap - Advanced token swaps\n` +
       `/balance - Check balance\n` +
-      `/settings - Configure bot\n` +
       `/help - Get help`,
     { parse_mode: "Markdown" }
   );
@@ -109,18 +111,29 @@ bot.command("createwallet", async (ctx) => {
   await handleCreateWallet(ctx);
 });
 
+bot.command("buy", handleBuy);
+bot.command("sell", handleSell);
 bot.command("swap", handleSwap);
+
+bot.command("unlock", handleUnlock);
+bot.command("lock", handleLock);
+bot.command("status", handleStatus);
 
 bot.command("help", async (ctx) => {
   await ctx.reply(
     "📚 *Help & Support*\n\n" +
       "This is a token sniper bot for Solana.\n\n" +
-      "Available commands:\n" +
+      "*Trading Commands:*\n" +
+      "/buy - Buy tokens with SOL\n" +
+      "  Example: `/buy BONK 0.1`\n\n" +
+      "/sell - Sell tokens for SOL\n" +
+      "  Example: `/sell BONK 1000000`\n\n" +
+      "/swap - Advanced token swaps\n" +
+      "  Example: `/swap USDC BONK 10`\n\n" +
+      "*Wallet Commands:*\n" +
       "/createwallet - Create a new wallet\n" +
       "/wallet - View your wallet\n" +
-      "/swap - Swap tokens using Jupiter\n" +
-      "/balance - Check balance\n" +
-      "/settings - Configure bot\n\n" +
+      "/balance - Check balance\n\n" +
       "More features coming soon!",
     { parse_mode: "Markdown" }
   );
@@ -140,12 +153,15 @@ bot.on("message:text", async (ctx, next) => {
     return; // Don't call next() - we handled this message
   }
 
-  // Check if we're waiting for password input for swap
-  if (ctx.session.awaitingPasswordForSwap) {
+  // Check if we're waiting for password input for unlock
+  if (ctx.session.awaitingPasswordForUnlock) {
     const password = ctx.message.text;
 
-    // Handle swap password input
-    await handleSwapPasswordInput(ctx, password);
+    // Reset conversation state
+    ctx.session.awaitingPasswordForUnlock = false;
+
+    // Handle unlock password input
+    await handleUnlockPasswordInput(ctx, password);
     return; // Don't call next() - we handled this message
   }
 

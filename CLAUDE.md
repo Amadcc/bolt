@@ -385,9 +385,12 @@ export function solToLamports(sol: number): Lamports {
 - [x] Confirm on-chain
 - [x] Solana connection service with health monitoring
 - [x] Jupiter service with retry logic and error handling
-- [x] `/swap` Telegram command with password protection
+- [x] `/buy` command - User-friendly SOL → Token wrapper
+- [x] `/sell` command - User-friendly Token → SOL wrapper
+- [x] `/swap` command - Advanced any token → any token
 - [x] Token price fetching
 - [x] Complete swap flow (quote → sign → execute → confirm)
+- [x] Known token symbols (SOL, USDC, USDT, BONK, WIF)
 
 **Day 13: Basic Honeypot Detection**
 

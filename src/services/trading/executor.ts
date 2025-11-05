@@ -1,0 +1,315 @@
+/**
+ * Trading Executor Service
+ * Orchestrates trade execution with commission calculation and database recording
+ */
+
+import { logger } from "../../utils/logger.js";
+import { prisma } from "../../utils/db.js";
+import { unlockWallet, clearKeypair, getSessionKeypair } from "../wallet/keyManager.js";
+import { getJupiter } from "./jupiter.js";
+import type { Result } from "../../types/common.js";
+import { Ok, Err } from "../../types/common.js";
+import type { TradeParams, TradeResult, TradingError } from "../../types/trading.js";
+import type { JupiterError } from "../../types/jupiter.js";
+import type { WalletError } from "../../types/solana.js";
+import { asTransactionSignature } from "../../types/common.js";
+
+// ============================================================================
+// Trading Executor Configuration
+// ============================================================================
+
+interface TradingExecutorConfig {
+  commissionBps: number; // Commission in basis points (85 = 0.85%)
+  minCommissionUsd: number; // Minimum commission in USD
+}
+
+const DEFAULT_CONFIG: TradingExecutorConfig = {
+  commissionBps: 85, // 0.85%
+  minCommissionUsd: 0.01, // $0.01 minimum
+};
+
+// ============================================================================
+// Trading Executor Class
+// ============================================================================
+
+export class TradingExecutor {
+  private config: TradingExecutorConfig;
+
+  constructor(config: Partial<TradingExecutorConfig> = {}) {
+    this.config = { ...DEFAULT_CONFIG, ...config };
+
+    logger.info("Trading executor initialized", {
+      commissionBps: this.config.commissionBps,
+      commissionPct: (this.config.commissionBps / 100).toFixed(2) + "%",
+      minCommissionUsd: this.config.minCommissionUsd,
+    });
+  }
+
+  /**
+   * Execute a trade with commission calculation and database recording
+   * Password is optional if session is active
+   */
+  async executeTrade(
+    params: TradeParams,
+    password?: string
+  ): Promise<Result<TradeResult, TradingError>> {
+    const { userId, inputMint, outputMint, amount, slippageBps } = params;
+
+    logger.info("Executing trade", {
+      userId,
+      inputMint,
+      outputMint,
+      amount,
+      slippageBps,
+      hasPassword: !!password,
+    });
+
+    try {
+      // Step 1: Try to get keypair from session or unlock with password
+      let keypair;
+      let publicKey;
+      let shouldClearKeypair = false;
+
+      // First, try to get keypair from active session
+      const sessionResult = await getSessionKeypair(userId);
+
+      if (sessionResult.success) {
+        // Session is active, use it
+        keypair = sessionResult.value.keypair;
+        publicKey = sessionResult.value.publicKey;
+        shouldClearKeypair = false; // Don't clear session keypair
+
+        logger.info("Using active session for trade", { userId, publicKey });
+      } else {
+        // No active session, password is required
+        if (!password) {
+          return Err({
+            type: "INVALID_PASSWORD",
+            message: "No active session. Please /unlock first or provide password."
+          });
+        }
+
+        // Unlock wallet with password
+        const unlockResult = await unlockWallet({ userId, password });
+
+        if (!unlockResult.success) {
+          const error = unlockResult.error as WalletError;
+
+          if (error.type === "WALLET_NOT_FOUND") {
+            return Err({ type: "WALLET_NOT_FOUND", message: `Wallet not found for user ${error.userId}` });
+          }
+
+          if (error.type === "INVALID_PASSWORD") {
+            return Err({ type: "INVALID_PASSWORD", message: error.message });
+          }
+
+          return Err({ type: "UNKNOWN", message: "Failed to unlock wallet" });
+        }
+
+        keypair = unlockResult.value.keypair;
+        publicKey = unlockResult.value.publicKey;
+        shouldClearKeypair = true; // Clear one-time unlocked keypair
+
+        logger.info("Unlocked wallet for one-time trade", { userId, publicKey });
+      }
+
+      // Step 2: Create pending order in database
+      const order = await prisma.order.create({
+        data: {
+          userId,
+          tokenMint: outputMint, // The token being acquired
+          side: this.determineSide(inputMint, outputMint),
+          amount: amount,
+          status: "pending",
+        },
+      });
+
+      logger.info("Order created", { orderId: order.id, side: order.side });
+
+      // Step 3: Execute swap via Jupiter
+      const jupiter = getJupiter();
+
+      const swapResult = await jupiter.swap(
+        {
+          inputMint,
+          outputMint,
+          amount,
+          userPublicKey: publicKey,
+          slippageBps,
+        },
+        keypair
+      );
+
+      // Clear keypair from memory if it's not a session keypair
+      if (shouldClearKeypair) {
+        clearKeypair(keypair);
+      }
+
+      if (!swapResult.success) {
+        const error = swapResult.error as JupiterError;
+
+        // Update order status to failed
+        await prisma.order.update({
+          where: { id: order.id },
+          data: { status: "failed" },
+        });
+
+        logger.error("Swap failed", { orderId: order.id, error });
+
+        return Err({
+          type: "SWAP_FAILED",
+          reason: "message" in error ? error.message : "Unknown swap error",
+        });
+      }
+
+      const swapData = swapResult.value;
+
+      // Step 4: Calculate commission (0.85% of output amount in USD)
+      const commissionResult = await this.calculateCommission(
+        outputMint,
+        swapData.outputAmount
+      );
+
+      if (!commissionResult.success) {
+        logger.warn("Failed to calculate commission, using minimum", {
+          orderId: order.id,
+          error: commissionResult.error,
+        });
+      }
+
+      const commissionUsd =
+        commissionResult.success
+          ? commissionResult.value
+          : this.config.minCommissionUsd;
+
+      // Step 5: Update order with success status
+      await prisma.order.update({
+        where: { id: order.id },
+        data: {
+          status: "filled",
+          transactionSignature: swapData.signature,
+          commissionUsd,
+        },
+      });
+
+      logger.info("Trade executed successfully", {
+        orderId: order.id,
+        signature: swapData.signature,
+        inputAmount: swapData.inputAmount.toString(),
+        outputAmount: swapData.outputAmount.toString(),
+        priceImpactPct: swapData.priceImpactPct,
+        commissionUsd,
+      });
+
+      return Ok({
+        orderId: order.id,
+        signature: asTransactionSignature(swapData.signature),
+        inputAmount: swapData.inputAmount,
+        outputAmount: swapData.outputAmount,
+        inputMint,
+        outputMint,
+        priceImpactPct: swapData.priceImpactPct,
+        commissionUsd,
+        slot: swapData.slot,
+      });
+    } catch (error) {
+      logger.error("Unexpected error executing trade", { userId, error });
+      return Err({
+        type: "UNKNOWN",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Calculate commission in USD (0.85% of output amount)
+   */
+  private async calculateCommission(
+    tokenMint: string,
+    outputAmount: bigint
+  ): Promise<Result<number, TradingError>> {
+    try {
+      const jupiter = getJupiter();
+
+      // Get token price in USD
+      const priceResult = await jupiter.getTokenPrice(tokenMint as any);
+
+      if (!priceResult.success) {
+        return Err({
+          type: "COMMISSION_CALCULATION_FAILED",
+          message: "Failed to fetch token price",
+        });
+      }
+
+      const tokenPriceUsd = priceResult.value;
+
+      // Calculate output value in USD (assuming 9 decimals, adjust if needed)
+      const outputValueUsd = (Number(outputAmount) / 1e9) * tokenPriceUsd;
+
+      // Calculate commission (0.85%)
+      const commission = (outputValueUsd * this.config.commissionBps) / 10000;
+
+      // Apply minimum commission
+      const finalCommission = Math.max(commission, this.config.minCommissionUsd);
+
+      logger.info("Commission calculated", {
+        tokenMint,
+        outputAmount: outputAmount.toString(),
+        tokenPriceUsd,
+        outputValueUsd: outputValueUsd.toFixed(2),
+        commission: commission.toFixed(4),
+        finalCommission: finalCommission.toFixed(4),
+      });
+
+      return Ok(finalCommission);
+    } catch (error) {
+      logger.error("Error calculating commission", { error });
+      return Err({
+        type: "COMMISSION_CALCULATION_FAILED",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Determine trade side (buy/sell)
+   * If input is SOL → buy
+   * If output is SOL → sell
+   * Otherwise → swap
+   */
+  private determineSide(inputMint: string, outputMint: string): string {
+    const SOL_MINT = "So11111111111111111111111111111111111111112";
+
+    if (inputMint === SOL_MINT) return "buy";
+    if (outputMint === SOL_MINT) return "sell";
+    return "swap";
+  }
+}
+
+// ============================================================================
+// Singleton Instance
+// ============================================================================
+
+let tradingExecutorInstance: TradingExecutor | null = null;
+
+export function initializeTradingExecutor(
+  config?: Partial<TradingExecutorConfig>
+): TradingExecutor {
+  if (tradingExecutorInstance) {
+    logger.warn("Trading executor already initialized, returning existing instance");
+    return tradingExecutorInstance;
+  }
+
+  tradingExecutorInstance = new TradingExecutor(config);
+  return tradingExecutorInstance;
+}
+
+export function getTradingExecutor(): TradingExecutor {
+  if (!tradingExecutorInstance) {
+    throw new Error(
+      "Trading executor not initialized. Call initializeTradingExecutor() first"
+    );
+  }
+
+  return tradingExecutorInstance;
+}

@@ -6,6 +6,7 @@ import { prisma } from "./utils/db.js";
 import { redis } from "./utils/redis.js";
 import { initializeSolana } from "./services/blockchain/solana.js";
 import { initializeJupiter } from "./services/trading/jupiter.js";
+import { initializeTradingExecutor } from "./services/trading/executor.js";
 import { logger } from "./utils/logger.js";
 
 const app = Fastify({
@@ -82,6 +83,14 @@ const start = async () => {
       defaultSlippageBps: 50, // 0.5%
     });
     logger.info("Jupiter service initialized");
+
+    // Initialize Trading Executor
+    logger.info("Initializing Trading Executor...");
+    initializeTradingExecutor({
+      commissionBps: 85, // 0.85%
+      minCommissionUsd: 0.01, // $0.01
+    });
+    logger.info("Trading Executor initialized");
 
     // Start Fastify server
     await app.listen({

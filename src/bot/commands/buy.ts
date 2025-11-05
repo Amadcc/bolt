@@ -1,6 +1,6 @@
 /**
- * Telegram /swap command handler
- * Allows users to swap tokens using Jupiter
+ * Telegram /buy command handler
+ * User-friendly wrapper for buying tokens with SOL
  */
 
 import type { Context as GrammyContext, SessionFlavor } from "grammy";
@@ -23,22 +23,27 @@ interface SessionData {
     outputMint: string;
     amount: string;
   };
-  swapConversationStep?: "inputMint" | "outputMint" | "amount" | "password";
-  swapConversationData?: {
-    inputMint?: string;
-    outputMint?: string;
-    amount?: string;
+  awaitingPasswordForBuy?: {
+    tokenMint: string;
+    solAmount: string;
+  };
+  awaitingPasswordForSell?: {
+    tokenMint: string;
+    tokenAmount: string;
   };
 }
 
 type Context = GrammyContext & SessionFlavor<SessionData>;
 
+// SOL mint address
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+
 /**
- * Handle /swap command
- * Format: /swap <inputMint> <outputMint> <amount> <password>
- * Example: /swap So11111111111111111111111111111111111111112 EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v 10000000 mypassword
+ * Handle /buy command
+ * Format: /buy <token> <sol_amount> [password]
+ * Example: /buy BONK 0.1 mypassword
  */
-export async function handleSwap(ctx: Context): Promise<void> {
+export async function handleBuy(ctx: Context): Promise<void> {
   try {
     const userId = ctx.from?.id.toString();
     if (!userId) {
@@ -57,83 +62,67 @@ export async function handleSwap(ctx: Context): Promise<void> {
 
     if (parts.length < 2) {
       await ctx.reply(
-        `🔄 *Swap Tokens*\n\n` +
-        `Usage: \`/swap <inputMint> <outputMint> <amount> [password]\`\n\n` +
-        `Example:\n` +
-        `\`/swap SOL USDC 0.1 mypassword\`\n\n` +
-        `Or start conversation mode:\n` +
-        `/swap`,
+        `🛒 *Buy Tokens*\n\n` +
+        `Buy any token with SOL\n\n` +
+        `Usage: \`/buy <token> <sol_amount> [password]\`\n\n` +
+        `Examples:\n` +
+        `\`/buy BONK 0.1 mypassword\` - Buy with 0.1 SOL\n` +
+        `\`/buy EPjF...t1v 1.5\` - Buy with 1.5 SOL (will ask password)\n\n` +
+        `Supported tokens:\n` +
+        `• Use symbol: BONK, WIF, USDC, etc.\n` +
+        `• Or mint address: EPjF...t1v`,
         { parse_mode: "Markdown" }
       );
       return;
     }
 
-    // Check if user wants conversation mode (just /swap with no args)
-    if (parts.length === 1) {
-      await startSwapConversation(ctx, userId);
-      return;
-    }
-
     // Parse arguments
-    const [, inputMintArg, outputMintArg, amountArg, password] = parts;
+    const [, tokenArg, solAmountArg, password] = parts;
 
-    if (!inputMintArg || !outputMintArg || !amountArg) {
-      await ctx.reply("❌ Missing required arguments: inputMint, outputMint, amount");
+    if (!tokenArg || !solAmountArg) {
+      await ctx.reply("❌ Missing required arguments: token and sol_amount");
       return;
     }
 
-    // Parse token mints (support common symbols)
-    let inputMint: string;
-    let outputMint: string;
-
+    // Resolve token mint
+    let tokenMint: string;
     try {
-      inputMint = resolveTokenSymbol(inputMintArg);
-      outputMint = resolveTokenSymbol(outputMintArg);
+      tokenMint = resolveTokenSymbol(tokenArg);
     } catch (error) {
       await ctx.reply(`❌ Invalid token: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
 
-    // Parse amount
-    const amount = parseAmount(amountArg, inputMintArg);
-    if (!amount) {
-      await ctx.reply("❌ Invalid amount format");
+    // Parse SOL amount
+    const solAmount = parseFloat(solAmountArg);
+    if (isNaN(solAmount) || solAmount <= 0) {
+      await ctx.reply("❌ Invalid SOL amount. Must be a positive number.");
       return;
     }
 
-    // Execute swap (password is optional if session is active)
-    await executeSwap(ctx, userId, inputMint, outputMint, amount, password);
+    // Convert SOL to lamports
+    const lamports = Math.floor(solAmount * 1e9).toString();
+
+    // Execute buy (password is optional if session is active)
+    await executeBuy(ctx, userId, tokenMint, lamports, solAmount, tokenArg, password);
 
   } catch (error) {
-    logger.error("Error in swap command", { userId: ctx.from?.id, error });
+    logger.error("Error in buy command", { userId: ctx.from?.id, error });
     await ctx.reply("❌ An error occurred. Please try again.");
   }
 }
 
 /**
- * Start conversation mode for swap
+ * Execute the buy (SOL → Token swap)
  */
-async function startSwapConversation(ctx: Context, userId: string): Promise<void> {
-  ctx.session.swapConversationStep = "inputMint";
-
-  await ctx.reply(
-    "🔄 *Let's set up your swap*\n\n" +
-    "Step 1/4: What token do you want to swap FROM?\n\n" +
-    "Send token symbol (e.g., SOL, USDC) or mint address.",
-    { parse_mode: "Markdown" }
-  );
-}
-
-/**
- * Execute the swap
- */
-async function executeSwap(
+async function executeBuy(
   ctx: Context,
   userId: string,
-  inputMint: string,
-  outputMint: string,
-  amount: string,
-  password?: string
+  tokenMint: string,
+  lamports: string,
+  solAmount: number,
+  tokenSymbol: string,
+  password: string
 ): Promise<void> {
   const messageId = ctx.message?.message_id;
 
@@ -147,18 +136,18 @@ async function executeSwap(
       }
     }
 
-    await ctx.reply("⏳ Executing swap...");
+    await ctx.reply(`⏳ Executing buy: ${solAmount} SOL → ${tokenSymbol}...`);
 
     // Get Trading Executor
     const executor = getTradingExecutor();
 
-    // Validate and create mints
-    let inputMintValidated: ReturnType<typeof asTokenMint>;
-    let outputMintValidated: ReturnType<typeof asTokenMint>;
+    // Validate mints
+    let inputMint: ReturnType<typeof asTokenMint>;
+    let outputMint: ReturnType<typeof asTokenMint>;
 
     try {
-      inputMintValidated = asTokenMint(inputMint);
-      outputMintValidated = asTokenMint(outputMint);
+      inputMint = asTokenMint(SOL_MINT);
+      outputMint = asTokenMint(tokenMint);
     } catch (error) {
       await ctx.reply(`❌ Invalid token address: ${error instanceof Error ? error.message : String(error)}`);
       return;
@@ -168,9 +157,9 @@ async function executeSwap(
     const tradeResult = await executor.executeTrade(
       {
         userId,
-        inputMint: inputMintValidated,
-        outputMint: outputMintValidated,
-        amount,
+        inputMint,
+        outputMint,
+        amount: lamports,
         slippageBps: 50, // 0.5% slippage
       },
       password
@@ -191,7 +180,7 @@ async function executeSwap(
             `🔒 *No Active Session*\n\n` +
             `Your wallet is locked. Please use one of:\n\n` +
             `1. /unlock - Unlock for 30 minutes\n` +
-            `2. /swap <from> <to> <amount> password - One-time unlock`,
+            `2. /buy ${tokenSymbol} ${solAmount} password - One-time unlock`,
             { parse_mode: "Markdown" }
           );
         } else {
@@ -201,12 +190,12 @@ async function executeSwap(
       }
 
       if (error.type === "SWAP_FAILED") {
-        await ctx.reply(`❌ Swap failed: ${error.reason}`);
+        await ctx.reply(`❌ Buy failed: ${error.reason}`);
         return;
       }
 
       await ctx.reply(`❌ Trade execution failed: ${error.message}`);
-      logger.error("Swap execution failed", { userId, error });
+      logger.error("Buy execution failed", { userId, tokenSymbol, error });
       return;
     }
 
@@ -214,19 +203,22 @@ async function executeSwap(
 
     // Success!
     await ctx.reply(
-      `✅ *Swap Successful!*\n\n` +
+      `✅ *Buy Successful!*\n\n` +
+      `Bought **${tokenSymbol}** with **${solAmount} SOL**\n\n` +
       `Transaction: \`${result.signature}\`\n` +
       `Slot: ${result.slot}\n\n` +
-      `Input: ${formatAmount(result.inputAmount, 9)}\n` +
-      `Output: ${formatAmount(result.outputAmount, 9)}\n` +
+      `Input: ${formatAmount(result.inputAmount, 9)} SOL\n` +
+      `Output: ${formatAmount(result.outputAmount, 9)} ${tokenSymbol}\n` +
       `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
       `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
       `[View on Solscan](https://solscan.io/tx/${result.signature})`,
       { parse_mode: "Markdown" }
     );
 
-    logger.info("Swap completed successfully", {
+    logger.info("Buy completed successfully", {
       userId,
+      tokenSymbol,
+      tokenMint,
       orderId: result.orderId,
       signature: result.signature,
       inputAmount: result.inputAmount.toString(),
@@ -235,34 +227,38 @@ async function executeSwap(
     });
 
   } catch (error) {
-    logger.error("Error executing swap", { userId, error });
+    logger.error("Error executing buy", { userId, tokenSymbol, error });
     await ctx.reply("❌ An unexpected error occurred. Please try again.");
   }
 }
 
 /**
- * Handle password input for swap
+ * Handle password input for buy
  */
-export async function handleSwapPasswordInput(
+export async function handleBuyPasswordInput(
   ctx: Context,
   password: string
 ): Promise<void> {
   const userId = ctx.from?.id.toString();
   if (!userId) return;
 
-  const swapData = ctx.session.awaitingPasswordForSwap;
-  if (!swapData) return;
+  const buyData = ctx.session.awaitingPasswordForBuy;
+  if (!buyData) return;
 
   // Clear session
-  ctx.session.awaitingPasswordForSwap = undefined;
+  ctx.session.awaitingPasswordForBuy = undefined;
 
-  // Execute swap
-  await executeSwap(
+  // Calculate SOL amount for display
+  const solAmount = Number(buyData.solAmount) / 1e9;
+
+  // Execute buy
+  await executeBuy(
     ctx,
     userId,
-    swapData.inputMint,
-    swapData.outputMint,
-    swapData.amount,
+    buyData.tokenMint,
+    buyData.solAmount,
+    solAmount,
+    buyData.tokenMint.slice(0, 8) + "...", // Use truncated mint as symbol
     password
   );
 }
@@ -280,6 +276,8 @@ function resolveTokenSymbol(symbol: string): string {
     WSOL: "So11111111111111111111111111111111111111112",
     USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+    BONK: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+    WIF: "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
   };
 
   const upper = symbol.toUpperCase();
@@ -294,28 +292,7 @@ function resolveTokenSymbol(symbol: string): string {
     return symbol;
   }
 
-  throw new Error(`Unknown token symbol: ${symbol}`);
-}
-
-/**
- * Parse amount string to smallest units
- */
-function parseAmount(amountStr: string, tokenSymbol: string): string | null {
-  try {
-    const amount = parseFloat(amountStr);
-    if (isNaN(amount) || amount <= 0) {
-      return null;
-    }
-
-    // SOL/USDC/USDT have 9, 6, 6 decimals respectively
-    // Default to 9 decimals for unknown tokens
-    const decimals = tokenSymbol.toUpperCase() === "USDC" || tokenSymbol.toUpperCase() === "USDT" ? 6 : 9;
-
-    const smallest = Math.floor(amount * Math.pow(10, decimals));
-    return smallest.toString();
-  } catch {
-    return null;
-  }
+  throw new Error(`Unknown token symbol: ${symbol}. Use mint address instead.`);
 }
 
 /**

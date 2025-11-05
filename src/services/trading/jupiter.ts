@@ -23,12 +23,23 @@ import { DEFAULT_JUPITER_CONFIG } from "../../types/jupiter.js";
 import { asTransactionSignature, type TokenMint } from "../../types/common.js";
 
 // ============================================================================
+// Quote Cache (in-memory, 2s TTL)
+// ============================================================================
+
+interface CachedQuote {
+  quote: JupiterQuoteResponse;
+  timestamp: number;
+}
+
+// ============================================================================
 // Jupiter Service Class
 // ============================================================================
 
 export class JupiterService {
   private config: JupiterConfig;
   private connection: Connection;
+  private quoteCache: Map<string, CachedQuote> = new Map();
+  private readonly QUOTE_CACHE_TTL = 2000; // 2 seconds
 
   constructor(connection: Connection, config: Partial<JupiterConfig> = {}) {
     this.config = { ...DEFAULT_JUPITER_CONFIG, ...config };
@@ -38,7 +49,67 @@ export class JupiterService {
       baseUrl: this.config.baseUrl,
       timeout: this.config.timeout,
       defaultSlippageBps: this.config.defaultSlippageBps,
+      quoteCacheTTL: this.QUOTE_CACHE_TTL,
     });
+
+    // Start cache cleanup interval (every 5 seconds)
+    this.startCacheCleanup();
+  }
+
+  /**
+   * Generate cache key for quote
+   */
+  private getCacheKey(params: JupiterSwapParams): string {
+    return `${params.inputMint}-${params.outputMint}-${params.amount}-${params.slippageBps ?? this.config.defaultSlippageBps}`;
+  }
+
+  /**
+   * Get quote from cache if valid
+   */
+  private getCachedQuote(params: JupiterSwapParams): JupiterQuoteResponse | null {
+    const key = this.getCacheKey(params);
+    const cached = this.quoteCache.get(key);
+
+    if (!cached) return null;
+
+    const age = Date.now() - cached.timestamp;
+    if (age > this.QUOTE_CACHE_TTL) {
+      this.quoteCache.delete(key);
+      return null;
+    }
+
+    logger.info("Quote cache hit", { key, age });
+    return cached.quote;
+  }
+
+  /**
+   * Store quote in cache
+   */
+  private setCachedQuote(params: JupiterSwapParams, quote: JupiterQuoteResponse): void {
+    const key = this.getCacheKey(params);
+    this.quoteCache.set(key, { quote, timestamp: Date.now() });
+    logger.info("Quote cached", { key, cacheSize: this.quoteCache.size });
+  }
+
+  /**
+   * Clean up expired cache entries
+   */
+  private startCacheCleanup(): void {
+    setInterval(() => {
+      const now = Date.now();
+      let cleaned = 0;
+
+      for (const [key, cached] of this.quoteCache.entries()) {
+        if (now - cached.timestamp > this.QUOTE_CACHE_TTL) {
+          this.quoteCache.delete(key);
+          cleaned++;
+        }
+      }
+
+      if (cleaned > 0) {
+        logger.info("Quote cache cleanup", { cleaned, remaining: this.quoteCache.size });
+      }
+    }, 5000); // Every 5 seconds
   }
 
   // ==========================================================================
@@ -51,6 +122,12 @@ export class JupiterService {
   async getQuote(
     params: JupiterSwapParams
   ): Promise<Result<JupiterQuoteResponse, JupiterError>> {
+    // Check cache first
+    const cachedQuote = this.getCachedQuote(params);
+    if (cachedQuote) {
+      return Ok(cachedQuote);
+    }
+
     const startTime = Date.now();
 
     logger.info("Fetching Jupiter quote", {
@@ -152,6 +229,9 @@ export class JupiterService {
         requestId: data.requestId,
         elapsed,
       });
+
+      // Cache the quote
+      this.setCachedQuote(params, data);
 
       return Ok(data);
     } catch (error) {

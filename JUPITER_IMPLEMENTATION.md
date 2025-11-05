@@ -244,25 +244,57 @@ Tests:
 
 ### For Users (Telegram)
 
-**Simple Swap:**
+#### **Quick Actions (Recommended)**
+
+**Buy Tokens with SOL:**
 ```
-/swap SOL USDC 0.1 mypassword
+/buy BONK 0.1 mypassword
 ```
+- Buys BONK with 0.1 SOL
+- Simple and intuitive
+- 90% of use cases
+
+**Sell Tokens for SOL:**
+```
+/sell BONK 1000000 mypassword
+```
+- Sells 1M BONK for SOL
+- Direct token → SOL conversion
+
+**Supported Symbols:**
+- SOL (native)
+- USDC (stablecoin)
+- USDT (stablecoin)
+- BONK (memecoin)
+- WIF (memecoin)
+- Or any mint address
+
+#### **Advanced Swaps**
+
+**Any Token to Any Token:**
+```
+/swap USDC BONK 10 mypassword
+```
+- Swap USDC → BONK
+- For power users
+- Full flexibility
 
 **With Mint Addresses:**
 ```
 /swap So11111111111111111111111111111111111111112 EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v 100000000 mypassword
 ```
 
-**Response:**
+**Response Example:**
 ```
-✅ Swap Successful!
+✅ Buy Successful!
+
+Bought BONK with 0.1 SOL
 
 Transaction: `5K7Zt...`
 Slot: 123456789
 
 Input: 0.10 SOL
-Output: 10.52 USDC
+Output: 1,234,567.89 BONK
 Price Impact: 0.12%
 
 [View on Solscan](https://solscan.io/tx/5K7Zt...)
