@@ -28,6 +28,10 @@ export interface JupiterQuoteRequest {
   referralAccount?: string;
   /** Referral fee (50-255 basis points) */
   referralFee?: number;
+  /** Platform fee in basis points (for revenue collection) */
+  platformFeeBps?: number;
+  /** Account to receive platform fees */
+  feeAccount?: string;
   /** Exclude specific routers */
   excludeRouters?: ("iris" | "jupiterz" | "dflow" | "okx")[];
   /** Exclude specific DEXes (comma-separated, Iris router only) */
@@ -194,6 +198,8 @@ export interface JupiterSwapParams {
   userPublicKey: string;
   slippageBps?: number;
   referralAccount?: string;
+  platformFeeBps?: number;
+  feeAccount?: string;
 }
 
 export interface JupiterSwapResult {

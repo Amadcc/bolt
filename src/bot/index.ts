@@ -8,6 +8,7 @@ import { handleSwap } from "./commands/swap.js";
 import { handleBuy } from "./commands/buy.js";
 import { handleSell } from "./commands/sell.js";
 import { handleUnlock, handleLock, handleStatus, handleUnlockPasswordInput } from "./commands/session.js";
+import { handleBalance } from "./commands/balance.js";
 import { logger } from "../utils/logger.js";
 
 interface SessionData {
@@ -114,6 +115,7 @@ bot.command("createwallet", async (ctx) => {
 bot.command("buy", handleBuy);
 bot.command("sell", handleSell);
 bot.command("swap", handleSwap);
+bot.command("balance", handleBalance);
 
 bot.command("unlock", handleUnlock);
 bot.command("lock", handleLock);

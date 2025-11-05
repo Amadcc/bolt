@@ -8,6 +8,8 @@ import { logger } from "../../utils/logger.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
 import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
+import { prisma } from "../../utils/db.js";
+import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
 
 // Define session data structure (should match bot/index.ts)
 interface SessionData {
@@ -35,9 +37,6 @@ interface SessionData {
 
 type Context = GrammyContext & SessionFlavor<SessionData>;
 
-// SOL mint address
-const SOL_MINT = "So11111111111111111111111111111111111111112";
-
 /**
  * Handle /sell command
  * Format: /sell <token> <amount_or_percentage> [password]
@@ -47,11 +46,23 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
  */
 export async function handleSell(ctx: Context): Promise<void> {
   try {
-    const userId = ctx.from?.id.toString();
-    if (!userId) {
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
       await ctx.reply("❌ Could not identify user");
       return;
     }
+
+    // Get user from database to get UUID
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(telegramId) },
+    });
+
+    if (!user) {
+      await ctx.reply("❌ User not found. Please use /start first.");
+      return;
+    }
+
+    const userId = user.id; // Use UUID, not Telegram ID
 
     const text = ctx.message?.text;
     if (!text) {
@@ -68,17 +79,18 @@ export async function handleSell(ctx: Context): Promise<void> {
         `Sell any token for SOL\n\n` +
         `Usage: \`/sell <token> <amount> [password]\`\n\n` +
         `Examples:\n` +
-        `\`/sell BONK 1000000 mypassword\` - Sell 1M tokens\n` +
-        `\`/sell BONK 50%\` - Sell 50% of holdings\n` +
-        `\`/sell BONK all\` - Sell all holdings\n` +
-        `\`/sell EPjF...t1v 100\` - Sell by mint address\n\n` +
+        `\`/sell BONK 1000000\` - Sell 1M BONK tokens\n` +
+        `\`/sell BONK 131921.83\` - Sell 131,921.83 BONK\n` +
+        `\`/sell USDC 50.5\` - Sell 50.5 USDC\n` +
+        `\`/sell BONK 50%\` - Sell 50% of holdings (coming soon)\n\n` +
         `Supported tokens:\n` +
         `• Use symbol: BONK, WIF, USDC, etc.\n` +
         `• Or mint address: EPjF...t1v\n\n` +
         `Amount formats:\n` +
-        `• Number: \`1000000\`\n` +
-        `• Percentage: \`50%\`\n` +
-        `• All: \`all\` or \`100%\``,
+        `• Decimal: \`131921.83\` (human-readable)\n` +
+        `• Integer: \`1000000\` (no decimals)\n` +
+        `• Percentage: \`50%\` (not yet supported)\n` +
+        `• All: \`all\` or \`100%\` (not yet supported)`,
         { parse_mode: "Markdown" }
       );
       return;
@@ -125,8 +137,22 @@ export async function handleSell(ctx: Context): Promise<void> {
       return;
     }
 
+    // Convert human-readable amount to minimal units
+    const tokenDecimals = getTokenDecimals(tokenMint);
+    const humanReadableAmount = parseFloat(amountInfo.value);
+    const minimalUnits = toMinimalUnits(humanReadableAmount, tokenDecimals);
+
+    logger.info("Sell amount conversion", {
+      userId,
+      tokenSymbol: tokenArg,
+      tokenMint,
+      humanReadableAmount,
+      tokenDecimals,
+      minimalUnits,
+    });
+
     // Execute sell (password is optional if session is active)
-    await executeSell(ctx, userId, tokenMint, amountInfo.value, tokenArg, password);
+    await executeSell(ctx, userId, tokenMint, minimalUnits, tokenArg, password);
 
   } catch (error) {
     logger.error("Error in sell command", { userId: ctx.from?.id, error });
@@ -264,8 +290,20 @@ export async function handleSellPasswordInput(
   ctx: Context,
   password: string
 ): Promise<void> {
-  const userId = ctx.from?.id.toString();
-  if (!userId) return;
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+
+  // Get user from database to get UUID
+  const user = await prisma.user.findUnique({
+    where: { telegramId: BigInt(telegramId) },
+  });
+
+  if (!user) {
+    await ctx.reply("❌ User not found. Please use /start first.");
+    return;
+  }
+
+  const userId = user.id; // Use UUID, not Telegram ID
 
   const sellData = ctx.session.awaitingPasswordForSell;
   if (!sellData) return;
@@ -287,34 +325,6 @@ export async function handleSellPasswordInput(
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/**
- * Resolve token symbol to mint address
- */
-function resolveTokenSymbol(symbol: string): string {
-  const KNOWN_TOKENS: Record<string, string> = {
-    SOL: "So11111111111111111111111111111111111111112",
-    WSOL: "So11111111111111111111111111111111111111112",
-    USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-    BONK: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
-    WIF: "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
-  };
-
-  const upper = symbol.toUpperCase();
-
-  // If it's a known symbol, return its mint
-  if (KNOWN_TOKENS[upper]) {
-    return KNOWN_TOKENS[upper];
-  }
-
-  // Otherwise assume it's already a mint address
-  if (symbol.length >= 32) {
-    return symbol;
-  }
-
-  throw new Error(`Unknown token symbol: ${symbol}. Use mint address instead.`);
-}
 
 /**
  * Parse amount string (supports percentage and "all")
@@ -339,14 +349,15 @@ function parseAmount(
       return { type: "percentage", value: percentage.toString() };
     }
 
-    // Handle absolute amount
-    const amount = parseFloat(lower);
+    // Handle absolute amount - remove commas and underscores first
+    const cleanAmount = lower.replace(/[,_]/g, "");
+    const amount = parseFloat(cleanAmount);
     if (isNaN(amount) || amount <= 0) {
       return null;
     }
 
-    // For absolute amounts, keep as string (might be very large)
-    return { type: "absolute", value: amountStr };
+    // For absolute amounts, return clean number string without formatting
+    return { type: "absolute", value: amount.toString() };
   } catch {
     return null;
   }

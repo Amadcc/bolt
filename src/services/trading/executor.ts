@@ -21,11 +21,15 @@ import { asTransactionSignature } from "../../types/common.js";
 interface TradingExecutorConfig {
   commissionBps: number; // Commission in basis points (85 = 0.85%)
   minCommissionUsd: number; // Minimum commission in USD
+  platformFeeBps: number; // Platform fee collected via Jupiter (50 = 0.5%)
+  feeAccount?: string; // Account to receive platform fees
 }
 
 const DEFAULT_CONFIG: TradingExecutorConfig = {
-  commissionBps: 85, // 0.85%
+  commissionBps: 85, // 0.85% (for calculation/logging only)
   minCommissionUsd: 0.01, // $0.01 minimum
+  platformFeeBps: parseInt(process.env.PLATFORM_FEE_BPS || "50"), // 0.5% default
+  feeAccount: process.env.PLATFORM_FEE_ACCOUNT, // Fee collection wallet
 };
 
 // ============================================================================
@@ -42,6 +46,10 @@ export class TradingExecutor {
       commissionBps: this.config.commissionBps,
       commissionPct: (this.config.commissionBps / 100).toFixed(2) + "%",
       minCommissionUsd: this.config.minCommissionUsd,
+      platformFeeBps: this.config.platformFeeBps,
+      platformFeePct: (this.config.platformFeeBps / 100).toFixed(2) + "%",
+      feeAccount: this.config.feeAccount,
+      revenueEnabled: !!(this.config.platformFeeBps && this.config.feeAccount),
     });
   }
 
@@ -126,7 +134,7 @@ export class TradingExecutor {
 
       logger.info("Order created", { orderId: order.id, side: order.side });
 
-      // Step 3: Execute swap via Jupiter
+      // Step 3: Execute swap via Jupiter with platform fee
       const jupiter = getJupiter();
 
       const swapResult = await jupiter.swap(
@@ -136,9 +144,17 @@ export class TradingExecutor {
           amount,
           userPublicKey: publicKey,
           slippageBps,
+          platformFeeBps: this.config.platformFeeBps,
+          feeAccount: this.config.feeAccount,
         },
         keypair
       );
+
+      logger.info("Swap executed with platform fee", {
+        platformFeeBps: this.config.platformFeeBps,
+        feeAccount: this.config.feeAccount,
+        platformFeeEnabled: !!(this.config.platformFeeBps && this.config.feeAccount),
+      });
 
       // Clear keypair from memory if it's not a session keypair
       if (shouldClearKeypair) {

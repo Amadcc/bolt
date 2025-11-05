@@ -44,7 +44,7 @@ model Order {
   user                 User     @relation(fields: [userId], references: [id])
   tokenMint            String
   side                 String // buy, sell
-  amount               Decimal  @db.Decimal(20, 8)
+  amount               Decimal  @db.Decimal(30, 0) // Support large amounts for tokens like BONK (up to 10^30)
   status               String   @default("pending") // pending, filled, failed
   transactionSignature String?  @unique
   commissionUsd        Decimal? @db.Decimal(10, 2)

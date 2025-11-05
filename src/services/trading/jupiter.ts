@@ -146,11 +146,24 @@ export class JupiterService {
         slippageBps: String(params.slippageBps ?? this.config.defaultSlippageBps),
       });
 
+      // NOTE: Jupiter Lite API does not support referralFee parameter
+      // Platform fees would need to be collected manually or via paid Jupiter API
       if (params.referralAccount) {
         queryParams.append("referralAccount", params.referralAccount);
       }
 
+      // Log platform fee config (for reference, not actually used by Jupiter Lite API)
+      if (params.platformFeeBps && params.feeAccount) {
+        logger.warn("Platform fee configured but not supported by Jupiter Lite API", {
+          platformFeeBps: params.platformFeeBps,
+          feeAccount: params.feeAccount,
+          note: "Upgrade to Jupiter Paid API or implement manual fee collection"
+        });
+      }
+
       const url = `${this.config.baseUrl}/ultra/v1/order?${queryParams.toString()}`;
+
+      logger.debug("Jupiter quote URL", { url });
 
       const response = await retry(
         () =>

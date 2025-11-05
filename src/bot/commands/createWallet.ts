@@ -15,22 +15,33 @@ import type { Context } from "grammy";
 import { createWallet, hasWallet } from "../../services/wallet/keyManager.js";
 import { logger } from "../../utils/logger.js";
 import { truncateAddress } from "../../utils/helpers.js";
+import { prisma } from "../../utils/db.js";
 
 // ============================================================================
 // Command Handler
 // ============================================================================
 
 export async function handleCreateWallet(ctx: Context): Promise<void> {
-  const userId = ctx.from?.id.toString();
+  const telegramId = ctx.from?.id;
 
-  if (!userId) {
+  if (!telegramId) {
     await ctx.reply("❌ Unable to identify user");
     return;
   }
 
   try {
+    // Get user from database by telegramId
+    const user = await prisma.user.findUnique({
+      where: { telegramId },
+    });
+
+    if (!user) {
+      await ctx.reply("❌ User not found. Please use /start first.");
+      return;
+    }
+
     // Check if user already has a wallet
-    const userHasWallet = await hasWallet(userId);
+    const userHasWallet = await hasWallet(user.id);
 
     if (userHasWallet) {
       await ctx.reply(
@@ -59,7 +70,7 @@ export async function handleCreateWallet(ctx: Context): Promise<void> {
     // Note: In production, use conversation state management
     // For now, we'll use a simple approach with message filter
   } catch (error) {
-    logger.error("Error in createwallet command", { userId, error });
+    logger.error("Error in createwallet command", { telegramId, error });
     await ctx.reply(
       "❌ An error occurred. Please try again later.\n\n" +
         "If the problem persists, contact support."
@@ -75,15 +86,25 @@ export async function handlePasswordInput(
   ctx: Context,
   password: string
 ): Promise<void> {
-  const userId = ctx.from?.id.toString();
+  const telegramId = ctx.from?.id;
   const messageId = ctx.message?.message_id;
 
-  if (!userId) {
+  if (!telegramId) {
     await ctx.reply("❌ Unable to identify user");
     return;
   }
 
   try {
+    // Get user from database by telegramId
+    const user = await prisma.user.findUnique({
+      where: { telegramId },
+    });
+
+    if (!user) {
+      await ctx.reply("❌ User not found. Please use /start first.");
+      return;
+    }
+
     // Delete password message immediately for security
     if (messageId) {
       try {
@@ -98,7 +119,7 @@ export async function handlePasswordInput(
 
     // Create wallet
     const result = await createWallet({
-      userId,
+      userId: user.id,
       password,
     });
 
@@ -111,7 +132,8 @@ export async function handlePasswordInput(
 
     if (!result.success) {
       logger.error("Failed to create wallet", {
-        userId,
+        userId: user.id,
+        telegramId,
         error: result.error,
       });
 
@@ -156,12 +178,13 @@ export async function handlePasswordInput(
     );
 
     logger.info("Wallet created via Telegram", {
-      userId,
+      userId: user.id,
+      telegramId,
       walletId,
       publicKey,
     });
   } catch (error) {
-    logger.error("Error processing password input", { userId, error });
+    logger.error("Error processing password input", { telegramId, error });
     await ctx.reply(
       "❌ An error occurred while creating your wallet.\n\n" +
         "Please try /createwallet again."

@@ -9,6 +9,8 @@ import { getTradingExecutor } from "../../services/trading/executor.js";
 import { getHoneypotDetector } from "../../services/honeypot/detector.js";
 import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
+import { prisma } from "../../utils/db.js";
+import { resolveTokenSymbol, SOL_MINT, getNetworkName, isDevnetMode } from "../../config/tokens.js";
 
 // Define session data structure (should match bot/index.ts)
 interface SessionData {
@@ -36,9 +38,6 @@ interface SessionData {
 
 type Context = GrammyContext & SessionFlavor<SessionData>;
 
-// SOL mint address
-const SOL_MINT = "So11111111111111111111111111111111111111112";
-
 /**
  * Handle /buy command
  * Format: /buy <token> <sol_amount> [password]
@@ -46,11 +45,23 @@ const SOL_MINT = "So11111111111111111111111111111111111111112";
  */
 export async function handleBuy(ctx: Context): Promise<void> {
   try {
-    const userId = ctx.from?.id.toString();
-    if (!userId) {
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
       await ctx.reply("❌ Could not identify user");
       return;
     }
+
+    // Get user from database to get UUID
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(telegramId) },
+    });
+
+    if (!user) {
+      await ctx.reply("❌ User not found. Please use /start first.");
+      return;
+    }
+
+    const userId = user.id; // Use UUID, not Telegram ID
 
     const text = ctx.message?.text;
     if (!text) {
@@ -103,6 +114,17 @@ export async function handleBuy(ctx: Context): Promise<void> {
 
     // Convert SOL to lamports
     const lamports = Math.floor(solAmount * 1e9).toString();
+
+    // Show network warning for devnet
+    if (isDevnetMode()) {
+      await ctx.reply(
+        `⚠️ *Devnet Mode*\n\n` +
+        `You are on *${getNetworkName()}* network.\n` +
+        `Swaps may not work due to lack of liquidity pools.\n\n` +
+        `To test real swaps, switch to mainnet in .env file.`,
+        { parse_mode: "Markdown" }
+      );
+    }
 
     // Honeypot check before executing trade
     await ctx.reply("🔍 Analyzing token safety...");
@@ -177,7 +199,7 @@ async function executeBuy(
   lamports: string,
   solAmount: number,
   tokenSymbol: string,
-  password: string
+  password?: string
 ): Promise<void> {
   const messageId = ctx.message?.message_id;
 
@@ -294,8 +316,20 @@ export async function handleBuyPasswordInput(
   ctx: Context,
   password: string
 ): Promise<void> {
-  const userId = ctx.from?.id.toString();
-  if (!userId) return;
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+
+  // Get user from database to get UUID
+  const user = await prisma.user.findUnique({
+    where: { telegramId: BigInt(telegramId) },
+  });
+
+  if (!user) {
+    await ctx.reply("❌ User not found. Please use /start first.");
+    return;
+  }
+
+  const userId = user.id; // Use UUID, not Telegram ID
 
   const buyData = ctx.session.awaitingPasswordForBuy;
   if (!buyData) return;
@@ -321,34 +355,6 @@ export async function handleBuyPasswordInput(
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/**
- * Resolve token symbol to mint address
- */
-function resolveTokenSymbol(symbol: string): string {
-  const KNOWN_TOKENS: Record<string, string> = {
-    SOL: "So11111111111111111111111111111111111111112",
-    WSOL: "So11111111111111111111111111111111111111112",
-    USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-    BONK: "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
-    WIF: "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm",
-  };
-
-  const upper = symbol.toUpperCase();
-
-  // If it's a known symbol, return its mint
-  if (KNOWN_TOKENS[upper]) {
-    return KNOWN_TOKENS[upper];
-  }
-
-  // Otherwise assume it's already a mint address
-  if (symbol.length >= 32) {
-    return symbol;
-  }
-
-  throw new Error(`Unknown token symbol: ${symbol}. Use mint address instead.`);
-}
 
 /**
  * Format amount from smallest units to human-readable

@@ -8,6 +8,8 @@ import { logger } from "../../utils/logger.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
 import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
+import { prisma } from "../../utils/db.js";
+import { resolveTokenSymbol, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
 
 // Define session data structure (should match bot/index.ts)
 interface SessionData {
@@ -40,11 +42,23 @@ type Context = GrammyContext & SessionFlavor<SessionData>;
  */
 export async function handleSwap(ctx: Context): Promise<void> {
   try {
-    const userId = ctx.from?.id.toString();
-    if (!userId) {
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
       await ctx.reply("❌ Could not identify user");
       return;
     }
+
+    // Get user from database to get UUID
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(telegramId) },
+    });
+
+    if (!user) {
+      await ctx.reply("❌ User not found. Please use /start first.");
+      return;
+    }
+
+    const userId = user.id; // Use UUID, not Telegram ID
 
     const text = ctx.message?.text;
     if (!text) {
@@ -94,12 +108,25 @@ export async function handleSwap(ctx: Context): Promise<void> {
       return;
     }
 
-    // Parse amount
-    const amount = parseAmount(amountArg, inputMintArg);
-    if (!amount) {
+    // Parse amount and convert to minimal units
+    const amountFloat = parseFloat(amountArg);
+    if (isNaN(amountFloat) || amountFloat <= 0) {
       await ctx.reply("❌ Invalid amount format");
       return;
     }
+
+    // Get decimals for input token and convert to minimal units
+    const decimals = getTokenDecimals(inputMint);
+    const amount = toMinimalUnits(amountFloat, decimals);
+
+    logger.info("Swap amount conversion", {
+      userId,
+      inputMint,
+      inputMintArg,
+      humanReadableAmount: amountFloat,
+      decimals,
+      minimalUnits: amount,
+    });
 
     // Execute swap (password is optional if session is active)
     await executeSwap(ctx, userId, inputMint, outputMint, amount, password);
@@ -247,8 +274,20 @@ export async function handleSwapPasswordInput(
   ctx: Context,
   password: string
 ): Promise<void> {
-  const userId = ctx.from?.id.toString();
-  if (!userId) return;
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+
+  // Get user from database to get UUID
+  const user = await prisma.user.findUnique({
+    where: { telegramId: BigInt(telegramId) },
+  });
+
+  if (!user) {
+    await ctx.reply("❌ User not found. Please use /start first.");
+    return;
+  }
+
+  const userId = user.id; // Use UUID, not Telegram ID
 
   const swapData = ctx.session.awaitingPasswordForSwap;
   if (!swapData) return;
@@ -270,53 +309,6 @@ export async function handleSwapPasswordInput(
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/**
- * Resolve token symbol to mint address
- */
-function resolveTokenSymbol(symbol: string): string {
-  const KNOWN_TOKENS: Record<string, string> = {
-    SOL: "So11111111111111111111111111111111111111112",
-    WSOL: "So11111111111111111111111111111111111111112",
-    USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-  };
-
-  const upper = symbol.toUpperCase();
-
-  // If it's a known symbol, return its mint
-  if (KNOWN_TOKENS[upper]) {
-    return KNOWN_TOKENS[upper];
-  }
-
-  // Otherwise assume it's already a mint address
-  if (symbol.length >= 32) {
-    return symbol;
-  }
-
-  throw new Error(`Unknown token symbol: ${symbol}`);
-}
-
-/**
- * Parse amount string to smallest units
- */
-function parseAmount(amountStr: string, tokenSymbol: string): string | null {
-  try {
-    const amount = parseFloat(amountStr);
-    if (isNaN(amount) || amount <= 0) {
-      return null;
-    }
-
-    // SOL/USDC/USDT have 9, 6, 6 decimals respectively
-    // Default to 9 decimals for unknown tokens
-    const decimals = tokenSymbol.toUpperCase() === "USDC" || tokenSymbol.toUpperCase() === "USDT" ? 6 : 9;
-
-    const smallest = Math.floor(amount * Math.pow(10, decimals));
-    return smallest.toString();
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Format amount from smallest units to human-readable

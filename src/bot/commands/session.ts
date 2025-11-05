@@ -29,9 +29,19 @@ type Context = GrammyContext & SessionFlavor<SessionData>;
  */
 export async function handleUnlock(ctx: Context): Promise<void> {
   try {
-    const userId = ctx.from?.id.toString();
-    if (!userId) {
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
       await ctx.reply("❌ Could not identify user");
+      return;
+    }
+
+    // Get user from database
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(telegramId) },
+    });
+
+    if (!user) {
+      await ctx.reply("❌ User not found. Please use /start first.");
       return;
     }
 
@@ -58,8 +68,8 @@ export async function handleUnlock(ctx: Context): Promise<void> {
 
     const password = parts[1];
 
-    // Execute unlock
-    await executeUnlock(ctx, userId, password);
+    // Execute unlock with UUID userId
+    await executeUnlock(ctx, user.id, password);
 
   } catch (error) {
     logger.error("Error in unlock command", { userId: ctx.from?.id, error });
@@ -138,14 +148,24 @@ export async function handleUnlockPasswordInput(
   ctx: Context,
   password: string
 ): Promise<void> {
-  const userId = ctx.from?.id.toString();
-  if (!userId) return;
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
 
   // Clear session
   ctx.session.awaitingPasswordForUnlock = false;
 
-  // Execute unlock
-  await executeUnlock(ctx, userId, password);
+  // Get user from database
+  const user = await prisma.user.findUnique({
+    where: { telegramId: BigInt(telegramId) },
+  });
+
+  if (!user) {
+    await ctx.reply("❌ User not found. Please use /start first.");
+    return;
+  }
+
+  // Execute unlock with UUID userId
+  await executeUnlock(ctx, user.id, password);
 }
 
 /**
@@ -154,15 +174,15 @@ export async function handleUnlockPasswordInput(
  */
 export async function handleLock(ctx: Context): Promise<void> {
   try {
-    const userId = ctx.from?.id.toString();
-    if (!userId) {
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
       await ctx.reply("❌ Could not identify user");
       return;
     }
 
     // Check if user has a wallet
     const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(ctx.from!.id) },
+      where: { telegramId: BigInt(telegramId) },
       include: { wallets: true },
     });
 
@@ -171,8 +191,8 @@ export async function handleLock(ctx: Context): Promise<void> {
       return;
     }
 
-    // Lock wallet (clears session)
-    await lockWallet(userId);
+    // Lock wallet (clears session) with UUID userId
+    await lockWallet(user.id);
 
     await ctx.reply(
       `🔒 *Wallet Locked*\n\n` +
@@ -181,10 +201,10 @@ export async function handleLock(ctx: Context): Promise<void> {
       { parse_mode: "Markdown" }
     );
 
-    logger.info("Wallet locked", { userId });
+    logger.info("Wallet locked", { userId: user.id, telegramId });
 
   } catch (error) {
-    logger.error("Error in lock command", { userId: ctx.from?.id, error });
+    logger.error("Error in lock command", { telegramId: ctx.from?.id, error });
     await ctx.reply("❌ An error occurred. Please try again.");
   }
 }
@@ -195,15 +215,15 @@ export async function handleLock(ctx: Context): Promise<void> {
  */
 export async function handleStatus(ctx: Context): Promise<void> {
   try {
-    const userId = ctx.from?.id.toString();
-    if (!userId) {
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
       await ctx.reply("❌ Could not identify user");
       return;
     }
 
     // Check if user has a wallet
     const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(ctx.from!.id) },
+      where: { telegramId: BigInt(telegramId) },
       include: { wallets: true },
     });
 
@@ -219,8 +239,8 @@ export async function handleStatus(ctx: Context): Promise<void> {
 
     const wallet = user.wallets[0];
 
-    // Get session status
-    const sessionStatus = await getSessionStatus(userId);
+    // Get session status with UUID userId
+    const sessionStatus = await getSessionStatus(user.id);
 
     if (sessionStatus.isActive) {
       const timeLeft = Math.floor((sessionStatus.expiresAt - Date.now()) / 1000 / 60);
@@ -244,10 +264,10 @@ export async function handleStatus(ctx: Context): Promise<void> {
       );
     }
 
-    logger.info("Session status checked", { userId, isActive: sessionStatus.isActive });
+    logger.info("Session status checked", { userId: user.id, telegramId, isActive: sessionStatus.isActive });
 
   } catch (error) {
-    logger.error("Error in status command", { userId: ctx.from?.id, error });
+    logger.error("Error in status command", { telegramId: ctx.from?.id, error });
     await ctx.reply("❌ An error occurred. Please try again.");
   }
 }
