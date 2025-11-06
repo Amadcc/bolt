@@ -4,11 +4,13 @@ import {
   handleCreateWallet,
   handlePasswordInput,
 } from "./commands/createWallet.js";
-import { handleSwap } from "./commands/swap.js";
-import { handleBuy } from "./commands/buy.js";
-import { handleSell } from "./commands/sell.js";
-import { handleUnlock, handleLock, handleStatus, handleUnlockPasswordInput } from "./commands/session.js";
-import { handleBalance } from "./commands/balance.js";
+// ✅ Redis Session Integration: Now using secure Redis sessions instead of in-memory
+import {
+  handleUnlock,
+  handleLock,
+  handleStatus,
+  handleUnlockPasswordInput,
+} from "./commands/session.js";
 import { logger } from "../utils/logger.js";
 import { navigateToPage, type UIState, type Page } from "./views/index.js";
 import {
@@ -27,6 +29,10 @@ interface SessionData {
     slippage: number;
     autoApprove: boolean;
   };
+  // ✅ Redis Session Integration (CRITICAL-1 + CRITICAL-2 fix)
+  sessionToken?: string; // Redis session token (15 min TTL)
+  password?: string; // For getKeypairForSigning() - stored in Grammy memory only
+  sessionExpiresAt?: number; // Timestamp for UI display
   // UI State
   ui: UIState;
   // Conversation state
@@ -114,50 +120,64 @@ bot.command("start", async (ctx) => {
 });
 
 /**
- * Legacy commands - redirect to UI pages
+ * Single-page commands - all commands use navigateToPage
  */
 bot.command("wallet", async (ctx) => {
+  // Delete the command message
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    logger.warn("Failed to delete wallet command message", { error });
+  }
+
   await navigateToPage(ctx, "wallet_info");
 });
 
 bot.command("createwallet", async (ctx) => {
+  // Delete the command message
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    logger.warn("Failed to delete createwallet command message", { error });
+  }
+
   await navigateToPage(ctx, "create_wallet");
 });
 
 bot.command("buy", async (ctx) => {
-  // Support legacy text commands OR navigate to buy page
-  const text = ctx.message?.text;
-  const parts = text?.split(" ").filter(Boolean) || [];
-
-  if (parts.length > 1) {
-    // Legacy command with parameters: /buy BONK 0.1
-    await handleBuy(ctx);
-  } else {
-    // No parameters: show UI
-    await navigateToPage(ctx, "buy");
+  // Delete the command message
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    logger.warn("Failed to delete buy command message", { error });
   }
+
+  // Navigate to buy page (single-page UI only)
+  await navigateToPage(ctx, "buy");
 });
 
 bot.command("sell", async (ctx) => {
-  const text = ctx.message?.text;
-  const parts = text?.split(" ").filter(Boolean) || [];
-
-  if (parts.length > 1) {
-    await handleSell(ctx);
-  } else {
-    await navigateToPage(ctx, "sell");
+  // Delete the command message
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    logger.warn("Failed to delete sell command message", { error });
   }
+
+  // Navigate to sell page (single-page UI only)
+  await navigateToPage(ctx, "sell");
 });
 
 bot.command("swap", async (ctx) => {
-  const text = ctx.message?.text;
-  const parts = text?.split(" ").filter(Boolean) || [];
-
-  if (parts.length > 1) {
-    await handleSwap(ctx);
-  } else {
-    await navigateToPage(ctx, "swap");
+  // Delete the command message
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    logger.warn("Failed to delete swap command message", { error });
   }
+
+  // Navigate to swap page (single-page UI only)
+  await navigateToPage(ctx, "swap");
 });
 
 bot.command("balance", async (ctx) => {
@@ -173,32 +193,31 @@ bot.command("balance", async (ctx) => {
 });
 
 bot.command("settings", async (ctx) => {
+  // Delete the command message
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    logger.warn("Failed to delete settings command message", { error });
+  }
+
   await navigateToPage(ctx, "settings");
 });
 
+// ✅ Redis Session Integration: Secure Redis sessions (encrypted keys + password)
 bot.command("unlock", handleUnlock);
 bot.command("lock", handleLock);
 bot.command("status", handleStatus);
 
 bot.command("help", async (ctx) => {
-  await ctx.reply(
-    "📚 *Bolt Sniper Bot - Help*\n\n" +
-      "🎯 *Quick Start:*\n" +
-      "1. /start - Open dashboard\n" +
-      "2. Create wallet if needed\n" +
-      "3. Use inline buttons to trade\n\n" +
-      "⚡️ *Legacy Commands:*\n" +
-      "You can still use text commands:\n" +
-      "• `/buy BONK 0.1` - Buy with SOL\n" +
-      "• `/sell BONK 1000000` - Sell for SOL\n" +
-      "• `/swap USDC BONK 10` - Token swap\n\n" +
-      "🔐 *Security:*\n" +
-      "• Non-custodial (your keys, your crypto)\n" +
-      "• Encrypted with Argon2id + AES-256\n" +
-      "• Session-based unlocking\n\n" +
-      "For more info, use /start",
-    { parse_mode: "Markdown" }
-  );
+  // Delete the command message
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    logger.warn("Failed to delete help command message", { error });
+  }
+
+  // Navigate to help page (single-page UI)
+  await navigateToPage(ctx, "help");
 });
 
 // ============================================================================
@@ -301,7 +320,7 @@ bot.on("message:text", async (ctx, next) => {
     return;
   }
 
-  // Check if we're waiting for password input for unlock
+  // ✅ Redis Session Integration: Handle password input for unlock
   if (ctx.session.awaitingPasswordForUnlock) {
     const password = ctx.message.text;
 
@@ -315,14 +334,14 @@ bot.on("message:text", async (ctx, next) => {
     // Reset conversation state
     ctx.session.awaitingPasswordForUnlock = false;
 
-    // Handle unlock password input
+    // Handle unlock password input (creates Redis session)
     await handleUnlockPasswordInput(ctx, password);
 
     // Navigate back to main page after unlock (only if successful)
     setTimeout(async () => {
       try {
-        // Check if wallet was successfully unlocked
-        if (ctx.session.encryptedKey) {
+        // Check if Redis session was successfully created
+        if (ctx.session.sessionToken && ctx.session.password) {
           await navigateToPage(ctx, "main");
         }
       } catch (error) {
@@ -503,15 +522,15 @@ async function executeBuyFromAmount(
     return;
   }
 
-  // Check if wallet is unlocked
-  if (!ctx.session.encryptedKey) {
+  // ✅ Redis Session Integration: Check if wallet is unlocked
+  if (!ctx.session.sessionToken || !ctx.session.password) {
     // Wallet is locked - show unlock prompt
     await ctx.api.editMessageText(
       ctx.chat.id,
       msgId,
       `🔒 *Wallet Locked*\n\n` +
       `To buy ${token} with ${solAmount} SOL, please unlock your wallet first.\n\n` +
-      `Your session will be active for 30 minutes.`,
+      `Your session will be active for 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -579,15 +598,15 @@ async function executeSellFromAmount(
     return;
   }
 
-  // Check if wallet is unlocked
-  if (!ctx.session.encryptedKey) {
+  // ✅ Redis Session Integration: Check if wallet is unlocked
+  if (!ctx.session.sessionToken || !ctx.session.password) {
     // Wallet is locked - show unlock prompt
     await ctx.api.editMessageText(
       ctx.chat.id,
       msgId,
       `🔒 *Wallet Locked*\n\n` +
       `To sell ${amount} ${token}, please unlock your wallet first.\n\n` +
-      `Your session will be active for 30 minutes.`,
+      `Your session will be active for 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -655,15 +674,15 @@ async function executeSwapFromAmount(
     return;
   }
 
-  // Check if wallet is unlocked
-  if (!ctx.session.encryptedKey) {
+  // ✅ Redis Session Integration: Check if wallet is unlocked
+  if (!ctx.session.sessionToken || !ctx.session.password) {
     // Wallet is locked - show unlock prompt
     await ctx.api.editMessageText(
       ctx.chat.id,
       msgId,
       `🔒 *Wallet Locked*\n\n` +
       `To swap ${amount} ${inputToken} → ${outputToken}, please unlock your wallet first.\n\n` +
-      `Your session will be active for 30 minutes.`,
+      `Your session will be active for 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {

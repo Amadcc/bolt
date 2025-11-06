@@ -19,6 +19,10 @@ interface SessionData {
     slippage: number;
     autoApprove: boolean;
   };
+  // ✅ Redis Session Integration
+  sessionToken?: string;
+  password?: string;
+  sessionExpiresAt?: number;
   awaitingPasswordForWallet?: boolean;
   awaitingPasswordForSwap?: {
     inputMint: string;
@@ -200,6 +204,21 @@ async function executeSell(
       return;
     }
 
+    // ✅ Redis Session Integration: Get password and sessionToken from context
+    const sessionPassword = ctx.session.password || password;
+    const sessionToken = ctx.session.sessionToken;
+
+    if (!sessionPassword) {
+      await ctx.reply(
+        `🔒 *Password Required*\n\n` +
+        `No active session. Please either:\n\n` +
+        `1. /unlock <password> - Unlock for 15 minutes\n` +
+        `2. /sell ${tokenSymbol} ${tokenAmount} <password> - One-time trade`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
     // Execute trade via Trading Executor
     const tradeResult = await executor.executeTrade(
       {
@@ -209,7 +228,8 @@ async function executeSell(
         amount: tokenAmount,
         slippageBps: 50, // 0.5% slippage
       },
-      password
+      sessionPassword,
+      sessionToken as any
     );
 
     if (!tradeResult.success) {
@@ -221,18 +241,13 @@ async function executeSell(
       }
 
       if (error.type === "INVALID_PASSWORD") {
-        // Check if it's a session error
-        if (error.message.includes("No active session")) {
-          await ctx.reply(
-            `🔒 *No Active Session*\n\n` +
-            `Your wallet is locked. Please use one of:\n\n` +
-            `1. /unlock - Unlock for 30 minutes\n` +
-            `2. /sell ${tokenSymbol} ${tokenAmount} password - One-time unlock`,
-            { parse_mode: "Markdown" }
-          );
-        } else {
-          await ctx.reply("❌ Invalid password. Please try again.");
-        }
+        // ✅ SECURITY (CRITICAL-2 Fix): Password now required for every trade
+        await ctx.reply(
+          `🔒 *Password Required*\n\n` +
+          `For security, password is required for every trade.\n\n` +
+          `Usage: \`/sell ${tokenSymbol} ${tokenAmount} yourpassword\``,
+          { parse_mode: "Markdown" }
+        );
         return;
       }
 

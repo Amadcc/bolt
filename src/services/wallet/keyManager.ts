@@ -246,14 +246,13 @@ export async function unlockWallet(
       publicKey: wallet.publicKey,
     });
 
-    // Store keypair in session (30 minutes)
-    const publicKeyAddress = asSolanaAddress(wallet.publicKey);
-    storeSessionKeypair(userId, keypair, publicKeyAddress);
+    // ✅ SECURITY FIX (CRITICAL-2): No longer store keypair in memory
+    // Caller MUST clear keypair after use!
 
     return Ok({
       walletId: wallet.id,
-      publicKey: publicKeyAddress,
-      keypair, // ⚠️ Caller must clear after use (or use session)
+      publicKey: asSolanaAddress(wallet.publicKey),
+      keypair, // ⚠️ Caller MUST clear after use!
     });
   } catch (error) {
     logger.error("Failed to unlock wallet", { userId, error });
@@ -388,171 +387,23 @@ export async function verifyWalletPassword(
 }
 
 // ============================================================================
-// Session Management (In-Memory)
+// In-Memory Sessions REMOVED (CRITICAL-2 Security Fix)
 // ============================================================================
 
-interface ActiveSession {
-  userId: string;
-  keypair: Keypair;
-  publicKey: SolanaAddress;
-  expiresAt: number;
-}
-
-// In-memory session store (30 minutes default TTL)
-const activeSessions = new Map<string, ActiveSession>();
-const SESSION_TTL = 30 * 60 * 1000; // 30 minutes
-
 /**
- * Get keypair from active session (if exists and not expired)
+ * ✅ SECURITY FIX: All in-memory session functions removed
+ *
+ * REASON: Storing plaintext keypairs in memory for 30 minutes is a critical
+ * security vulnerability. If the Node.js process is compromised (memory dump,
+ * debugger, crash dump), all active private keys are exposed.
+ *
+ * NEW APPROACH: Password required for every trade OR use Redis-based sessions
+ * from session.ts (which store ENCRYPTED keys, not plaintext).
+ *
+ * Removed functions:
+ * - getSessionKeypair() - accessed plaintext keys from memory
+ * - storeSessionKeypair() - stored plaintext keys in memory
+ * - lockWallet() - cleared memory sessions
+ * - getSessionStatus() - checked memory session status
+ * - startSessionCleanup() - cleanup timer for memory sessions
  */
-export async function getSessionKeypair(
-  userId: string
-): Promise<Result<{ keypair: Keypair; publicKey: SolanaAddress }, WalletError>> {
-  const session = activeSessions.get(userId);
-
-  if (!session) {
-    return Err({
-      type: "SESSION_EXPIRED",
-      message: "No active session found"
-    });
-  }
-
-  // Check if session expired
-  if (Date.now() > session.expiresAt) {
-    // Clean up expired session
-    activeSessions.delete(userId);
-
-    logger.info("Session expired", { userId });
-
-    return Err({
-      type: "SESSION_EXPIRED",
-      message: "Session has expired. Please /unlock again."
-    });
-  }
-
-  logger.info("Session keypair retrieved", {
-    userId,
-    publicKey: session.publicKey,
-    expiresIn: Math.floor((session.expiresAt - Date.now()) / 1000 / 60) + " minutes"
-  });
-
-  return Ok({
-    keypair: session.keypair,
-    publicKey: session.publicKey
-  });
-}
-
-/**
- * Store keypair in session (called by unlockWallet)
- */
-function storeSessionKeypair(
-  userId: string,
-  keypair: Keypair,
-  publicKey: SolanaAddress
-): void {
-  const expiresAt = Date.now() + SESSION_TTL;
-
-  activeSessions.set(userId, {
-    userId,
-    keypair,
-    publicKey,
-    expiresAt
-  });
-
-  logger.info("Session created", {
-    userId,
-    publicKey,
-    expiresAt: new Date(expiresAt).toISOString(),
-    ttl: SESSION_TTL / 1000 / 60 + " minutes"
-  });
-
-  // Start cleanup timer if needed
-  startSessionCleanup();
-}
-
-/**
- * Lock wallet (clear session)
- */
-export async function lockWallet(userId: string): Promise<void> {
-  const session = activeSessions.get(userId);
-
-  if (session) {
-    // Clear keypair from memory
-    clearKeypair(session.keypair);
-
-    // Remove from sessions
-    activeSessions.delete(userId);
-
-    logger.info("Session locked and cleared", { userId });
-  }
-}
-
-/**
- * Get session status
- */
-export async function getSessionStatus(userId: string): Promise<{
-  isActive: boolean;
-  expiresAt: number;
-  timeLeft: number;
-}> {
-  const session = activeSessions.get(userId);
-
-  if (!session) {
-    return {
-      isActive: false,
-      expiresAt: 0,
-      timeLeft: 0
-    };
-  }
-
-  // Check if expired
-  if (Date.now() > session.expiresAt) {
-    activeSessions.delete(userId);
-    return {
-      isActive: false,
-      expiresAt: 0,
-      timeLeft: 0
-    };
-  }
-
-  return {
-    isActive: true,
-    expiresAt: session.expiresAt,
-    timeLeft: session.expiresAt - Date.now()
-  };
-}
-
-/**
- * Session cleanup interval
- */
-let cleanupInterval: NodeJS.Timeout | null = null;
-
-function startSessionCleanup(): void {
-  if (cleanupInterval) return; // Already running
-
-  cleanupInterval = setInterval(() => {
-    const now = Date.now();
-    let cleaned = 0;
-
-    for (const [userId, session] of activeSessions.entries()) {
-      if (now > session.expiresAt) {
-        clearKeypair(session.keypair);
-        activeSessions.delete(userId);
-        cleaned++;
-      }
-    }
-
-    if (cleaned > 0) {
-      logger.info("Session cleanup completed", {
-        cleaned,
-        remaining: activeSessions.size
-      });
-    }
-  }, 60000); // Every minute
-}
-
-/**
- * Update unlockWallet to store session
- */
-// NOTE: This is already implemented above, just need to modify the existing unlockWallet
-// to call storeSessionKeypair after successful unlock

@@ -5,9 +5,11 @@
 
 import { logger } from "../../utils/logger.js";
 import { prisma } from "../../utils/db.js";
-import { unlockWallet, clearKeypair, getSessionKeypair } from "../wallet/keyManager.js";
+import { unlockWallet, clearKeypair } from "../wallet/keyManager.js";
+// ✅ Redis Session Integration
+import { getKeypairForSigning } from "../wallet/session.js";
 import { getJupiter } from "./jupiter.js";
-import type { Result } from "../../types/common.js";
+import type { Result, SessionToken } from "../../types/common.js";
 import { Ok, Err } from "../../types/common.js";
 import type { TradeParams, TradeResult, TradingError } from "../../types/trading.js";
 import type { JupiterError } from "../../types/jupiter.js";
@@ -55,11 +57,15 @@ export class TradingExecutor {
 
   /**
    * Execute a trade with commission calculation and database recording
-   * Password is optional if session is active
+   *
+   * ✅ Redis Session Integration: Two modes
+   * 1. With sessionToken: Uses getKeypairForSigning (requires password in Grammy session)
+   * 2. Without sessionToken: Falls back to unlockWallet (requires password parameter)
    */
   async executeTrade(
     params: TradeParams,
-    password?: string
+    password: string,
+    sessionToken?: SessionToken // ✅ Optional Redis session token
   ): Promise<Result<TradeResult, TradingError>> {
     const { userId, inputMint, outputMint, amount, slippageBps } = params;
 
@@ -70,34 +76,42 @@ export class TradingExecutor {
       amount,
       slippageBps,
       hasPassword: !!password,
+      hasSession: !!sessionToken,
     });
 
     try {
-      // Step 1: Try to get keypair from session or unlock with password
       let keypair;
       let publicKey;
-      let shouldClearKeypair = false;
 
-      // First, try to get keypair from active session
-      const sessionResult = await getSessionKeypair(userId);
+      // ✅ Step 1: Get keypair - prefer Redis session, fallback to unlockWallet
+      if (sessionToken && password) {
+        // Use Redis session + getKeypairForSigning
+        logger.info("Using Redis session for trade", { userId, sessionToken: sessionToken.substring(0, 10) + "..." });
 
-      if (sessionResult.success) {
-        // Session is active, use it
-        keypair = sessionResult.value.keypair;
-        publicKey = sessionResult.value.publicKey;
-        shouldClearKeypair = false; // Don't clear session keypair
+        const keypairResult = await getKeypairForSigning(sessionToken, password);
 
-        logger.info("Using active session for trade", { userId, publicKey });
-      } else {
-        // No active session, password is required
-        if (!password) {
+        if (!keypairResult.success) {
           return Err({
             type: "INVALID_PASSWORD",
-            message: "No active session. Please /unlock first or provide password."
+            message: "Session expired or invalid password. Please /unlock again."
           });
         }
 
-        // Unlock wallet with password
+        keypair = keypairResult.value;
+        publicKey = keypair.publicKey.toBase58() as any;
+
+        logger.info("Keypair retrieved from Redis session", { userId, publicKey });
+      } else {
+        // Fallback: unlock wallet directly
+        if (!password) {
+          return Err({
+            type: "INVALID_PASSWORD",
+            message: "Password is required for trading"
+          });
+        }
+
+        logger.info("No session - unlocking wallet directly", { userId });
+
         const unlockResult = await unlockWallet({ userId, password });
 
         if (!unlockResult.success) {
@@ -116,7 +130,6 @@ export class TradingExecutor {
 
         keypair = unlockResult.value.keypair;
         publicKey = unlockResult.value.publicKey;
-        shouldClearKeypair = true; // Clear one-time unlocked keypair
 
         logger.info("Unlocked wallet for one-time trade", { userId, publicKey });
       }
@@ -156,10 +169,8 @@ export class TradingExecutor {
         platformFeeEnabled: !!(this.config.platformFeeBps && this.config.feeAccount),
       });
 
-      // Clear keypair from memory if it's not a session keypair
-      if (shouldClearKeypair) {
-        clearKeypair(keypair);
-      }
+      // ✅ SECURITY: ALWAYS clear keypair from memory after use
+      clearKeypair(keypair);
 
       if (!swapResult.success) {
         const error = swapResult.error as JupiterError;
