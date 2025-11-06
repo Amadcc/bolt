@@ -286,23 +286,30 @@
     - [x] Password validation (8-128 chars, letters+numbers) ✅
     - [x] Invalid key length, tampered data, unicode passwords ✅
     - [x] Security properties (salt, IV, auth tag) ✅
-  - [x] `HoneypotDetector` tests - 12 tests (basic functionality) ✅
+  - [x] `HoneypotDetector` tests - 38 tests (comprehensive coverage) ✅
     - [x] RiskScore type validation (0-100 range) ✅
     - [x] Invalid token mint rejection ✅
     - [x] Valid Solana address acceptance ✅
     - [x] Result fields validation ✅
     - [x] Singleton pattern verification ✅
+    - [x] Risk score calculation tests ✅
+    - [x] Confidence calculation tests ✅
+    - [x] Performance tests (<100ms with no layers) ✅
+    - [x] Edge case handling (empty strings, special chars) ✅
+    - [x] Configuration tests (thresholds, timeouts, feature flags) ✅
+    - [x] Data consistency tests (concurrent checks) ✅
+    - [x] Result format tests (Result<T> pattern) ✅
   - ⏭️ `KeyManager` tests - Deleted after corruption (can recreate if needed)
   - ⏭️ `JupiterService` tests - 11 tests (from previous session)
   - ⏭️ `SwapCommand` helper tests - 38 tests (from previous session)
 
 - [x] **Test Results** ✅
 
-  - [x] 39/39 tests passing ✅
-  - [x] encryption.test.ts: 27 tests ✅
-  - [x] detector.test.ts: 12 tests ✅
+  - [x] 65/65 tests passing ✅
+  - [x] encryption.test.ts: 27 tests (91.8% coverage) ✅
+  - [x] detector.test.ts: 38 tests (comprehensive) ✅
   - [x] All TypeScript errors fixed ✅
-  - [x] Test execution time: ~1.7s ✅
+  - [x] Test execution time: <1s ✅
 
 - [x] **Error Handling** ✅
 
@@ -327,8 +334,9 @@
 
 **Completion Criteria:**
 
-- [x] All tests passing (39/39) ✅
+- [x] All tests passing (65/65) ✅
 - [x] Test coverage > 80% for encryption (91.8%) ✅
+- [x] Comprehensive honeypot detector tests ✅
 - [x] No critical bugs ✅
 - [x] Code follows guidelines ✅
 - [x] Vitest configured with proper thresholds ✅
@@ -558,7 +566,8 @@
 - [x] Users can create wallets ✅
 - [x] Users can execute swaps ✅
 - [x] Honeypot detection working (80-85% accuracy) ✅
-- [x] All core tests passing (39 unit tests + Vitest setup) ✅
+- [x] All core tests passing (65 unit tests + Vitest setup) ✅
+- [x] Comprehensive test coverage for honeypot detector ✅
 - [x] Sub-2s quote fetching ✅
 - [x] Jupiter v6 integration ✅
 - [x] Session-based authentication (30 min TTL) ✅
@@ -680,8 +689,9 @@ After committing:
 
 **Day 14 Summary:**
 - ✅ Vitest 4.0.7 test infrastructure setup
-- ✅ 39 unit tests passing (27 encryption + 12 detector)
+- ✅ 65 unit tests passing (27 encryption + 38 honeypot detector)
 - ✅ 91.8% coverage for encryption.ts
+- ✅ Comprehensive honeypot detector test suite completed
 - ✅ Fixed all TypeScript errors in test files
 - ✅ Updated DOCUMENTATION.md and TODO.md
 

@@ -14,7 +14,6 @@
 import type { Context } from "grammy";
 import { createWallet, hasWallet } from "../../services/wallet/keyManager.js";
 import { logger } from "../../utils/logger.js";
-import { truncateAddress } from "../../utils/helpers.js";
 import { prisma } from "../../utils/db.js";
 
 // ============================================================================
@@ -87,7 +86,6 @@ export async function handlePasswordInput(
   password: string
 ): Promise<void> {
   const telegramId = ctx.from?.id;
-  const messageId = ctx.message?.message_id;
 
   if (!telegramId) {
     await ctx.reply("❌ Unable to identify user");
@@ -105,30 +103,25 @@ export async function handlePasswordInput(
       return;
     }
 
-    // Delete password message immediately for security
+    // Update UI message to show processing
+    const messageId = (ctx as any).session?.ui?.messageId;
     if (messageId) {
       try {
-        await ctx.api.deleteMessage(ctx.chat!.id, messageId);
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          messageId,
+          "⏳ Creating your wallet...\n\nThis may take a few seconds."
+        );
       } catch (error) {
-        logger.warn("Failed to delete password message", { error });
+        logger.warn("Failed to update processing message", { error });
       }
     }
-
-    // Show processing message
-    const processingMsg = await ctx.reply("⏳ Creating your wallet...");
 
     // Create wallet
     const result = await createWallet({
       userId: user.id,
       password,
     });
-
-    // Delete processing message
-    try {
-      await ctx.api.deleteMessage(ctx.chat!.id, processingMsg.message_id);
-    } catch {
-      // Ignore deletion errors
-    }
 
     if (!result.success) {
       logger.error("Failed to create wallet", {
@@ -137,45 +130,51 @@ export async function handlePasswordInput(
         error: result.error,
       });
 
-      let errorMessage = "❌ Failed to create wallet.\n\n";
+      let errorMessage = "❌ *Failed to create wallet*\n\n";
 
       if (result.error.type === "INVALID_PASSWORD") {
         errorMessage +=
           `⚠️ ${result.error.message}\n\n` +
-          "Please try /createwallet again with a stronger password.";
+          "Please send a stronger password or use /start to go back.";
       } else if (result.error.type === "ENCRYPTION_FAILED") {
         errorMessage +=
           "Encryption failed. Please try again.\n\n" +
-          "If the problem persists, contact support.";
+          "Use /start to go back.";
       } else {
         errorMessage +=
           "An unexpected error occurred.\n\n" +
-          "Please try again or contact support.";
+          "Use /start to go back.";
       }
 
-      await ctx.reply(errorMessage);
+      if (messageId) {
+        await ctx.api.editMessageText(ctx.chat!.id, messageId, errorMessage, {
+          parse_mode: "Markdown",
+        });
+      } else {
+        await ctx.reply(errorMessage, { parse_mode: "Markdown" });
+      }
       return;
     }
 
     const { publicKey, walletId } = result.value;
 
     // Success message
-    await ctx.reply(
+    const successMessage =
       "✅ *Wallet Created Successfully!*\n\n" +
-        `💼 *Wallet Address:*\n\`${publicKey}\`\n\n` +
-        `🔍 *Short Address:*\n${truncateAddress(publicKey, 8)}\n\n` +
-        "⚠️ *IMPORTANT SECURITY NOTES:*\n" +
-        "• Your private key is encrypted and stored securely\n" +
-        "• NEVER share your password with anyone\n" +
-        "• We will NEVER ask for your password except during operations\n" +
-        "• Always verify you're talking to the official bot\n\n" +
-        "📋 *Next Steps:*\n" +
-        "• Use /wallet to view your wallet\n" +
-        "• Use /deposit to see deposit instructions\n" +
-        "• Use /balance to check your balance\n\n" +
-        "🎉 You're ready to start sniping!",
-      { parse_mode: "Markdown" }
-    );
+      `💼 *Address:*\n\`${publicKey}\`\n\n` +
+      "🔐 *Security:*\n" +
+      "• Private key encrypted securely\n" +
+      "• NEVER share your password\n\n" +
+      "🎉 Ready to start trading!\n\n" +
+      "_Redirecting to dashboard..._";
+
+    if (messageId) {
+      await ctx.api.editMessageText(ctx.chat!.id, messageId, successMessage, {
+        parse_mode: "Markdown",
+      });
+    } else {
+      await ctx.reply(successMessage, { parse_mode: "Markdown" });
+    }
 
     logger.info("Wallet created via Telegram", {
       userId: user.id,
@@ -187,7 +186,7 @@ export async function handlePasswordInput(
     logger.error("Error processing password input", { telegramId, error });
     await ctx.reply(
       "❌ An error occurred while creating your wallet.\n\n" +
-        "Please try /createwallet again."
+        "Please use /start to try again."
     );
   }
 }

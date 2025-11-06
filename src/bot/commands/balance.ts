@@ -74,7 +74,7 @@ export async function handleBalance(ctx: Context): Promise<void> {
 
     // Build balance message
     let message = `💰 *Balance*\n\n`;
-    message += `Wallet: \`${truncateAddress(wallet.publicKey)}\`\n\n`;
+    message += `Wallet: \`${wallet.publicKey}\`\n\n`;
     message += `💎 SOL: *${sol.toFixed(4)}* SOL\n`;
 
     // Add token balances
