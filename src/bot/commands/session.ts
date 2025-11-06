@@ -1,75 +1,36 @@
 /**
  * Session management commands
  * /unlock, /lock, /status
+ *
+ * ✅ Redis Session Integration (CRITICAL-1 + CRITICAL-2 fix)
+ * ✅ Single-Page UI: All commands now use navigateToPage
  */
 
-import type { Context as GrammyContext, SessionFlavor } from "grammy";
 import { logger } from "../../utils/logger.js";
-import { unlockWallet, lockWallet, getSessionStatus } from "../../services/wallet/keyManager.js";
+// ✅ Redis Session Integration
+import {
+  createSession,
+  destroySession,
+  getSession
+} from "../../services/wallet/session.js";
 import { prisma } from "../../utils/db.js";
-
-// Define session data structure (should match bot/index.ts)
-interface SessionData {
-  walletId?: string;
-  encryptedKey?: string;
-  settings?: {
-    slippage: number;
-    autoApprove: boolean;
-  };
-  awaitingPasswordForWallet?: boolean;
-  awaitingPasswordForUnlock?: boolean;
-}
-
-type Context = GrammyContext & SessionFlavor<SessionData>;
+import { navigateToPage, type Context } from "../views/index.js";
 
 /**
  * Handle /unlock command
- * Format: /unlock <password>
- * Example: /unlock mypassword
+ * ✅ Single-Page UI: Navigate to unlock page
  */
 export async function handleUnlock(ctx: Context): Promise<void> {
   try {
-    const telegramId = ctx.from?.id;
-    if (!telegramId) {
-      await ctx.reply("❌ Could not identify user");
-      return;
+    // Delete the command message
+    try {
+      await ctx.deleteMessage();
+    } catch (error) {
+      logger.warn("Failed to delete unlock command message", { error });
     }
 
-    // Get user from database
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(telegramId) },
-    });
-
-    if (!user) {
-      await ctx.reply("❌ User not found. Please use /start first.");
-      return;
-    }
-
-    const text = ctx.message?.text;
-    if (!text) {
-      await ctx.reply("❌ No message text found");
-      return;
-    }
-
-    // Parse command arguments
-    const parts = text.split(" ").filter(Boolean);
-
-    if (parts.length < 2) {
-      // No password provided, ask for it
-      ctx.session.awaitingPasswordForUnlock = true;
-      await ctx.reply(
-        `🔐 *Unlock Wallet*\n\n` +
-        `Please send your password to unlock your wallet for 30 minutes.\n\n` +
-        `_Your password will be deleted immediately after use._`,
-        { parse_mode: "Markdown" }
-      );
-      return;
-    }
-
-    const password = parts[1];
-
-    // Execute unlock with UUID userId
-    await executeUnlock(ctx, user.id, password);
+    // Navigate to unlock page
+    await navigateToPage(ctx, "unlock");
 
   } catch (error) {
     logger.error("Error in unlock command", { userId: ctx.from?.id, error });
@@ -103,17 +64,17 @@ async function executeUnlock(
       }
     }
 
-    // Unlock wallet (creates session)
-    const unlockResult = await unlockWallet({ userId, password });
+    // ✅ Redis Session Integration: Create Redis session (encrypted keys)
+    const sessionResult = await createSession({ userId, password });
 
-    if (!unlockResult.success) {
-      const error = unlockResult.error;
+    if (!sessionResult.success) {
+      const error = sessionResult.error;
 
       let errorMessage = "❌ *Failed to unlock wallet*\n\n";
 
-      if (error.type === "WALLET_NOT_FOUND") {
+      if (error.message.includes("Failed to create session: WALLET_NOT_FOUND")) {
         errorMessage += "Wallet not found.\n\nUse /start to create one.";
-      } else if (error.type === "INVALID_PASSWORD") {
+      } else if (error.message.includes("password")) {
         errorMessage += "Invalid password.\n\nPlease try again.";
       } else {
         errorMessage += "An error occurred.\n\nPlease try again.";
@@ -150,17 +111,27 @@ async function executeUnlock(
       return;
     }
 
-    const { walletId, publicKey } = unlockResult.value;
+    const { sessionToken, expiresAt } = sessionResult.value;
 
-    // Store in session - walletId indicates wallet is unlocked
-    ctx.session.encryptedKey = walletId; // Used as session token/flag
-    ctx.session.walletId = userId;
+    // ✅ Store sessionToken and password in Grammy session (in-memory)
+    // This allows trading without password each time
+    ctx.session.sessionToken = sessionToken;
+    ctx.session.password = password;
+    ctx.session.sessionExpiresAt = expiresAt.getTime();
+
+    // Get wallet publicKey from database
+    const wallet = await prisma.wallet.findFirst({
+      where: { userId, isActive: true },
+    });
+
+    const publicKey = wallet?.publicKey || "Unknown";
 
     // Success message
     const successMessage =
       `✅ *Wallet Unlocked!*\n\n` +
       `Address: \`${publicKey}\`\n\n` +
-      `Session active for *30 minutes*.\n\n` +
+      `🔐 Session active for *15 minutes*.\n` +
+      `You can now trade without entering password.\n\n` +
       `_Returning to dashboard..._`;
 
     if (uiMessageId) {
@@ -174,7 +145,7 @@ async function executeUnlock(
       await ctx.reply(successMessage, { parse_mode: "Markdown" });
     }
 
-    logger.info("Wallet unlocked successfully", { userId, publicKey });
+    logger.info("Wallet unlocked successfully via Redis session", { userId, publicKey, sessionToken: sessionToken.substring(0, 10) + "..." });
 
   } catch (error) {
     logger.error("Error executing unlock", { userId, error });
@@ -226,17 +197,32 @@ export async function handleUnlockPasswordInput(
  * Used by UI system
  */
 export function lockSession(ctx: Context): void {
-  // Clear encrypted key from session
+  // ✅ Clear Redis session data from Grammy session
+  ctx.session.sessionToken = undefined;
+  ctx.session.password = undefined;
+  ctx.session.sessionExpiresAt = undefined;
+  // Legacy fields (may still be used in some places)
   ctx.session.encryptedKey = undefined;
   ctx.session.walletId = undefined;
 }
 
+/**
+ * Handle /lock command
+ * ✅ Single-Page UI: Lock and navigate to main
+ */
 export async function handleLock(ctx: Context): Promise<void> {
   try {
     const telegramId = ctx.from?.id;
     if (!telegramId) {
       await ctx.reply("❌ Could not identify user");
       return;
+    }
+
+    // Delete the command message
+    try {
+      await ctx.deleteMessage();
+    } catch (error) {
+      logger.warn("Failed to delete lock command message", { error });
     }
 
     // Check if user has a wallet
@@ -250,20 +236,18 @@ export async function handleLock(ctx: Context): Promise<void> {
       return;
     }
 
-    // Lock wallet (clears session) with UUID userId
-    await lockWallet(user.id);
+    // ✅ Destroy Redis session if exists
+    if (ctx.session.sessionToken) {
+      await destroySession(ctx.session.sessionToken as any);
+    }
 
-    // Also clear local session
+    // Also clear Grammy session
     lockSession(ctx);
 
-    await ctx.reply(
-      `🔒 *Wallet Locked*\n\n` +
-      `Your wallet session has been cleared.\n` +
-      `Use /unlock to unlock again.`,
-      { parse_mode: "Markdown" }
-    );
+    logger.info("Wallet locked - Redis session destroyed", { userId: user.id, telegramId });
 
-    logger.info("Wallet locked", { userId: user.id, telegramId });
+    // Navigate to main page (will show locked status)
+    await navigateToPage(ctx, "main");
 
   } catch (error) {
     logger.error("Error in lock command", { telegramId: ctx.from?.id, error });
@@ -273,60 +257,19 @@ export async function handleLock(ctx: Context): Promise<void> {
 
 /**
  * Handle /status command
- * Shows current session status
+ * ✅ Single-Page UI: Navigate to status page
  */
 export async function handleStatus(ctx: Context): Promise<void> {
   try {
-    const telegramId = ctx.from?.id;
-    if (!telegramId) {
-      await ctx.reply("❌ Could not identify user");
-      return;
+    // Delete the command message
+    try {
+      await ctx.deleteMessage();
+    } catch (error) {
+      logger.warn("Failed to delete status command message", { error });
     }
 
-    // Check if user has a wallet
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(telegramId) },
-      include: { wallets: true },
-    });
-
-    if (!user || !user.wallets.length) {
-      await ctx.reply(
-        `💼 *Wallet Status*\n\n` +
-        `🔴 No wallet found\n\n` +
-        `Use /createwallet to create one.`,
-        { parse_mode: "Markdown" }
-      );
-      return;
-    }
-
-    const wallet = user.wallets[0];
-
-    // Get session status with UUID userId
-    const sessionStatus = await getSessionStatus(user.id);
-
-    if (sessionStatus.isActive) {
-      const timeLeft = Math.floor((sessionStatus.expiresAt - Date.now()) / 1000 / 60);
-
-      await ctx.reply(
-        `💼 *Wallet Status*\n\n` +
-        `Address: \`${wallet.publicKey}\`\n\n` +
-        `🟢 *Session Active*\n` +
-        `Time remaining: ${timeLeft} minutes\n\n` +
-        `You can trade without password until session expires.\n` +
-        `Use /lock to lock immediately.`,
-        { parse_mode: "Markdown" }
-      );
-    } else {
-      await ctx.reply(
-        `💼 *Wallet Status*\n\n` +
-        `Address: \`${wallet.publicKey}\`\n\n` +
-        `🔴 *Session Locked*\n\n` +
-        `Use /unlock to unlock for 30 minutes.`,
-        { parse_mode: "Markdown" }
-      );
-    }
-
-    logger.info("Session status checked", { userId: user.id, telegramId, isActive: sessionStatus.isActive });
+    // Navigate to status page
+    await navigateToPage(ctx, "status");
 
   } catch (error) {
     logger.error("Error in status command", { telegramId: ctx.from?.id, error });

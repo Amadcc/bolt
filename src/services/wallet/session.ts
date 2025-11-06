@@ -16,8 +16,11 @@
  * 6. Session auto-expires or can be manually destroyed
  */
 
+import { Keypair } from "@solana/web3.js";
 import { redis } from "../../utils/redis.js";
+import { prisma } from "../../utils/db.js";
 import { unlockWallet, clearKeypair } from "./keyManager.js";
+import { decryptPrivateKey } from "./encryption.js";
 import {
   type Result,
   Ok,
@@ -76,10 +79,11 @@ export interface SessionInfo {
  * Create new session for user
  *
  * Flow:
- * 1. Unlock wallet with password (validates password)
- * 2. Generate secure session token
- * 3. Store session data in Redis
- * 4. Return token
+ * 1. Unlock wallet with password (validates password only)
+ * 2. Get wallet from DB to retrieve encrypted key
+ * 3. Generate secure session token
+ * 4. Store session data in Redis (with ENCRYPTED key from DB, not plaintext!)
+ * 5. Return token
  */
 export async function createSession(
   params: CreateSessionParams
@@ -87,7 +91,7 @@ export async function createSession(
   const { userId, password } = params;
 
   try {
-    // Unlock wallet to verify password and get wallet info
+    // Unlock wallet to verify password is correct
     const unlockResult = await unlockWallet({ userId, password });
 
     if (!unlockResult.success) {
@@ -100,15 +104,25 @@ export async function createSession(
 
     const { walletId, keypair } = unlockResult.value;
 
+    // ✅ SECURITY FIX: Get wallet from DB to retrieve ENCRYPTED private key
+    const wallet = await prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+
+    if (!wallet) {
+      clearKeypair(keypair);
+      return Err(new SessionError("Wallet not found in database"));
+    }
+
     // Generate cryptographically secure session token
     const sessionToken = asSessionToken(generateRandomHex(TOKEN_LENGTH));
 
-    // Get encrypted private key from keypair
-    const encryptedPrivateKey = Buffer.from(keypair.secretKey).toString(
-      "base64"
-    );
+    // ✅ SECURITY FIX: Store ENCRYPTED key from DB, NOT plaintext
+    // Old (UNSAFE): Buffer.from(keypair.secretKey).toString("base64")
+    // New (SAFE): wallet.encryptedPrivateKey (already encrypted with Argon2id+AES-256-GCM)
+    const encryptedPrivateKey = wallet.encryptedPrivateKey;
 
-    // Clear keypair from memory
+    // Clear plaintext keypair from memory immediately
     clearKeypair(keypair);
 
     // Create session data
@@ -118,7 +132,7 @@ export async function createSession(
     const sessionData: SessionData = {
       userId,
       walletId,
-      encryptedPrivateKey,
+      encryptedPrivateKey, // Now contains REAL encrypted key from DB
       createdAt: now,
       expiresAt,
     };
@@ -127,7 +141,7 @@ export async function createSession(
     const key = getSessionKey(sessionToken);
     await redis.setex(key, SESSION_TTL, JSON.stringify(sessionData));
 
-    logger.info("Session created", {
+    logger.info("Session created securely", {
       userId,
       walletId,
       expiresAt: new Date(expiresAt).toISOString(),
@@ -307,6 +321,81 @@ export async function extendSession(
     return Err(
       new SessionError(
         `Failed to extend session: ${error instanceof Error ? error.message : String(error)}`
+      )
+    );
+  }
+}
+
+// ============================================================================
+// Keypair Signing (Secure On-Demand Decryption)
+// ============================================================================
+
+/**
+ * Get keypair for signing transaction
+ *
+ * ⚠️ SECURITY: This requires password for EVERY signing operation
+ *
+ * Flow:
+ * 1. Get session from Redis
+ * 2. Decrypt encrypted private key with password
+ * 3. Reconstruct Keypair
+ * 4. Return keypair (caller MUST clear after use!)
+ *
+ * This is the ONLY way to get plaintext keys from a session.
+ * Keys are decrypted on-demand and never stored in plaintext.
+ */
+export async function getKeypairForSigning(
+  sessionToken: SessionToken,
+  password: string
+): Promise<Result<Keypair, SessionError>> {
+  try {
+    // Get session
+    const sessionResult = await getSession(sessionToken);
+
+    if (!sessionResult.success || !sessionResult.value) {
+      return Err(new SessionError("Session not found or expired"));
+    }
+
+    const session = sessionResult.value;
+
+    // Decrypt private key with password
+    const decryptResult = await decryptPrivateKey(
+      session.encryptedPrivateKey,
+      password
+    );
+
+    if (!decryptResult.success) {
+      logger.warn("Failed to decrypt key for signing", {
+        userId: session.userId,
+        error: decryptResult.error.message,
+      });
+
+      return Err(
+        new SessionError(
+          `Invalid password: ${decryptResult.error.message}`
+        )
+      );
+    }
+
+    const privateKey = decryptResult.value;
+
+    // Reconstruct Keypair
+    const keypair = Keypair.fromSecretKey(privateKey);
+
+    logger.debug("Keypair decrypted for signing", {
+      userId: session.userId,
+      publicKey: keypair.publicKey.toBase58(),
+    });
+
+    // ⚠️ DO NOT clear keypair here - caller needs it for signing
+    // Caller MUST call clearKeypair() after signing!
+
+    return Ok(keypair);
+  } catch (error) {
+    logger.error("Failed to get keypair for signing", { error });
+    return Err(
+      new SessionError(
+        `Failed to decrypt key: ${error instanceof Error ? error.message : String(error)}`
       )
     );
   }

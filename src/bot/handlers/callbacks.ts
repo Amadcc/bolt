@@ -31,6 +31,9 @@ export async function handleNavigationCallback(
     "balance",
     "wallet_info",
     "settings",
+    "unlock",
+    "status",
+    "help",
   ];
 
   if (!validPages.includes(page)) {
@@ -79,26 +82,11 @@ export async function handleActionCallback(
 
 /**
  * Unlock wallet action
+ * ✅ Single-Page UI: Navigate to unlock page
  */
 async function handleUnlockAction(ctx: Context): Promise<void> {
-  await ctx.answerCallbackQuery("🔓 Please send your password");
-
-  // Set state to await password
-  ctx.session.awaitingPasswordForUnlock = true;
-
-  // Update message to show password prompt
-  await ctx.editMessageText(
-    `🔓 *Unlock Wallet*\n\n` +
-      `Send your wallet password in the next message.\n\n` +
-      `Your password will be deleted immediately after processing.\n\n` +
-      `⏱ Session will be active for 30 minutes.`,
-    {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [[{ text: "« Cancel", callback_data: "nav:main" }]],
-      },
-    }
-  );
+  await ctx.answerCallbackQuery("🔓 Unlock wallet");
+  await navigateToPage(ctx, "unlock");
 }
 
 /**
@@ -379,15 +367,15 @@ async function executeBuyFlow(
   token: string,
   amount: string
 ): Promise<void> {
-  // Check if wallet is unlocked
-  if (!ctx.session.encryptedKey) {
+  // ✅ Redis Session Integration: Check if wallet is unlocked
+  if (!ctx.session.sessionToken || !ctx.session.password) {
     await ctx.answerCallbackQuery();
 
     // Show unlock prompt with buttons
     await ctx.editMessageText(
       `🔒 *Wallet Locked*\n\n` +
         `To buy ${token} with ${amount} SOL, please unlock your wallet first.\n\n` +
-        `Your session will be active for 30 minutes.`,
+        `Your session will be active for 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -548,15 +536,15 @@ async function executeSellFlow(
   token: string,
   percentage: string
 ): Promise<void> {
-  // Check if wallet is unlocked
-  if (!ctx.session.encryptedKey) {
+  // ✅ Redis Session Integration: Check if wallet is unlocked
+  if (!ctx.session.sessionToken || !ctx.session.password) {
     await ctx.answerCallbackQuery();
 
     // Show unlock prompt with buttons
     await ctx.editMessageText(
       `🔒 *Wallet Locked*\n\n` +
         `To sell ${percentage}% of ${token}, please unlock your wallet first.\n\n` +
-        `Your session will be active for 30 minutes.`,
+        `Your session will be active for 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -839,11 +827,12 @@ async function executeSwapFlow(
     return;
   }
 
-  // Check if wallet is unlocked
-  if (!ctx.session.encryptedKey) {
+  // ✅ Redis Session Integration: Check if wallet is unlocked
+  if (!ctx.session.sessionToken || !ctx.session.password) {
     await ctx.editMessageText(
       `🔒 *Wallet Locked*\n\n` +
-        `To swap ${amount} ${inputToken} → ${outputToken}, please unlock your wallet first.`,
+        `To swap ${amount} ${inputToken} → ${outputToken}, please unlock your wallet first.\n\n` +
+        `Your session will be active for 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
