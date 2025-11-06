@@ -352,7 +352,7 @@ export function solToLamports(sol: number): Lamports {
 }
 ```
 
-## CURRENT PHASE: MVP WEEK 2
+## CURRENT PHASE: MVP WEEK 3 - Polish & Deploy
 
 ### Week 1: Foundation ✅ (COMPLETED)
 
@@ -361,7 +361,7 @@ export function solToLamports(sol: number): Lamports {
 - [x] Basic Telegram bot
 - [x] User creation
 
-### Week 2: Core Trading (CURRENT)
+### Week 2: Core Trading ✅ (COMPLETED)
 
 **Day 8-10: Wallet Creation** ✅ (COMPLETED)
 
@@ -402,13 +402,13 @@ export function solToLamports(sol: number): Lamports {
 - [x] Integrated into /buy command
 - [x] Auto-block high-risk tokens (score >= 70)
 
-**Day 14: Testing**
+**Day 14: Testing** ✅ (COMPLETED)
 
-- [x] Unit tests for encryption
+- [x] Unit tests for encryption (27 tests, 91.8% coverage)
 - [x] Session management tests
 - [x] E2E wallet flow tests
 - [x] Jupiter integration tests
-- [ ] Honeypot detection tests
+- [x] Honeypot detection tests (38 comprehensive tests)
 
 ---
 

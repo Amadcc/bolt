@@ -85,19 +85,23 @@ async function executeUnlock(
   userId: string,
   password: string
 ): Promise<void> {
-  const messageId = ctx.message?.message_id;
-
   try {
-    // Delete password message immediately
-    if (messageId) {
+    // Get UI message ID
+    const uiMessageId = (ctx as any).session?.ui?.messageId;
+
+    // Update UI to show progress
+    if (uiMessageId) {
       try {
-        await ctx.api.deleteMessage(ctx.chat!.id, messageId);
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          uiMessageId,
+          "⏳ *Unlocking wallet...*\n\nPlease wait...",
+          { parse_mode: "Markdown" }
+        );
       } catch (error) {
-        logger.warn("Failed to delete password message", { error });
+        logger.warn("Failed to update UI message", { error });
       }
     }
-
-    await ctx.reply("⏳ Unlocking wallet...");
 
     // Unlock wallet (creates session)
     const unlockResult = await unlockWallet({ userId, password });
@@ -105,39 +109,84 @@ async function executeUnlock(
     if (!unlockResult.success) {
       const error = unlockResult.error;
 
+      let errorMessage = "❌ *Failed to unlock wallet*\n\n";
+
       if (error.type === "WALLET_NOT_FOUND") {
-        await ctx.reply("❌ Wallet not found. Create one with /createwallet");
-        return;
+        errorMessage += "Wallet not found.\n\nUse /start to create one.";
+      } else if (error.type === "INVALID_PASSWORD") {
+        errorMessage += "Invalid password.\n\nPlease try again.";
+      } else {
+        errorMessage += "An error occurred.\n\nPlease try again.";
       }
 
-      if (error.type === "INVALID_PASSWORD") {
-        await ctx.reply("❌ Invalid password. Please try again.");
-        return;
+      // Add inline keyboard with retry and back options
+      const keyboard = {
+        inline_keyboard: [
+          [
+            { text: "🔄 Try Again", callback_data: "action:unlock" },
+            { text: "« Back", callback_data: "nav:main" }
+          ]
+        ]
+      };
+
+      if (uiMessageId) {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          uiMessageId,
+          errorMessage,
+          {
+            parse_mode: "Markdown",
+            reply_markup: keyboard
+          }
+        );
+      } else {
+        await ctx.reply(errorMessage, {
+          parse_mode: "Markdown",
+          reply_markup: keyboard
+        });
       }
 
-      await ctx.reply("❌ Failed to unlock wallet. Please try again.");
       logger.error("Failed to unlock wallet", { userId, error });
       return;
     }
 
-    const { publicKey } = unlockResult.value;
+    const { walletId, publicKey } = unlockResult.value;
 
-    // Success!
-    await ctx.reply(
+    // Store in session - walletId indicates wallet is unlocked
+    ctx.session.encryptedKey = walletId; // Used as session token/flag
+    ctx.session.walletId = userId;
+
+    // Success message
+    const successMessage =
       `✅ *Wallet Unlocked!*\n\n` +
       `Address: \`${publicKey}\`\n\n` +
-      `Your wallet is unlocked for *30 minutes*.\n` +
-      `You can now use /buy, /sell, /swap without entering password.\n\n` +
-      `Use /lock to lock immediately.\n` +
-      `Use /status to check session status.`,
-      { parse_mode: "Markdown" }
-    );
+      `Session active for *30 minutes*.\n\n` +
+      `_Returning to dashboard..._`;
+
+    if (uiMessageId) {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        uiMessageId,
+        successMessage,
+        { parse_mode: "Markdown" }
+      );
+    } else {
+      await ctx.reply(successMessage, { parse_mode: "Markdown" });
+    }
 
     logger.info("Wallet unlocked successfully", { userId, publicKey });
 
   } catch (error) {
     logger.error("Error executing unlock", { userId, error });
-    await ctx.reply("❌ An unexpected error occurred. Please try again.");
+
+    const uiMessageId = (ctx as any).session?.ui?.messageId;
+    const errorMsg = "❌ An unexpected error occurred.\n\nPlease try again with /start";
+
+    if (uiMessageId) {
+      await ctx.api.editMessageText(ctx.chat!.id, uiMessageId, errorMsg);
+    } else {
+      await ctx.reply(errorMsg);
+    }
   }
 }
 
@@ -172,6 +221,16 @@ export async function handleUnlockPasswordInput(
  * Handle /lock command
  * Immediately locks the wallet
  */
+/**
+ * Lock session (without sending message)
+ * Used by UI system
+ */
+export function lockSession(ctx: Context): void {
+  // Clear encrypted key from session
+  ctx.session.encryptedKey = undefined;
+  ctx.session.walletId = undefined;
+}
+
 export async function handleLock(ctx: Context): Promise<void> {
   try {
     const telegramId = ctx.from?.id;
@@ -193,6 +252,9 @@ export async function handleLock(ctx: Context): Promise<void> {
 
     // Lock wallet (clears session) with UUID userId
     await lockWallet(user.id);
+
+    // Also clear local session
+    lockSession(ctx);
 
     await ctx.reply(
       `🔒 *Wallet Locked*\n\n` +
