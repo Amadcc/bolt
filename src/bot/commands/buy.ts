@@ -284,6 +284,14 @@ async function executeBuy(
       return;
     }
 
+    // Show progress message
+    await ctx.reply(
+      `⏳ *Executing buy...*\n\n` +
+      `Buying **${tokenSymbol}** with **${solAmount} SOL**\n\n` +
+      `Please wait, this may take up to 45 seconds...`,
+      { parse_mode: "Markdown" }
+    );
+
     // Execute trade via Trading Executor
     // ✅ No password needed - session token is enough!
     // LOW-1: sessionToken is already checked to be truthy, safe to cast

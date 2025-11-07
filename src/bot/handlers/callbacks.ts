@@ -518,6 +518,14 @@ async function executeBuyFlow(
     const inputMint = asTokenMint(SOL_MINT);
     const outputMint = asTokenMint(tokenMint);
 
+    // Show progress message
+    await ctx.editMessageText(
+      `⏳ *Executing swap...*\n\n` +
+      `Buying **${token}** with **${solAmount} SOL**\n\n` +
+      `Please wait, this may take up to 45 seconds...`,
+      { parse_mode: "Markdown" }
+    );
+
     // Execute trade
     const executor = getTradingExecutor();
     const tradeResult = await executor.executeTrade(

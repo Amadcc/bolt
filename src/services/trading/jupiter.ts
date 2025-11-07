@@ -52,7 +52,8 @@ export class JupiterService {
 
     logger.info("Jupiter service initialized", {
       baseUrl: this.config.baseUrl,
-      timeout: this.config.timeout,
+      quoteTimeout: this.config.timeout,
+      executeTimeout: this.config.executeTimeout,
       defaultSlippageBps: this.config.defaultSlippageBps,
       quoteCacheTTL: this.QUOTE_CACHE_TTL,
     });
@@ -356,7 +357,7 @@ export class JupiterService {
               Accept: "application/json",
             },
             body: JSON.stringify(body),
-            signal: AbortSignal.timeout(this.config.timeout),
+            signal: AbortSignal.timeout(this.config.executeTimeout), // Use executeTimeout for blockchain confirmation
           }),
         {
           maxRetries: this.config.maxRetries,

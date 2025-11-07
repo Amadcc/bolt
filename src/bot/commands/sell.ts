@@ -225,6 +225,14 @@ async function executeSell(
       return;
     }
 
+    // Show progress message
+    await ctx.reply(
+      `⏳ *Executing sell...*\n\n` +
+      `Selling **${tokenAmount}** ${tokenSymbol}\n\n` +
+      `Please wait, this may take up to 45 seconds...`,
+      { parse_mode: "Markdown" }
+    );
+
     // Execute trade via Trading Executor
     // LOW-1: sessionToken is checked above to be truthy, safe to use with non-null assertion
     const tradeResult = await executor.executeTrade(

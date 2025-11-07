@@ -228,8 +228,10 @@ export type JupiterError =
 export interface JupiterConfig {
   /** API base URL (free or paid tier) */
   baseUrl: string;
-  /** Request timeout in ms */
+  /** Request timeout in ms for quote requests */
   timeout: number;
+  /** Request timeout in ms for execute requests (longer due to blockchain confirmation) */
+  executeTimeout: number;
   /** Max retries for transient failures */
   maxRetries: number;
   /** Default slippage in basis points */
@@ -241,7 +243,8 @@ export const JUPITER_PAID_API = "https://api.jup.ag";
 
 export const DEFAULT_JUPITER_CONFIG: JupiterConfig = {
   baseUrl: JUPITER_FREE_API,
-  timeout: 10000, // 10 seconds
+  timeout: 10000, // 10 seconds for quote requests
+  executeTimeout: 45000, // 45 seconds for execute requests (optimal balance for Solana)
   maxRetries: 3,
   defaultSlippageBps: 50, // 0.5%
 };
