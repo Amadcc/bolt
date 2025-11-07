@@ -1520,12 +1520,28 @@ Add validation that all external URLs use HTTPS.
 **Progress: 4/4 (100%)** ✅ **ALL CRITICAL ISSUES FIXED!**
 
 ### Высокий приоритет (Week 1)
-- [ ] HIGH-1: RPC connection pool
-- [ ] HIGH-2: Circuit breaker
-- [ ] HIGH-3: Prometheus metrics
-- [ ] HIGH-4: Env validation
+- [x] HIGH-1: RPC connection pool ✅ **FIXED**
+  - Weighted round-robin балансировка
+  - Health checks каждые 30s
+  - Automatic failover с Circuit Breaker
+  - Файлы: `src/services/blockchain/rpcPool.ts` (470 строк)
+- [x] HIGH-2: Circuit breaker ✅ **FIXED**
+  - State machine: closed → open → half-open
+  - Configurable thresholds
+  - Pre-configured factories (RPC, API, Critical)
+  - Файл: `src/services/blockchain/circuitBreaker.ts` (380 строк)
+- [x] HIGH-3: Prometheus metrics ✅ **FIXED**
+  - 20+ custom metrics (orders, RPC, trading, etc)
+  - `/metrics` endpoint в Fastify
+  - Default Node.js metrics (CPU, memory, GC)
+  - Файл: `src/utils/metrics.ts` (450+ строк)
+- [x] HIGH-4: Env validation ✅ **FIXED**
+  - Zod schema с comprehensive validation
+  - Type-safe `getEnv()` helper
+  - Fail-fast на старте
+  - Файл: `src/config/env.ts` (338 строк)
 
-**Progress: 0/4 (0%)**
+**Progress: 4/4 (100%)** ✅ **ALL HIGH PRIORITY FIXED!**
 
 ### Средний приоритет (Week 2)
 - [ ] MEDIUM-1: DB write optimization

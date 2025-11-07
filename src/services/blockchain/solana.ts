@@ -1,24 +1,44 @@
 /**
- * Solana connection service with retry logic and health monitoring
+ * Solana connection service with RPC connection pooling (HIGH-1)
+ *
+ * Features:
+ * - RPC connection pooling for high availability
+ * - Automatic failover between multiple endpoints
+ * - Circuit breaker protection
+ * - Health monitoring
+ * - Backwards compatible with single RPC URL
  */
 
-import { Connection, ConnectionConfig, Commitment } from "@solana/web3.js";
+import { Connection, Commitment } from "@solana/web3.js";
 import { logger } from "../../utils/logger.js";
+import {
+  RpcConnectionPool,
+  createRpcPoolFromEnv,
+  RpcPoolStats,
+} from "./rpcPool.js";
+import { getRpcEndpoints } from "../../config/env.js";
 
 // ============================================================================
 // Configuration
 // ============================================================================
 
 export interface SolanaConfig {
-  rpcUrl: string;
-  wsUrl?: string;
+  /** Single RPC URL (legacy) or undefined to use pool from env */
+  rpcUrl?: string;
+
+  /** Multiple RPC URLs for pooling */
+  rpcUrls?: string[];
+
+  /** Commitment level */
   commitment?: Commitment;
-  confirmTransactionInitialTimeout?: number;
+
+  /** Use connection pooling */
+  usePool?: boolean;
 }
 
 const DEFAULT_CONFIG: Partial<SolanaConfig> = {
   commitment: "confirmed",
-  confirmTransactionInitialTimeout: 60000, // 60 seconds
+  usePool: true, // Enable pooling by default
 };
 
 // ============================================================================
@@ -27,43 +47,71 @@ const DEFAULT_CONFIG: Partial<SolanaConfig> = {
 
 class SolanaService {
   private connection: Connection | null = null;
+  private pool: RpcConnectionPool | null = null;
   private config: SolanaConfig;
-  private isHealthy = false;
-  private lastHealthCheck = 0;
-  private readonly HEALTH_CHECK_INTERVAL = 30000; // 30 seconds
+  private readonly usePool: boolean;
 
   constructor(config: SolanaConfig) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+
+    // Determine if we should use pool
+    const urls = config.rpcUrls || (config.rpcUrl ? [config.rpcUrl] : getRpcEndpoints());
+    this.usePool = (config.usePool !== false) && urls.length > 1;
   }
 
   /**
    * Initialize connection to Solana
    */
   async initialize(): Promise<void> {
-    logger.info("Initializing Solana connection", {
-      rpcUrl: this.config.rpcUrl,
-      commitment: this.config.commitment,
-    });
+    const urls = this.config.rpcUrls ||
+      (this.config.rpcUrl ? [this.config.rpcUrl] : getRpcEndpoints());
 
-    const connectionConfig: ConnectionConfig = {
-      commitment: this.config.commitment,
-      confirmTransactionInitialTimeout:
-        this.config.confirmTransactionInitialTimeout,
-      wsEndpoint: this.config.wsUrl,
-    };
+    if (urls.length === 0) {
+      throw new Error("No RPC URLs configured");
+    }
 
-    this.connection = new Connection(this.config.rpcUrl, connectionConfig);
+    if (this.usePool) {
+      // ✅ HIGH-1: Use RPC Connection Pool
+      logger.info("Initializing Solana with RPC connection pool", {
+        endpoints: urls.length,
+        commitment: this.config.commitment,
+      });
 
-    // Initial health check
-    await this.checkHealth();
+      this.pool = createRpcPoolFromEnv(urls);
 
-    logger.info("Solana connection initialized", {
-      healthy: this.isHealthy,
-    });
+      // Get initial connection from pool
+      this.connection = this.pool.getConnection();
+
+      logger.info("Solana RPC pool initialized", {
+        stats: this.pool.getStats(),
+      });
+    } else {
+      // Legacy: Single connection
+      logger.info("Initializing Solana with single RPC connection", {
+        rpcUrl: urls[0],
+        commitment: this.config.commitment,
+      });
+
+      this.connection = new Connection(urls[0], {
+        commitment: this.config.commitment,
+      });
+
+      // Health check
+      try {
+        await this.connection.getSlot();
+        logger.info("Solana connection initialized");
+      } catch (error) {
+        logger.error("Solana connection health check failed", { error });
+        throw error;
+      }
+    }
   }
 
   /**
    * Get connection instance
+   *
+   * If using pool, returns a healthy connection from the pool.
+   * Otherwise, returns the single connection.
    */
   getConnection(): Connection {
     if (!this.connection) {
@@ -72,68 +120,77 @@ class SolanaService {
       );
     }
 
-    // Periodic health check
-    const now = Date.now();
-    if (now - this.lastHealthCheck > this.HEALTH_CHECK_INTERVAL) {
-      // Don't await - fire and forget
-      this.checkHealth().catch((error) => {
-        logger.error("Background health check failed", { error });
-      });
+    // If using pool, get fresh connection (handles failover)
+    if (this.pool) {
+      return this.pool.getConnection();
     }
 
+    // Single connection
     return this.connection;
+  }
+
+  /**
+   * Get RPC connection pool
+   * Returns null if not using pool
+   */
+  getPool(): RpcConnectionPool | null {
+    return this.pool;
   }
 
   /**
    * Check connection health
    */
   async checkHealth(): Promise<boolean> {
-    if (!this.connection) {
-      this.isHealthy = false;
-      return false;
-    }
-
     try {
+      const connection = this.getConnection();
       const startTime = Date.now();
 
-      // Try to get latest blockhash
-      await this.connection.getLatestBlockhash("finalized");
+      // Try to get slot
+      await connection.getSlot();
 
       const elapsed = Date.now() - startTime;
-
-      this.isHealthy = true;
-      this.lastHealthCheck = Date.now();
 
       logger.debug("Solana health check passed", { elapsed });
 
       return true;
     } catch (error) {
-      this.isHealthy = false;
-      this.lastHealthCheck = Date.now();
-
       logger.error("Solana health check failed", { error });
-
       return false;
     }
   }
 
   /**
+   * Get RPC pool statistics
+   * Returns null if not using pool
+   */
+  getPoolStats(): RpcPoolStats | null {
+    return this.pool?.getStats() || null;
+  }
+
+  /**
    * Get health status
    */
-  getHealth(): { healthy: boolean; lastCheck: number } {
+  getHealth(): { healthy: boolean; poolStats?: RpcPoolStats } {
+    const poolStats = this.getPoolStats();
+
     return {
-      healthy: this.isHealthy,
-      lastCheck: this.lastHealthCheck,
+      healthy: poolStats ? poolStats.healthy > 0 : this.connection !== null,
+      poolStats: poolStats || undefined,
     };
   }
 
   /**
-   * Close connection
+   * Close connection and cleanup
    */
   async close(): Promise<void> {
-    logger.info("Closing Solana connection");
+    logger.info("Closing Solana service");
+
+    if (this.pool) {
+      this.pool.destroy();
+    }
+
     this.connection = null;
-    this.isHealthy = false;
+    this.pool = null;
   }
 }
 
@@ -143,6 +200,12 @@ class SolanaService {
 
 let solanaInstance: SolanaService | null = null;
 
+/**
+ * Initialize Solana service
+ *
+ * @param config - Solana configuration
+ * @returns Initialized Solana service
+ */
 export async function initializeSolana(
   config: SolanaConfig
 ): Promise<SolanaService> {
@@ -157,6 +220,11 @@ export async function initializeSolana(
   return solanaInstance;
 }
 
+/**
+ * Get Solana service instance
+ *
+ * @throws {Error} If not initialized
+ */
 export function getSolana(): SolanaService {
   if (!solanaInstance) {
     throw new Error(
@@ -166,6 +234,22 @@ export function getSolana(): SolanaService {
   return solanaInstance;
 }
 
+/**
+ * Get Solana connection
+ *
+ * If using pool, returns a healthy connection from the pool.
+ *
+ * @throws {Error} If not initialized
+ */
 export function getSolanaConnection(): Connection {
   return getSolana().getConnection();
+}
+
+/**
+ * Get RPC pool statistics (if using pool)
+ *
+ * @returns Pool stats or null if not using pool
+ */
+export function getSolanaPoolStats(): RpcPoolStats | null {
+  return getSolana().getPoolStats();
 }

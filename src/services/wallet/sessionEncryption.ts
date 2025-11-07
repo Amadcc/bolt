@@ -42,11 +42,14 @@ const IV_LENGTH = 12; // 96 bits (recommended for GCM)
 const AUTH_TAG_LENGTH = 16; // 128 bits
 const SALT_LENGTH = 16; // 128 bits
 
-// Master secret for HKDF (should be in env, but for MVP we use hardcoded)
-// In production: process.env.SESSION_MASTER_SECRET
-const SESSION_MASTER_SECRET =
-  process.env.SESSION_MASTER_SECRET ||
-  "bolt-sniper-session-master-secret-change-in-production";
+// ✅ HIGH-4: Use validated environment variable (no fallback for security)
+import { getEnv } from "../../config/env.js";
+
+// Master secret for HKDF - MUST be set in environment
+// Validated on startup by env.ts (no unsafe fallback)
+function getSessionMasterSecret(): string {
+  return getEnv().SESSION_MASTER_SECRET;
+}
 
 // Info string for HKDF (domain separation)
 const HKDF_INFO = "bolt-sniper-session-key-derivation-v1";
@@ -102,7 +105,7 @@ export interface SessionEncryptionError {
 function deriveSessionKey(sessionToken: SessionToken, salt: Buffer): Buffer {
   // HKDF-Extract: extract pseudorandom key from master secret
   const prk = createHmac("sha256", Buffer.from(salt))
-    .update(SESSION_MASTER_SECRET)
+    .update(getSessionMasterSecret()) // ✅ HIGH-4: Type-safe, validated
     .update(sessionToken)
     .digest();
 

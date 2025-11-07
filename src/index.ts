@@ -1,4 +1,12 @@
 import "dotenv/config";
+
+// ✅ HIGH-4: Validate environment variables FIRST (fail-fast)
+import { validateEnv, getEnv } from "./config/env.js";
+
+// Validate environment before any other initialization
+// This ensures we fail fast with clear error messages if config is wrong
+const env = validateEnv();
+
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { bot } from "./bot/index.js";
@@ -9,6 +17,7 @@ import { initializeJupiter } from "./services/trading/jupiter.js";
 import { initializeTradingExecutor } from "./services/trading/executor.js";
 import { initializeHoneypotDetector } from "./services/honeypot/detector.js";
 import { logger } from "./utils/logger.js";
+import { getMetricsContent, getMetricsContentType } from "./utils/metrics.js";
 
 const app = Fastify({
   logger: true,
@@ -27,6 +36,18 @@ app.get("/health", async () => {
       solana: await checkSolana(),
     },
   };
+});
+
+// ✅ HIGH-3: Prometheus Metrics endpoint
+app.get("/metrics", async (request, reply) => {
+  try {
+    const metrics = await getMetricsContent();
+    reply.header("Content-Type", getMetricsContentType());
+    return metrics;
+  } catch (error) {
+    logger.error("Failed to generate metrics", { error });
+    reply.code(500).send({ error: "Failed to generate metrics" });
+  }
 });
 
 async function checkDatabase(): Promise<boolean> {
@@ -93,18 +114,13 @@ async function checkBotPermissions(): Promise<void> {
 // Start server
 const start = async () => {
   try {
-    // Validate environment variables
-    const rpcUrl = process.env.SOLANA_RPC_URL;
-    if (!rpcUrl) {
-      throw new Error("SOLANA_RPC_URL environment variable is required");
-    }
-
+    // ✅ HIGH-4: Use validated environment (already validated above)
     logger.info("Starting application...");
 
     // Initialize Solana connection
     logger.info("Initializing Solana connection...");
     const solana = await initializeSolana({
-      rpcUrl,
+      rpcUrl: env.SOLANA_RPC_URL, // ✅ Type-safe, validated
       commitment: "confirmed",
     });
     logger.info("Solana connection initialized");
@@ -113,7 +129,7 @@ const start = async () => {
     logger.info("Initializing Jupiter service...");
     const connection = solana.getConnection();
     initializeJupiter(connection, {
-      baseUrl: process.env.JUPITER_API_URL || "https://lite-api.jup.ag",
+      baseUrl: env.JUPITER_API_URL, // ✅ Type-safe, validated
       defaultSlippageBps: 50, // 0.5%
     });
     logger.info("Jupiter service initialized");
@@ -121,7 +137,7 @@ const start = async () => {
     // Initialize Trading Executor
     logger.info("Initializing Trading Executor...");
     initializeTradingExecutor({
-      commissionBps: 85, // 0.85%
+      commissionBps: env.PLATFORM_FEE_BPS, // ✅ Type-safe, validated
       minCommissionUsd: 0.01, // $0.01
     });
     logger.info("Trading Executor initialized");
@@ -140,10 +156,10 @@ const start = async () => {
 
     // Start Fastify server
     await app.listen({
-      port: Number(process.env.PORT) || 3000,
+      port: env.PORT, // ✅ Type-safe, validated
       host: "0.0.0.0",
     });
-    console.log("✅ API server started on port", process.env.PORT || 3000);
+    console.log("✅ API server started on port", env.PORT);
 
     // ✅ SECURITY (CRITICAL-4): Check bot permissions before starting
     logger.info("Checking bot permissions...");
