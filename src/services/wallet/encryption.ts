@@ -260,23 +260,68 @@ function deserializeEncrypted(data: string): EncryptedPayload | null {
 // ============================================================================
 
 /**
- * Verify password meets minimum requirements
+ * Common weak passwords to reject (MEDIUM-8: Enhanced security)
+ */
+const COMMON_PASSWORDS = new Set([
+  "password", "Password1", "password1", "password123", "Password123",
+  "12345678", "123456789", "1234567890",
+  "qwerty123", "Qwerty123", "qwertyuiop",
+  "letmein", "welcome", "Welcome1",
+  "admin", "admin123", "Admin123",
+  "changeme", "changeme123",
+  "solana", "solana123", "Solana123",
+  "wallet", "wallet123", "Wallet123",
+]);
+
+/**
+ * Verify password meets production-grade security requirements (MEDIUM-8)
+ *
+ * Requirements:
+ * - Minimum 12 characters (was 8)
+ * - Must contain: lowercase, uppercase, number, special character
+ * - Cannot be a common/weak password
+ * - Maximum 128 characters
  */
 export function validatePassword(password: string): Result<void, string> {
-  if (!password || password.length < 8) {
-    return Err("Password must be at least 8 characters");
+  // Length checks
+  if (!password || password.length < 12) {
+    return Err("Password must be at least 12 characters");
   }
 
   if (password.length > 128) {
     return Err("Password must be at most 128 characters");
   }
 
-  // Check for basic complexity
-  const hasLetter = /[a-zA-Z]/.test(password);
+  // MEDIUM-8: Enhanced complexity requirements
+  const hasLowercase = /[a-z]/.test(password);
+  const hasUppercase = /[A-Z]/.test(password);
   const hasNumber = /[0-9]/.test(password);
+  const hasSpecial = /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password);
 
-  if (!hasLetter || !hasNumber) {
-    return Err("Password must contain both letters and numbers");
+  if (!hasLowercase) {
+    return Err("Password must contain at least one lowercase letter");
+  }
+
+  if (!hasUppercase) {
+    return Err("Password must contain at least one uppercase letter");
+  }
+
+  if (!hasNumber) {
+    return Err("Password must contain at least one number");
+  }
+
+  if (!hasSpecial) {
+    return Err("Password must contain at least one special character (!@#$%^&*...)");
+  }
+
+  // Check against common passwords (case-insensitive)
+  if (COMMON_PASSWORDS.has(password.toLowerCase())) {
+    return Err("This password is too common. Please choose a stronger password");
+  }
+
+  // Check for repeated characters (e.g., "aaaaaa")
+  if (/(.)\1{5,}/.test(password)) {
+    return Err("Password cannot contain 6 or more repeated characters");
   }
 
   return Ok(undefined);

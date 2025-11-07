@@ -183,6 +183,16 @@ start();
 // Graceful shutdown
 process.on("SIGINT", async () => {
   console.log("\n🛑 Shutting down...");
+
+  // MEDIUM-5: Clean up Jupiter service (clear intervals to prevent memory leaks)
+  try {
+    const { getJupiter } = await import("./services/trading/jupiter.js");
+    const jupiter = getJupiter();
+    jupiter.destroy();
+  } catch (error) {
+    logger.warn("Failed to cleanup Jupiter service", { error });
+  }
+
   await bot.stop();
   await app.close();
   await prisma.$disconnect();

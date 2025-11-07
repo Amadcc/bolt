@@ -40,6 +40,7 @@ export class JupiterService {
   private connection: Connection;
   private quoteCache: Map<string, CachedQuote> = new Map();
   private readonly QUOTE_CACHE_TTL = 2000; // 2 seconds
+  private cacheCleanupInterval: NodeJS.Timeout | null = null; // MEDIUM-5: Store interval handle
 
   constructor(connection: Connection, config: Partial<JupiterConfig> = {}) {
     this.config = { ...DEFAULT_JUPITER_CONFIG, ...config };
@@ -92,10 +93,11 @@ export class JupiterService {
   }
 
   /**
-   * Clean up expired cache entries
+   * Clean up expired cache entries (MEDIUM-5: Fix memory leak)
    */
   private startCacheCleanup(): void {
-    setInterval(() => {
+    // MEDIUM-5: Store interval handle to allow cleanup on shutdown
+    this.cacheCleanupInterval = setInterval(() => {
       const now = Date.now();
       let cleaned = 0;
 
@@ -485,16 +487,28 @@ export class JupiterService {
 
     const execution = executeResult.value;
 
-    // Step 4: Wait for confirmation (optional but recommended)
+    // Step 4: Wait for confirmation with 60s timeout (MEDIUM-4)
     try {
       const signature = asTransactionSignature(execution.signature);
 
       logger.info("Waiting for transaction confirmation", { signature });
 
-      const confirmation = await this.connection.confirmTransaction(
-        execution.signature,
-        "confirmed"
-      );
+      // MEDIUM-4: Add 60s timeout to prevent infinite hangs
+      const CONFIRMATION_TIMEOUT_MS = 60000; // 60 seconds
+
+      const confirmation = await Promise.race([
+        this.connection.confirmTransaction(
+          execution.signature,
+          "confirmed"
+        ),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error(
+              `Transaction confirmation timeout after ${CONFIRMATION_TIMEOUT_MS / 1000}s`
+            ));
+          }, CONFIRMATION_TIMEOUT_MS);
+        })
+      ]);
 
       if (confirmation.value.err) {
         logger.error("Transaction confirmation failed", {
@@ -581,6 +595,22 @@ export class JupiterService {
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Cleanup resources (MEDIUM-5: Prevent memory leaks)
+   * Call this on application shutdown
+   */
+  destroy(): void {
+    if (this.cacheCleanupInterval) {
+      clearInterval(this.cacheCleanupInterval);
+      this.cacheCleanupInterval = null;
+      logger.info("Jupiter service cleanup: interval cleared");
+    }
+
+    // Clear quote cache
+    this.quoteCache.clear();
+    logger.info("Jupiter service destroyed");
   }
 }
 

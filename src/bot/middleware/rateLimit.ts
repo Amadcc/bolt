@@ -244,8 +244,9 @@ export async function clearRateLimit(
       await redis.del(`ratelimit:${commandName}:${userId}`);
       logger.info("Rate limit cleared", { userId, commandName });
     } else {
-      // Clear all rate limits for user (scan + delete)
-      const keys = await redis.keys(`ratelimit:*:${userId}`);
+      // MEDIUM-6: Use non-blocking SCAN instead of blocking KEYS
+      const { redisScan } = await import("../../utils/redis.js");
+      const keys = await redisScan(`ratelimit:*:${userId}`);
       if (keys.length > 0) {
         await redis.del(...keys);
         logger.info("All rate limits cleared", { userId, count: keys.length });

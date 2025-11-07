@@ -132,18 +132,18 @@ export async function handleBuy(ctx: Context): Promise<void> {
       );
     }
 
-    // Honeypot check before executing trade
-    await ctx.reply("🔍 Analyzing token safety...");
-
+    // MEDIUM-2: Optimized honeypot check (async, non-blocking)
+    // - Whitelisted tokens: 0ms (skip check)
+    // - Cached tokens: <10ms (Redis lookup)
+    // - New tokens: show warning, check in background
     try {
       const detector = getHoneypotDetector();
-      const honeypotCheck = await detector.check(tokenMint);
 
-      if (!honeypotCheck.success) {
-        await ctx.reply("⚠️ Could not verify token safety. Proceeding with caution...");
-      } else {
-        const analysis = honeypotCheck.value;
+      // Fast async check (returns immediately with cache/whitelist, or null)
+      const analysis = await detector.checkAsync(tokenMint);
 
+      if (analysis) {
+        // We have cached result or whitelist match
         // Format risk level
         let riskEmoji = "🟢";
         let riskLevel = "Low Risk";
@@ -156,14 +156,17 @@ export async function handleBuy(ctx: Context): Promise<void> {
           riskLevel = "Medium Risk";
         }
 
+        const isWhitelisted = detector.isWhitelisted(tokenMint);
+
         await ctx.reply(
-          `${riskEmoji} *Token Safety Analysis*\n\n` +
+          `${riskEmoji} *Token Safety* ${isWhitelisted ? "(Verified)" : ""}\n\n` +
           `Risk Level: **${riskLevel}** (${analysis.riskScore}/100)\n` +
-          `Confidence: ${analysis.confidence}%\n` +
-          `Analysis Time: ${analysis.analysisTimeMs}ms\n\n` +
+          (analysis.analysisTimeMs > 0
+            ? `Analysis Time: ${analysis.analysisTimeMs}ms\n`
+            : "") +
           (analysis.flags.length > 0
             ? `⚠️ Flags: ${analysis.flags.join(", ")}\n\n`
-            : "") +
+            : "\n") +
           (analysis.riskScore >= 70
             ? `❌ *TRADE CANCELLED*\n\nThis token appears to be a honeypot. Trading is blocked for your safety.`
             : `✅ Safety check passed. Proceeding with trade...`),
@@ -180,10 +183,34 @@ export async function handleBuy(ctx: Context): Promise<void> {
           });
           return;
         }
+      } else {
+        // No cached result - new token
+        // Background check triggered, but don't block trade
+        await ctx.reply(
+          `⚠️ *Unknown Token - Safety Check In Progress*\n\n` +
+          `This token is not in our database yet. A safety analysis is running in the background.\n\n` +
+          `**PROCEED WITH CAUTION** - Only trade if you've verified this token yourself.\n\n` +
+          `✅ Trade will continue in 3 seconds...`,
+          { parse_mode: "Markdown" }
+        );
+
+        // Small delay to let user read the warning
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+
+        logger.warn("Trade proceeding with unverified token", {
+          userId,
+          tokenMint,
+        });
       }
     } catch (error) {
       logger.error("Honeypot check failed", { error, tokenMint });
-      await ctx.reply("⚠️ Safety check unavailable. Please verify token manually before trading.");
+      await ctx.reply(
+        "⚠️ *Safety Check Unavailable*\n\n" +
+        "Could not verify token safety. Please verify manually before trading.\n\n" +
+        "Trade will continue in 5 seconds...",
+        { parse_mode: "Markdown" }
+      );
+      await new Promise((resolve) => setTimeout(resolve, 5000));
     }
 
     // Execute buy (password is optional if session is active)

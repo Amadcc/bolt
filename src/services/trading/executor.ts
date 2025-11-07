@@ -179,10 +179,15 @@ export class TradingExecutor {
       if (!swapResult.success) {
         const error = swapResult.error as JupiterError;
 
-        // Update order status to failed
-        await prisma.order.update({
+        // MEDIUM-1: Async DB write (fire-and-forget, don't block error return)
+        prisma.order.update({
           where: { id: order.id },
           data: { status: "failed" },
+        }).catch((dbError) => {
+          logger.error("Failed to update order status to failed", {
+            orderId: order.id,
+            error: dbError,
+          });
         });
 
         logger.error("Swap failed", { orderId: order.id, error });
@@ -213,14 +218,21 @@ export class TradingExecutor {
           ? commissionResult.value
           : this.config.minCommissionUsd;
 
-      // Step 5: Update order with success status
-      await prisma.order.update({
+      // MEDIUM-1: Async DB write (fire-and-forget, don't block return)
+      // This saves ~20-50ms on the critical path
+      prisma.order.update({
         where: { id: order.id },
         data: {
           status: "filled",
           transactionSignature: swapData.signature,
           commissionUsd,
         },
+      }).catch((dbError) => {
+        logger.error("Failed to update order status to filled", {
+          orderId: order.id,
+          signature: swapData.signature,
+          error: dbError,
+        });
       });
 
       logger.info("Trade executed successfully", {

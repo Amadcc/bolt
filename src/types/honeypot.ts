@@ -198,9 +198,16 @@ export interface HoneypotDetectorConfig {
   highRiskThreshold: number;    // Default: 70
   mediumRiskThreshold: number;  // Default: 30
 
-  // Cache settings
-  cacheTTL: number;             // Default: 3600 (1 hour)
+  // Cache settings (MEDIUM-2: Smart caching strategy)
+  cacheTTL: number;             // Default: 3600 (1 hour) for medium/high risk
+  safeCacheTTL?: number;        // Default: 86400 (24 hours) for safe tokens
   cacheEnabled: boolean;
+
+  // Async mode (MEDIUM-2: Non-blocking checks)
+  asyncMode?: boolean;          // If true, check in background and allow trade with warning
+
+  // Token whitelist (MEDIUM-2: Skip checks for known-safe tokens)
+  whitelistedTokens?: string[]; // Token mints to skip checking (e.g., SOL, USDC)
 
   // Feature flags
   enableGoPlusAPI: boolean;     // Default: true

@@ -34,12 +34,32 @@ import { asRiskScore } from "../../types/honeypot.js";
 // Configuration
 // ============================================================================
 
+/**
+ * Well-known safe tokens (MEDIUM-2: Whitelist optimization)
+ * These tokens skip honeypot checks entirely (0ms latency)
+ */
+const DEFAULT_WHITELISTED_TOKENS = [
+  "So11111111111111111111111111111111111111112", // Wrapped SOL
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // USDC
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", // USDT
+  "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", // BONK
+  "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm", // WIF (dogwifhat)
+  "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr", // POPCAT
+  "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5", // MEW
+  "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3", // PYTH
+  "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", // Jupiter (JUP)
+  "jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL", // Jito (JTO)
+];
+
 const DEFAULT_CONFIG: HoneypotDetectorConfig = {
   goPlusTimeout: 5000,
   highRiskThreshold: 70,
   mediumRiskThreshold: 30,
-  cacheTTL: 3600, // 1 hour
+  cacheTTL: 3600, // 1 hour (medium/high risk)
+  safeCacheTTL: 86400, // 24 hours (safe tokens) - MEDIUM-2 optimization
   cacheEnabled: true,
+  asyncMode: false, // Default: block trade until check complete
+  whitelistedTokens: DEFAULT_WHITELISTED_TOKENS,
   enableGoPlusAPI: true,
   enableOnChainChecks: true,
 };
@@ -105,6 +125,81 @@ export class HoneypotDetector {
   }
 
   /**
+   * Check if token is whitelisted (MEDIUM-2: Whitelist optimization)
+   * Whitelisted tokens skip all checks (0ms latency)
+   */
+  isWhitelisted(tokenMint: string): boolean {
+    return (
+      this.config.whitelistedTokens?.includes(tokenMint) ?? false
+    );
+  }
+
+  /**
+   * Async honeypot check (MEDIUM-2: Non-blocking mode)
+   *
+   * Returns immediately with cached result or null, then checks in background.
+   * Use this for non-blocking flow when you want to allow trade with warning.
+   *
+   * @param tokenMint Token mint address
+   * @returns Cached result if available, null otherwise. Check runs in background.
+   */
+  async checkAsync(tokenMint: string): Promise<HoneypotCheckResult | null> {
+    // Fast-path: whitelist
+    if (this.isWhitelisted(tokenMint)) {
+      return {
+        tokenMint,
+        isHoneypot: false,
+        riskScore: asRiskScore(0),
+        confidence: 100,
+        flags: [],
+        checkedAt: new Date(),
+        analysisTimeMs: 0,
+        layers: {},
+      };
+    }
+
+    // Fast-path: cache
+    if (this.config.cacheEnabled) {
+      const cached = await this.getFromCache(tokenMint);
+      if (cached) {
+        logger.debug("Honeypot checkAsync: cache hit", {
+          tokenMint: tokenMint.slice(0, 8),
+          riskScore: cached.riskScore,
+        });
+        return cached;
+      }
+    }
+
+    // Not in cache - trigger background check and return null
+    logger.info("Honeypot checkAsync: triggering background check", {
+      tokenMint: tokenMint.slice(0, 8),
+    });
+
+    // Fire and forget - run check in background
+    this.check(tokenMint).then((result) => {
+      if (result.success) {
+        logger.info("Honeypot background check completed", {
+          tokenMint: tokenMint.slice(0, 8),
+          riskScore: result.value.riskScore,
+          isHoneypot: result.value.isHoneypot,
+        });
+      } else {
+        logger.warn("Honeypot background check failed", {
+          tokenMint: tokenMint.slice(0, 8),
+          error: result.error,
+        });
+      }
+    }).catch((error) => {
+      logger.error("Honeypot background check error", {
+        tokenMint: tokenMint.slice(0, 8),
+        error,
+      });
+    });
+
+    return null;
+  }
+
+  /**
    * Check if token is honeypot
    * Returns cached result if available, otherwise performs full analysis
    */
@@ -120,6 +215,26 @@ export class HoneypotDetector {
           type: "INVALID_TOKEN",
           tokenMint,
         });
+      }
+
+      // MEDIUM-2: Fast-path for whitelisted tokens (0ms)
+      if (this.isWhitelisted(tokenMint)) {
+        logger.debug("Honeypot check: whitelisted token (skip check)", {
+          tokenMint: tokenMint.slice(0, 8),
+        });
+
+        const result: HoneypotCheckResult = {
+          tokenMint,
+          isHoneypot: false,
+          riskScore: asRiskScore(0),
+          confidence: 100,
+          flags: [],
+          checkedAt: new Date(),
+          analysisTimeMs: Date.now() - startTime,
+          layers: {},
+        };
+
+        return Ok(result);
       }
 
       // Check cache first
@@ -517,7 +632,10 @@ export class HoneypotDetector {
   }
 
   /**
-   * Save result to Redis cache
+   * Save result to Redis cache with smart TTL (MEDIUM-2 optimization)
+   * - Safe tokens (score < 30): 24 hours
+   * - Medium risk (30-70): 6 hours
+   * - High risk (>70): 1 hour
    */
   private async saveToCache(
     tokenMint: string,
@@ -527,17 +645,36 @@ export class HoneypotDetector {
       const key = `honeypot:${tokenMint}`;
       const now = Date.now();
 
+      // Smart TTL based on risk score
+      let ttl: number;
+      if (result.riskScore < this.config.mediumRiskThreshold) {
+        // Safe token: cache for 24 hours
+        ttl = this.config.safeCacheTTL ?? 86400;
+      } else if (result.riskScore < this.config.highRiskThreshold) {
+        // Medium risk: cache for 6 hours
+        ttl = Math.floor(this.config.cacheTTL * 6);
+      } else {
+        // High risk: cache for 1 hour (default)
+        ttl = this.config.cacheTTL;
+      }
+
       const cached: CachedHoneypotResult = {
         result,
         cachedAt: now,
-        expiresAt: now + this.config.cacheTTL * 1000,
+        expiresAt: now + ttl * 1000,
       };
 
       await redis.setex(
         key,
-        this.config.cacheTTL,
+        ttl,
         JSON.stringify(cached)
       );
+
+      logger.debug("Honeypot check: cached result", {
+        tokenMint: tokenMint.slice(0, 8),
+        riskScore: result.riskScore,
+        ttl,
+      });
     } catch (error) {
       logger.warn("Cache save failed", { error, tokenMint });
       // Don't fail the request if caching fails

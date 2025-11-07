@@ -266,9 +266,10 @@ export async function destroyAllUserSessions(
   userId: string
 ): Promise<Result<void, SessionError>> {
   try {
-    // Scan for all sessions (Redis pattern matching)
+    // MEDIUM-6: Use non-blocking SCAN instead of blocking KEYS
     const pattern = `${SESSION_PREFIX}*`;
-    const keys = await redis.keys(pattern);
+    const { redisScan } = await import("../../utils/redis.js");
+    const keys = await redisScan(pattern);
 
     let deletedCount = 0;
 
@@ -447,8 +448,10 @@ export async function getSessionStats(): Promise<{
   activeUsers: Set<string>;
 }> {
   try {
+    // MEDIUM-6: Use non-blocking SCAN instead of blocking KEYS
     const pattern = `${SESSION_PREFIX}*`;
-    const keys = await redis.keys(pattern);
+    const { redisScan } = await import("../../utils/redis.js");
+    const keys = await redisScan(pattern);
 
     const activeUsers = new Set<string>();
 
