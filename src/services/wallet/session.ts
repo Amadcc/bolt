@@ -38,6 +38,12 @@ import {
 import { SessionError } from "../../utils/errors.js";
 import { logger } from "../../utils/logger.js";
 import { generateRandomHex } from "../../utils/helpers.js";
+// WEEK 3 - DAY 17: Prometheus metrics
+import {
+  recordSessionCreated,
+  recordSessionExpiration,
+  recordSessionRefresh,
+} from "../../utils/metrics.js";
 
 // ============================================================================
 // Constants
@@ -165,6 +171,9 @@ export async function createSession(
       sessionTokenPrefix: sessionToken.substring(0, 8) + "...",
     });
 
+    // WEEK 3 - DAY 17: Record session creation metrics
+    recordSessionCreated("password");
+
     return Ok({
       sessionToken,
       expiresAt: new Date(expiresAt),
@@ -203,6 +212,10 @@ export async function getSession(
 
     // Double-check expiration (Redis should handle this, but be safe)
     if (sessionData.expiresAt < Date.now()) {
+      // WEEK 3 - DAY 17: Record expiration metrics
+      const durationSeconds = (Date.now() - sessionData.createdAt) / 1000;
+      recordSessionExpiration("timeout", durationSeconds);
+
       await destroySession(sessionToken);
       return Ok(null);
     }
@@ -352,6 +365,9 @@ export async function extendSession(
       newExpiresAt: new Date(newExpiresAt).toISOString(),
     });
 
+    // WEEK 3 - DAY 17: Record session refresh metrics
+    recordSessionRefresh();
+
     return Ok(new Date(newExpiresAt));
   } catch (error) {
     logger.error("Failed to extend session", { error });
@@ -393,8 +409,7 @@ export async function extendSession(
  * - Still secure (session-based authentication)
  */
 export async function getKeypairForSigning(
-  sessionToken: SessionToken,
-  p0: string
+  sessionToken: SessionToken
 ): Promise<Result<Keypair, SessionError>> {
   try {
     // Step 1: Get session from Redis

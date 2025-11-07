@@ -13,6 +13,8 @@ import { getTradingExecutor } from "../../services/trading/executor.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
 import { asTokenMint, solToLamports, asSessionToken } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
+// WEEK 3 - DAY 15: Input validation for DoS protection
+import { validateTokenInput, validateAmountInput } from "../../utils/validation.js";
 
 // ============================================================================
 // Navigation Callbacks
@@ -292,7 +294,7 @@ export async function handleBuyCallback(
 }
 
 /**
- * Handle token selection for buy
+ * Handle token selection for buy (WEEK 3 Enhanced)
  */
 async function handleBuyTokenSelection(
   ctx: Context,
@@ -322,17 +324,40 @@ async function handleBuyTokenSelection(
     return;
   }
 
+  // WEEK 3 - DAY 15: Validate token input (DoS protection)
+  const validationResult = validateTokenInput(token);
+  if (!validationResult.success) {
+    logger.warn("Invalid token input in buy", {
+      userId: ctx.from?.id,
+      token: token.slice(0, 20), // Truncate for safety
+      error: validationResult.error,
+    });
+
+    await ctx.editMessageText(
+      `❌ *Invalid Token*\n\n` +
+        `${validationResult.error}\n\n` +
+        `Please try again with a valid token.`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[{ text: "« Back", callback_data: "nav:buy" }]],
+        },
+      }
+    );
+    return;
+  }
+
   // Save selected token and show amount options
   if (!ctx.session.ui.buyData) {
     ctx.session.ui.buyData = {};
   }
-  ctx.session.ui.buyData.selectedToken = token;
+  ctx.session.ui.buyData.selectedToken = validationResult.value;
 
-  await navigateToPage(ctx, "buy", { selectedToken: token });
+  await navigateToPage(ctx, "buy", { selectedToken: validationResult.value });
 }
 
 /**
- * Handle amount selection for buy
+ * Handle amount selection for buy (WEEK 3 Enhanced)
  */
 async function handleBuyAmountSelection(
   ctx: Context,
@@ -368,8 +393,34 @@ async function handleBuyAmountSelection(
     return;
   }
 
+  // WEEK 3 - DAY 15: Validate amount input (DoS protection)
+  const validationResult = validateAmountInput(amount);
+  if (!validationResult.success) {
+    logger.warn("Invalid amount input in buy", {
+      userId: ctx.from?.id,
+      amount: amount.slice(0, 20), // Truncate for safety
+      error: validationResult.error,
+    });
+
+    await ctx.editMessageText(
+      `❌ *Invalid Amount*\n\n` +
+        `${validationResult.error}\n\n` +
+        `Please enter a valid number.`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔄 Try Again", callback_data: `buy:token:${token}` }],
+            [{ text: "« Back", callback_data: "nav:buy" }],
+          ],
+        },
+      }
+    );
+    return;
+  }
+
   // Execute buy
-  await executeBuyFlow(ctx, token, amount);
+  await executeBuyFlow(ctx, token, validationResult.value);
 }
 
 /**
@@ -603,7 +654,7 @@ export async function handleSellCallback(
 }
 
 /**
- * Handle token selection for sell
+ * Handle token selection for sell (WEEK 3 Enhanced)
  */
 async function handleSellTokenSelection(
   ctx: Context,
@@ -631,16 +682,39 @@ async function handleSellTokenSelection(
     return;
   }
 
+  // WEEK 3 - DAY 15: Validate token input
+  const validationResult = validateTokenInput(token);
+  if (!validationResult.success) {
+    logger.warn("Invalid token input in sell", {
+      userId: ctx.from?.id,
+      token: token.slice(0, 20),
+      error: validationResult.error,
+    });
+
+    await ctx.editMessageText(
+      `❌ *Invalid Token*\n\n` +
+        `${validationResult.error}\n\n` +
+        `Please try again with a valid token.`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]],
+        },
+      }
+    );
+    return;
+  }
+
   if (!ctx.session.ui.sellData) {
     ctx.session.ui.sellData = {};
   }
-  ctx.session.ui.sellData.selectedToken = token;
+  ctx.session.ui.sellData.selectedToken = validationResult.value;
 
-  await navigateToPage(ctx, "sell", { selectedToken: token });
+  await navigateToPage(ctx, "sell", { selectedToken: validationResult.value });
 }
 
 /**
- * Handle amount selection for sell
+ * Handle amount selection for sell (WEEK 3 Enhanced)
  */
 async function handleSellAmountSelection(
   ctx: Context,
@@ -675,8 +749,34 @@ async function handleSellAmountSelection(
     return;
   }
 
+  // WEEK 3 - DAY 15: Validate amount input
+  const validationResult = validateAmountInput(amount);
+  if (!validationResult.success) {
+    logger.warn("Invalid amount input in sell", {
+      userId: ctx.from?.id,
+      amount: amount.slice(0, 20),
+      error: validationResult.error,
+    });
+
+    await ctx.editMessageText(
+      `❌ *Invalid Amount*\n\n` +
+        `${validationResult.error}\n\n` +
+        `Please enter a valid number.`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔄 Try Again", callback_data: `sell:token:${token}` }],
+            [{ text: "« Back", callback_data: "nav:sell" }],
+          ],
+        },
+      }
+    );
+    return;
+  }
+
   // Execute sell (percentage-based)
-  await executeSellFlow(ctx, token, amount);
+  await executeSellFlow(ctx, token, validationResult.value);
 }
 
 /**
@@ -828,7 +928,7 @@ export async function handleSwapCallback(
 }
 
 /**
- * Handle input token selection for swap
+ * Handle input token selection for swap (WEEK 3 Enhanced)
  */
 async function handleSwapInputSelection(
   ctx: Context,
@@ -856,12 +956,33 @@ async function handleSwapInputSelection(
     return;
   }
 
+  // WEEK 3 - DAY 15: Validate token input
+  const validationResult = validateTokenInput(token);
+  if (!validationResult.success) {
+    logger.warn("Invalid input token in swap", {
+      userId: ctx.from?.id,
+      token: token.slice(0, 20),
+      error: validationResult.error,
+    });
+
+    await ctx.editMessageText(
+      `❌ *Invalid Token*\n\n${validationResult.error}`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]],
+        },
+      }
+    );
+    return;
+  }
+
   if (!ctx.session.ui.swapData) {
     ctx.session.ui.swapData = {};
   }
-  ctx.session.ui.swapData.inputMint = token;
+  ctx.session.ui.swapData.inputMint = validationResult.value;
 
-  await navigateToPage(ctx, "swap", { inputToken: token });
+  await navigateToPage(ctx, "swap", { inputToken: validationResult.value });
 }
 
 /**

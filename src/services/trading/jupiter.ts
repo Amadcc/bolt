@@ -21,6 +21,10 @@ import type {
 } from "../../types/jupiter.js";
 import { DEFAULT_JUPITER_CONFIG } from "../../types/jupiter.js";
 import { asTransactionSignature, type TokenMint } from "../../types/common.js";
+// WEEK 3 - DAY 16: Jito MEV Protection
+import { getJitoService } from "./jito.js";
+// WEEK 3 - DAY 17: Prometheus metrics
+import { recordJitoFallback, recordJitoTransaction } from "../../utils/metrics.js";
 
 // ============================================================================
 // Quote Cache (in-memory, 2s TTL)
@@ -286,11 +290,12 @@ export class JupiterService {
 
   /**
    * Deserialize and sign the transaction from Jupiter quote
+   * WEEK 3 - DAY 16: Now returns both VersionedTransaction and base64 for Jito integration
    */
   signTransaction(
     transactionBase64: string,
     keypair: Keypair
-  ): Result<string, JupiterError> {
+  ): Result<{ transaction: VersionedTransaction; base64: string }, JupiterError> {
     try {
       logger.debug("Signing Jupiter transaction");
 
@@ -309,7 +314,7 @@ export class JupiterService {
 
       logger.debug("Transaction signed successfully");
 
-      return Ok(signedBase64);
+      return Ok({ transaction, base64: signedBase64 });
     } catch (error) {
       logger.error("Failed to sign transaction", { error });
       return Err({
@@ -444,6 +449,93 @@ export class JupiterService {
   }
 
   // ==========================================================================
+  // WEEK 3 - DAY 16: Jito MEV Protection + Jupiter Fallback
+  // ==========================================================================
+
+  /**
+   * Send transaction via Jito (MEV protected) with Jupiter fallback
+   *
+   * Flow:
+   * 1. Try Jito first (if enabled)
+   * 2. If Jito fails or disabled, use Jupiter execute endpoint
+   * 3. Return signature and slot
+   */
+  private async sendTransactionWithJito(
+    transaction: VersionedTransaction,
+    signedBase64: string,
+    requestId: string
+  ): Promise<Result<{ signature: string; slot: number }, JupiterError>> {
+    const jitoService = getJitoService();
+
+    // Try Jito first if enabled
+    if (jitoService.isEnabled()) {
+      logger.info("Attempting MEV-protected transaction via Jito", { requestId });
+
+      const jitoResult = await jitoService.sendProtectedTransaction(
+        transaction,
+        this.connection
+      );
+
+      if (jitoResult.success) {
+        // Jito succeeded! Get slot from connection
+        const signature = jitoResult.value;
+
+        logger.info("Jito transaction sent successfully, getting slot", { signature });
+
+        try {
+          // Get transaction status to extract slot
+          const status = await this.connection.getSignatureStatus(signature);
+          const slot = status.value?.slot || 0;
+
+          logger.info("MEV-protected transaction completed via Jito", {
+            signature,
+            slot,
+            requestId,
+          });
+
+          return Ok({ signature, slot });
+        } catch (error) {
+          logger.warn("Failed to get slot from Jito transaction, using 0", {
+            signature,
+            error,
+          });
+          return Ok({ signature, slot: 0 });
+        }
+      }
+
+      // Jito failed, log and fall back to Jupiter
+      logger.warn("Jito transaction failed, falling back to Jupiter", {
+        error: jitoResult.error.message,
+        requestId,
+      });
+
+      // WEEK 3 - DAY 17: Record fallback metrics
+      recordJitoFallback("error");
+    } else {
+      logger.debug("Jito disabled, using Jupiter execute endpoint", { requestId });
+
+      // WEEK 3 - DAY 17: Record fallback metrics
+      recordJitoFallback("disabled");
+    }
+
+    // Fallback: Use Jupiter's execute endpoint
+    logger.info("Sending transaction via Jupiter execute endpoint", { requestId });
+
+    const executeResult = await this.executeSwap(signedBase64, requestId);
+
+    if (!executeResult.success) {
+      return Err(executeResult.error);
+    }
+
+    const execution = executeResult.value;
+
+    return Ok({
+      signature: execution.signature,
+      slot: Number(execution.slot),
+    });
+  }
+
+  // ==========================================================================
   // High-Level Swap Function (Complete Flow)
   // ==========================================================================
 
@@ -468,28 +560,29 @@ export class JupiterService {
 
     const quote = quoteResult.value;
 
-    // Step 2: Sign transaction
+    // Step 2: Sign transaction (WEEK 3 - DAY 16: now returns both transaction and base64)
     const signResult = this.signTransaction(quote.transaction!, keypair);
     if (!signResult.success) {
       return Err(signResult.error);
     }
 
-    const signedTransaction = signResult.value;
+    const { transaction: signedTransaction, base64: signedBase64 } = signResult.value;
 
-    // Step 3: Execute swap
-    const executeResult = await this.executeSwap(
+    // Step 3: Execute swap (WEEK 3 - DAY 16: Jito MEV protection + Jupiter fallback)
+    const sendResult = await this.sendTransactionWithJito(
       signedTransaction,
+      signedBase64,
       quote.requestId
     );
-    if (!executeResult.success) {
-      return Err(executeResult.error);
+    if (!sendResult.success) {
+      return Err(sendResult.error);
     }
 
-    const execution = executeResult.value;
+    const { signature: txSignature, slot: txSlot } = sendResult.value;
 
     // Step 4: Wait for confirmation with 60s timeout (MEDIUM-4)
     try {
-      const signature = asTransactionSignature(execution.signature);
+      const signature = asTransactionSignature(txSignature);
 
       logger.info("Waiting for transaction confirmation", { signature });
 
@@ -498,7 +591,7 @@ export class JupiterService {
 
       const confirmation = await Promise.race([
         this.connection.confirmTransaction(
-          execution.signature,
+          txSignature,
           "confirmed"
         ),
         new Promise<never>((_, reject) => {
@@ -518,23 +611,23 @@ export class JupiterService {
 
         return Err({
           type: "TRANSACTION_FAILED",
-          signature: execution.signature,
+          signature: txSignature,
           reason: JSON.stringify(confirmation.value.err),
         });
       }
 
       logger.info("Transaction confirmed successfully", {
         signature,
-        slot: execution.slot,
+        slot: txSlot,
       });
 
-      // Build result
+      // Build result (WEEK 3 - DAY 16: use quote data for amounts)
       const result: JupiterSwapResult = {
         signature,
-        inputAmount: BigInt(execution.totalInputAmount),
-        outputAmount: BigInt(execution.totalOutputAmount),
+        inputAmount: BigInt(quote.inAmount),
+        outputAmount: BigInt(quote.outAmount),
         priceImpactPct: quote.priceImpact * 100,
-        slot: Number(execution.slot),
+        slot: txSlot,
       };
 
       return Ok(result);
@@ -543,11 +636,11 @@ export class JupiterService {
 
       // Transaction was sent but confirmation failed - still return partial success
       return Ok({
-        signature: asTransactionSignature(execution.signature),
-        inputAmount: BigInt(execution.totalInputAmount),
-        outputAmount: BigInt(execution.totalOutputAmount),
+        signature: asTransactionSignature(txSignature),
+        inputAmount: BigInt(quote.inAmount),
+        outputAmount: BigInt(quote.outAmount),
         priceImpactPct: quote.priceImpact * 100,
-        slot: Number(execution.slot),
+        slot: txSlot,
       });
     }
   }

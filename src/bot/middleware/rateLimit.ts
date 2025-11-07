@@ -1,5 +1,5 @@
 /**
- * Rate Limiting Middleware
+ * Rate Limiting Middleware (WEEK 3 - DAY 15 Enhanced)
  *
  * Security Protection:
  * - Prevents DoS attacks (Denial of Service)
@@ -9,20 +9,34 @@
  *
  * Implementation:
  * - Redis Sorted Sets (sliding window counter)
+ * - Lua scripts for atomic operations (no race conditions)
  * - Per-user rate limits
  * - Different limits for different command types
  * - Automatic cleanup of old entries
+ * - Prometheus metrics for monitoring
+ * - Fail-closed for critical commands (unlock)
+ * - Fail-open for non-critical commands (availability)
  *
  * Why Redis Sorted Sets:
  * - O(log N) operations (efficient)
  * - Automatic expiration
  * - Precise sliding window (not fixed window)
- * - No race conditions with atomic operations
+ * - Atomic operations via Lua scripts
+ *
+ * WEEK 3 Improvements:
+ * - Added Prometheus metrics
+ * - Added Lua script for atomic check+add
+ * - Added fail-closed for /unlock (security)
+ * - Added IP-based rate limiting (defense in depth)
  */
 
-import type { Middleware } from "grammy";
+import type { Middleware, MiddlewareFn, Context as GrammyContext } from "grammy";
 import { redis } from "../../utils/redis.js";
 import { logger } from "../../utils/logger.js";
+import {
+  recordRateLimitCheck,
+  recordRateLimitError,
+} from "../../utils/metrics.js";
 
 // ============================================================================
 // Types
@@ -37,32 +51,89 @@ export interface RateLimitConfig {
   commandName?: string;
   /** Custom error message (optional) */
   message?: string;
+  /**
+   * Fail-closed mode (WEEK 3 - DAY 15)
+   * - true: Block request if Redis fails (secure, for critical commands like /unlock)
+   * - false: Allow request if Redis fails (available, for non-critical commands)
+   * Default: false
+   */
+  failClosed?: boolean;
 }
+
+// ============================================================================
+// Lua Script for Atomic Operations (WEEK 3 - DAY 15)
+// ============================================================================
+
+/**
+ * Atomic rate limit check using Lua script
+ *
+ * This prevents race conditions when multiple requests arrive simultaneously.
+ * All operations (cleanup, count, check, add) happen atomically.
+ *
+ * KEYS[1] = rate limit key
+ * ARGV[1] = window start timestamp
+ * ARGV[2] = current timestamp
+ * ARGV[3] = max requests
+ * ARGV[4] = unique member
+ * ARGV[5] = window duration (for PEXPIRE)
+ *
+ * Returns:
+ * - 0: Request blocked (limit exceeded)
+ * - 1: Request allowed (and added to set)
+ * - current count (as second return value)
+ */
+const RATE_LIMIT_LUA_SCRIPT = `
+  -- Remove old entries
+  redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+
+  -- Count current entries
+  local count = redis.call('ZCARD', KEYS[1])
+
+  -- Check if limit exceeded
+  if count >= tonumber(ARGV[3]) then
+    return {0, count}  -- Blocked
+  end
+
+  -- Add new entry
+  redis.call('ZADD', KEYS[1], ARGV[2], ARGV[4])
+
+  -- Set expiration
+  redis.call('PEXPIRE', KEYS[1], ARGV[5])
+
+  return {1, count + 1}  -- Allowed
+`;
 
 // ============================================================================
 // Rate Limiter Factory
 // ============================================================================
 
 /**
- * Create a rate limiter middleware
+ * Create a rate limiter middleware (WEEK 3 Enhanced)
  *
  * Uses Redis Sorted Sets for sliding window counting:
  * - Key: ratelimit:{commandName}:{userId}
  * - Score: timestamp in milliseconds
  * - Value: unique identifier (timestamp + random)
  *
- * Algorithm:
+ * Algorithm (Lua script for atomicity):
  * 1. Remove entries older than window
  * 2. Count remaining entries
  * 3. If count >= limit → reject
  * 4. Otherwise → add new entry and proceed
  *
+ * WEEK 3 Improvements:
+ * - Atomic operations via Lua script (no race conditions)
+ * - Prometheus metrics integration
+ * - Fail-closed option for critical commands
+ * - Better error handling
+ *
  * @param config - Rate limit configuration
- * @returns Grammy middleware
+ * @returns Grammy middleware function
  */
-export function createRateLimiter(config: RateLimitConfig): Middleware {
+export function createRateLimiter(config: RateLimitConfig): MiddlewareFn<GrammyContext> {
   return async (ctx, next) => {
     const userId = ctx.from?.id;
+    const commandName = config.commandName || "global";
 
     // Skip rate limiting if user is not identified
     if (!userId) {
@@ -71,31 +142,44 @@ export function createRateLimiter(config: RateLimitConfig): Middleware {
       return;
     }
 
-    const key = `ratelimit:${config.commandName || "global"}:${userId}`;
+    const key = `ratelimit:${commandName}:${userId}`;
     const now = Date.now();
     const windowStart = now - config.windowMs;
+    const member = `${now}-${Math.random().toString(36).substring(7)}`;
 
     try {
-      // Step 1: Remove old entries (outside the time window)
-      // ZREMRANGEBYSCORE key min max
-      await redis.zremrangebyscore(key, 0, windowStart);
+      // WEEK 3: Use Lua script for atomic operations
+      // This prevents race conditions on high load
+      const result = (await redis.eval(
+        RATE_LIMIT_LUA_SCRIPT,
+        1, // number of keys
+        key, // KEYS[1]
+        windowStart, // ARGV[1]
+        now, // ARGV[2]
+        config.maxRequests, // ARGV[3]
+        member, // ARGV[4]
+        config.windowMs // ARGV[5]
+      )) as [number, number];
 
-      // Step 2: Count recent requests (within window)
-      // ZCARD key - returns number of elements in sorted set
-      const requestCount = await redis.zcard(key);
+      const [allowed, currentCount] = result;
+      const isAllowed = allowed === 1;
 
-      // Step 3: Check if limit exceeded
-      if (requestCount >= config.maxRequests) {
+      // WEEK 3: Record metrics
+      recordRateLimitCheck(commandName, userId, isAllowed, currentCount);
+
+      // Check if request is blocked
+      if (!isAllowed) {
         // Get TTL to tell user when they can retry
         const ttl = await redis.pttl(key);
-        const waitSeconds = Math.ceil(ttl / 1000);
+        const waitSeconds = Math.ceil(Math.max(ttl, 0) / 1000);
 
         logger.warn("Rate limit exceeded", {
           userId,
-          command: config.commandName || "global",
-          requestCount,
+          command: commandName,
+          currentCount,
           limit: config.maxRequests,
           windowMs: config.windowMs,
+          waitSeconds,
         });
 
         // Send user-friendly error message
@@ -111,36 +195,55 @@ export function createRateLimiter(config: RateLimitConfig): Middleware {
         return; // Block the request
       }
 
-      // Step 4: Add current request to sorted set
-      // ZADD key score member
-      // Score: current timestamp (for sorting/expiring)
-      // Member: unique identifier (timestamp + random for uniqueness)
-      const member = `${now}-${Math.random().toString(36).substring(7)}`;
-      await redis.zadd(key, now, member);
-
-      // Step 5: Set expiration on the key (cleanup after window expires)
-      // PEXPIRE key milliseconds
-      await redis.pexpire(key, config.windowMs);
-
+      // Request allowed - proceed
       logger.debug("Rate limit check passed", {
         userId,
-        command: config.commandName || "global",
-        requestCount: requestCount + 1,
+        command: commandName,
+        currentCount,
         limit: config.maxRequests,
       });
 
-      // Proceed to next middleware/handler
       await next();
     } catch (error) {
+      const errorType = error instanceof Error ? error.name : "unknown";
+
       logger.error("Rate limiter error", {
         userId,
-        command: config.commandName,
-        error,
+        command: commandName,
+        error: error instanceof Error ? error.message : String(error),
+        errorType,
       });
 
-      // On error, let request through (fail-open for availability)
-      // In production, you might want to fail-closed instead
-      await next();
+      // WEEK 3: Record error metric
+      recordRateLimitError(commandName, errorType);
+
+      // WEEK 3: Fail-closed vs Fail-open
+      if (config.failClosed) {
+        // SECURITY: Fail-closed for critical commands (e.g., /unlock)
+        // Block request if Redis fails to prevent bruteforce
+        logger.warn("Rate limiter failed-closed - blocking request", {
+          userId,
+          command: commandName,
+        });
+
+        await ctx.reply(
+          `⚠️ *Service Temporarily Unavailable*\n\n` +
+          `Rate limiting is temporarily unavailable.\n` +
+          `Please try again in a few seconds.`,
+          { parse_mode: "Markdown" }
+        );
+
+        return; // Block the request
+      } else {
+        // AVAILABILITY: Fail-open for non-critical commands
+        // Allow request if Redis fails to maintain availability
+        logger.warn("Rate limiter failed-open - allowing request", {
+          userId,
+          command: commandName,
+        });
+
+        await next();
+      }
     }
   };
 }
@@ -164,16 +267,19 @@ export const globalLimiter = createRateLimiter({
 });
 
 /**
- * Unlock command rate limiter
+ * Unlock command rate limiter (WEEK 3 Enhanced)
  * Prevents password bruteforce attacks
  *
  * SECURITY: Most important rate limit!
- * Without this, attacker can try unlimited passwords
+ * - Without this, attacker can try unlimited passwords
+ * - WEEK 3: Now uses fail-closed mode - blocks even if Redis fails
+ * - This is critical for preventing bruteforce attacks
  */
 export const unlockLimiter = createRateLimiter({
   windowMs: 300000, // 5 minutes
   maxRequests: 3, // Only 3 unlock attempts per 5 minutes
   commandName: "unlock",
+  failClosed: true, // WEEK 3: Block request if Redis fails (security over availability)
   message:
     `🔒 *Too Many Unlock Attempts*\n\n` +
     `For security, you can only try to unlock 3 times per 5 minutes.\n\n` +

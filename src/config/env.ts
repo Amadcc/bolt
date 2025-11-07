@@ -80,6 +80,34 @@ const envSchema = z.object({
     .default("https://lite-api.jup.ag")
     .describe("Jupiter aggregator API endpoint"),
 
+  // WEEK 3 - DAY 16: Jito MEV Protection
+  JITO_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .describe("Enable Jito MEV protection (true/false)"),
+
+  JITO_BLOCK_ENGINE_URL: z
+    .string()
+    .url("JITO_BLOCK_ENGINE_URL must be a valid URL")
+    .default("https://mainnet.block-engine.jito.wtf")
+    .describe("Jito Block Engine RPC URL"),
+
+  JITO_TIP_LAMPORTS: z.coerce
+    .number()
+    .int()
+    .min(1, "JITO_TIP_LAMPORTS must be >= 1")
+    .max(1_000_000, "JITO_TIP_LAMPORTS must be <= 1,000,000 (0.001 SOL)")
+    .default(10000)
+    .describe("Tip amount in lamports for Jito validators"),
+
+  JITO_COMPUTE_UNIT_PRICE: z.coerce
+    .number()
+    .int()
+    .min(0, "JITO_COMPUTE_UNIT_PRICE must be >= 0")
+    .max(1_000_000, "JITO_COMPUTE_UNIT_PRICE must be <= 1,000,000")
+    .default(5000)
+    .describe("Compute unit price in microLamports"),
+
   // Platform Fee Configuration
   PLATFORM_FEE_BPS: z.coerce
     .number()

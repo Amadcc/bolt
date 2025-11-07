@@ -321,6 +321,183 @@ export const circuitBreakerRejections = new Counter({
 });
 
 // ============================================================================
+// Session Metrics (WEEK 3 - DAY 17)
+// ============================================================================
+
+/**
+ * Total sessions created
+ * Labels: method (password/token)
+ */
+export const sessionsCreated = new Counter({
+  name: "bolt_sniper_sessions_created_total",
+  help: "Total sessions created",
+  labelNames: ["method"],
+});
+
+/**
+ * Session expirations
+ * Labels: reason (timeout/logout/error)
+ */
+export const sessionExpirations = new Counter({
+  name: "bolt_sniper_session_expirations_total",
+  help: "Total session expirations",
+  labelNames: ["reason"],
+});
+
+/**
+ * Session refreshes/unlocks
+ */
+export const sessionRefreshes = new Counter({
+  name: "bolt_sniper_session_refreshes_total",
+  help: "Total session refreshes",
+});
+
+/**
+ * Session duration in seconds
+ */
+export const sessionDuration = new Histogram({
+  name: "bolt_sniper_session_duration_seconds",
+  help: "Session duration in seconds",
+  buckets: [60, 300, 600, 900, 1800, 3600], // 1min to 1 hour
+});
+
+// ============================================================================
+// Wallet Operation Metrics (WEEK 3 - DAY 17)
+// ============================================================================
+
+/**
+ * Total wallet operations
+ * Labels: operation (create/unlock/lock), status (success/failed)
+ */
+export const walletOperations = new Counter({
+  name: "bolt_sniper_wallet_operations_total",
+  help: "Total wallet operations",
+  labelNames: ["operation", "status"],
+});
+
+/**
+ * Wallet operation latency
+ * Labels: operation (create/unlock/lock)
+ */
+export const walletOperationLatency = new Histogram({
+  name: "bolt_sniper_wallet_operation_latency_seconds",
+  help: "Wallet operation latency in seconds",
+  labelNames: ["operation"],
+  buckets: [0.1, 0.5, 1, 2, 5, 10], // seconds
+});
+
+/**
+ * Wallet encryption/decryption operations
+ * Labels: operation (encrypt/decrypt), status (success/failed)
+ */
+export const walletCryptoOperations = new Counter({
+  name: "bolt_sniper_wallet_crypto_operations_total",
+  help: "Total wallet encryption/decryption operations",
+  labelNames: ["operation", "status"],
+});
+
+// ============================================================================
+// Jito MEV Protection Metrics (WEEK 3 - DAY 16/17)
+// ============================================================================
+
+/**
+ * Total Jito transactions attempted
+ * Labels: status (success/failed/fallback)
+ */
+export const jitoTransactions = new Counter({
+  name: "bolt_sniper_jito_transactions_total",
+  help: "Total Jito MEV-protected transactions",
+  labelNames: ["status"],
+});
+
+/**
+ * Total tips paid to Jito validators (in lamports)
+ */
+export const jitoTipsPaid = new Counter({
+  name: "bolt_sniper_jito_tips_paid_lamports_total",
+  help: "Total tips paid to Jito validators in lamports",
+});
+
+/**
+ * Jito transaction latency in seconds
+ */
+export const jitoLatency = new Histogram({
+  name: "bolt_sniper_jito_latency_seconds",
+  help: "Jito transaction latency in seconds",
+  buckets: [0.5, 1, 2, 3, 5, 10, 30],
+});
+
+/**
+ * Jito fallback count (when Jito fails and Jupiter is used)
+ * Labels: reason (timeout/error/disabled)
+ */
+export const jitoFallbacks = new Counter({
+  name: "bolt_sniper_jito_fallbacks_total",
+  help: "Total fallbacks from Jito to Jupiter",
+  labelNames: ["reason"],
+});
+
+/**
+ * Estimated MEV savings in USD (when using Jito)
+ */
+export const jitoSavingsEstimated = new Counter({
+  name: "bolt_sniper_jito_savings_estimated_usd_total",
+  help: "Estimated MEV savings in USD from using Jito",
+});
+
+/**
+ * Jito service enabled status (1=enabled, 0=disabled)
+ */
+export const jitoEnabled = new Gauge({
+  name: "bolt_sniper_jito_enabled",
+  help: "Whether Jito MEV protection is enabled (1=yes, 0=no)",
+});
+
+// ============================================================================
+// Rate Limiting Metrics (WEEK 3 - DAY 15)
+// ============================================================================
+
+/**
+ * Total rate limit checks performed
+ * Labels: command (global/unlock/trade/createwallet), result (allowed/blocked)
+ */
+export const rateLimitChecks = new Counter({
+  name: "bolt_sniper_rate_limit_checks_total",
+  help: "Total rate limit checks performed",
+  labelNames: ["command", "result"],
+});
+
+/**
+ * Rate limit blocks (requests rejected)
+ * Labels: command, user_id
+ */
+export const rateLimitBlocks = new Counter({
+  name: "bolt_sniper_rate_limit_blocks_total",
+  help: "Total requests blocked by rate limiter",
+  labelNames: ["command", "user_id"],
+});
+
+/**
+ * Current rate limit usage (requests in current window)
+ * Labels: command, user_id
+ */
+export const rateLimitUsage = new Gauge({
+  name: "bolt_sniper_rate_limit_usage",
+  help: "Current number of requests in rate limit window",
+  labelNames: ["command", "user_id"],
+});
+
+/**
+ * Rate limit errors (Redis failures, etc)
+ * Labels: command, error_type
+ */
+export const rateLimitErrors = new Counter({
+  name: "bolt_sniper_rate_limit_errors_total",
+  help: "Total rate limit errors",
+  labelNames: ["command", "error_type"],
+});
+
+// ============================================================================
 // Helper Functions
 // ============================================================================
 
@@ -402,6 +579,143 @@ export function recordCacheAccess(
   // This is a simplified version
 }
 
+/**
+ * Record rate limit check
+ * Convenience function for rate limiting metrics
+ */
+export function recordRateLimitCheck(
+  command: string,
+  userId: number,
+  allowed: boolean,
+  currentUsage?: number
+): void {
+  // Record check result
+  rateLimitChecks.inc({ command, result: allowed ? "allowed" : "blocked" });
+
+  // Record block if rejected
+  if (!allowed) {
+    rateLimitBlocks.inc({ command, user_id: userId.toString() });
+  }
+
+  // Update current usage gauge
+  if (currentUsage !== undefined) {
+    rateLimitUsage.set({ command, user_id: userId.toString() }, currentUsage);
+  }
+}
+
+/**
+ * Record rate limit error
+ */
+export function recordRateLimitError(command: string, errorType: string): void {
+  rateLimitErrors.inc({ command, error_type: errorType });
+}
+
+// ============================================================================
+// Session Metrics Helpers (WEEK 3 - DAY 17)
+// ============================================================================
+
+/**
+ * Record session creation
+ */
+export function recordSessionCreated(method: "password" | "token"): void {
+  sessionsCreated.inc({ method });
+  activeSessions.inc(); // Increment active sessions
+}
+
+/**
+ * Record session expiration
+ */
+export function recordSessionExpiration(
+  reason: "timeout" | "logout" | "error",
+  durationSeconds?: number
+): void {
+  sessionExpirations.inc({ reason });
+  activeSessions.dec(); // Decrement active sessions
+
+  if (durationSeconds !== undefined) {
+    sessionDuration.observe(durationSeconds);
+  }
+}
+
+/**
+ * Record session refresh/unlock
+ */
+export function recordSessionRefresh(): void {
+  sessionRefreshes.inc();
+}
+
+// ============================================================================
+// Wallet Operation Metrics Helpers (WEEK 3 - DAY 17)
+// ============================================================================
+
+/**
+ * Record wallet operation
+ */
+export function recordWalletOperation(
+  operation: "create" | "unlock" | "lock",
+  status: "success" | "failed",
+  latencySeconds: number
+): void {
+  walletOperations.inc({ operation, status });
+  walletOperationLatency.observe({ operation }, latencySeconds);
+
+  // Update wallet count on successful creation
+  if (operation === "create" && status === "success") {
+    walletsTotal.inc();
+  }
+}
+
+/**
+ * Record wallet crypto operation
+ */
+export function recordWalletCryptoOperation(
+  operation: "encrypt" | "decrypt",
+  status: "success" | "failed"
+): void {
+  walletCryptoOperations.inc({ operation, status });
+}
+
+// ============================================================================
+// Jito MEV Metrics Helpers (WEEK 3 - DAY 16/17)
+// ============================================================================
+
+/**
+ * Record Jito transaction
+ */
+export function recordJitoTransaction(
+  status: "success" | "failed" | "fallback",
+  latencySeconds: number,
+  tipLamports?: number,
+  estimatedSavingsUsd?: number
+): void {
+  jitoTransactions.inc({ status });
+  jitoLatency.observe(latencySeconds);
+
+  // Record tip if transaction succeeded
+  if (status === "success" && tipLamports !== undefined) {
+    jitoTipsPaid.inc(tipLamports);
+  }
+
+  // Record estimated savings
+  if (status === "success" && estimatedSavingsUsd !== undefined) {
+    jitoSavingsEstimated.inc(estimatedSavingsUsd);
+  }
+}
+
+/**
+ * Record Jito fallback to Jupiter
+ */
+export function recordJitoFallback(reason: "timeout" | "error" | "disabled"): void {
+  jitoFallbacks.inc({ reason });
+}
+
+/**
+ * Update Jito enabled status
+ */
+export function updateJitoEnabled(enabled: boolean): void {
+  jitoEnabled.set(enabled ? 1 : 0);
+}
+
 // ============================================================================
 // Metrics Endpoint
 // ============================================================================
@@ -443,5 +757,9 @@ logger.info("Prometheus metrics registered", {
     "errors",
     "cache",
     "circuit_breaker",
+    "rate_limiting", // WEEK 3 - DAY 15
+    "sessions", // WEEK 3 - DAY 17
+    "wallet_operations", // WEEK 3 - DAY 17
+    "jito_mev", // WEEK 3 - DAY 17
   ],
 });

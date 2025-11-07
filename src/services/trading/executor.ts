@@ -102,7 +102,7 @@ export class TradingExecutor {
           sessionToken: sessionToken.substring(0, 10) + "...",
         });
 
-        const keypairResult = await getKeypairForSigning(sessionToken, userId);
+        const keypairResult = await getKeypairForSigning(sessionToken);
 
         if (!keypairResult.success) {
           return Err({

@@ -237,8 +237,14 @@ async function executeBuy(
   const messageId = ctx.message?.message_id;
 
   try {
-    // Delete command message (not password - session-based auth)
-    if (messageId) {
+    // WEEK 3 - DAY 15: Secure password deletion if password provided in command
+    if (password && messageId) {
+      // Password was in command - must securely delete!
+      if (!(await securePasswordDelete(ctx, messageId, "buy"))) {
+        return; // ABORT if deletion failed
+      }
+    } else if (messageId) {
+      // No password in command - safe to delete normally
       try {
         await ctx.api.deleteMessage(ctx.chat!.id, messageId);
       } catch (error) {

@@ -41,6 +41,7 @@
     "fastify": "^4.28.1",
     "grammy": "^1.30.0",
     "ioredis": "^5.4.1",
+    "jito-js-rpc": "^0.2.2",
     "prom-client": "^15.1.3",
     "zod": "^4.1.12"
   },

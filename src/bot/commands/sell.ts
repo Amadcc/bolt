@@ -10,6 +10,8 @@ import { asTokenMint, asSessionToken } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
 import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
+// WEEK 3 - DAY 15: Safe password deletion
+import { securePasswordDelete } from "../utils/secureDelete.js";
 
 // Define session data structure (should match bot/index.ts)
 interface SessionData {
@@ -178,8 +180,14 @@ async function executeSell(
   const messageId = ctx.message?.message_id;
 
   try {
-    // Delete command message (not password - session-based auth)
-    if (messageId) {
+    // WEEK 3 - DAY 15: Secure password deletion if password provided in command
+    if (password && messageId) {
+      // Password was in command - must securely delete!
+      if (!(await securePasswordDelete(ctx, messageId, "sell"))) {
+        return; // ABORT if deletion failed
+      }
+    } else if (messageId) {
+      // No password in command - safe to delete normally
       try {
         await ctx.api.deleteMessage(ctx.chat!.id, messageId);
       } catch (error) {
