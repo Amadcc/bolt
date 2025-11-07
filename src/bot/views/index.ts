@@ -303,7 +303,8 @@ export function renderSellPage(data?: { selectedToken?: string }): {
 }
 
 /**
- * Swap page
+ * MEDIUM-7: Refactored Swap Page (split into 3 smaller functions)
+ * Main coordinator function
  */
 export function renderSwapPage(data?: {
   inputToken?: string;
@@ -313,89 +314,129 @@ export function renderSwapPage(data?: {
   text: string;
   keyboard: InlineKeyboard;
 } {
-  let text = `🔄 *Swap Tokens*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
-  const keyboard = new InlineKeyboard();
-
   // Step 1: Select input token
   if (!data?.inputToken) {
-    text += `📥 *Step 1: Input Token*\n\nWhat do you want to swap FROM?`;
-
-    keyboard
-      .text("🟣 SOL", "swap:input:SOL")
-      .text("💵 USDC", "swap:input:USDC")
-      .row()
-      .text("💲 USDT", "swap:input:USDT")
-      .text("🐕 BONK", "swap:input:BONK")
-      .row()
-      .text("🐶 WIF", "swap:input:WIF")
-      .text("✏️ Custom", "swap:input:custom")
-      .row()
-      .text("« Back to Dashboard", "nav:main");
+    return renderSwapStepSelectInput();
   }
   // Step 2: Select output token
   else if (!data?.outputToken) {
-    text +=
-      `✅ From: *${data.inputToken}*\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `📤 *Step 2: Output Token*\n\nWhat do you want to swap TO?`;
-
-    keyboard
-      .text("🟣 SOL", `swap:output:${data.inputToken}:SOL`)
-      .text("💵 USDC", `swap:output:${data.inputToken}:USDC`)
-      .row()
-      .text("💲 USDT", `swap:output:${data.inputToken}:USDT`)
-      .text("🐕 BONK", `swap:output:${data.inputToken}:BONK`)
-      .row()
-      .text("🐶 WIF", `swap:output:${data.inputToken}:WIF`)
-      .text("✏️ Custom", `swap:output:${data.inputToken}:custom`)
-      .row()
-      .text("« Back", "nav:swap")
-      .text("🏠 Dashboard", "nav:main");
+    return renderSwapStepSelectOutput(data.inputToken);
   }
   // Step 3: Select amount
   else {
-    text +=
-      `✅ From: *${data.inputToken}*\n` +
-      `✅ To: *${data.outputToken}*\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `💰 *Step 3: Amount*\n\nHow much ${data.inputToken} to swap?`;
-
-    // Show different amounts based on input token
-    if (data.inputToken === "SOL") {
-      keyboard
-        .text("0.1 SOL", `swap:amount:${data.inputToken}:${data.outputToken}:0.1`)
-        .text("0.5 SOL", `swap:amount:${data.inputToken}:${data.outputToken}:0.5`)
-        .row()
-        .text("1 SOL", `swap:amount:${data.inputToken}:${data.outputToken}:1`)
-        .text("5 SOL", `swap:amount:${data.inputToken}:${data.outputToken}:5`)
-        .row()
-        .text("✏️ Custom", `swap:amount:${data.inputToken}:${data.outputToken}:custom`);
-    } else if (data.inputToken === "USDC" || data.inputToken === "USDT") {
-      keyboard
-        .text("10 " + data.inputToken, `swap:amount:${data.inputToken}:${data.outputToken}:10`)
-        .text("50 " + data.inputToken, `swap:amount:${data.inputToken}:${data.outputToken}:50`)
-        .row()
-        .text("100 " + data.inputToken, `swap:amount:${data.inputToken}:${data.outputToken}:100`)
-        .text("500 " + data.inputToken, `swap:amount:${data.inputToken}:${data.outputToken}:500`)
-        .row()
-        .text("✏️ Custom", `swap:amount:${data.inputToken}:${data.outputToken}:custom`);
-    } else {
-      // For other tokens, show percentage options
-      keyboard
-        .text("25%", `swap:amount:${data.inputToken}:${data.outputToken}:25%`)
-        .text("50%", `swap:amount:${data.inputToken}:${data.outputToken}:50%`)
-        .row()
-        .text("75%", `swap:amount:${data.inputToken}:${data.outputToken}:75%`)
-        .text("100%", `swap:amount:${data.inputToken}:${data.outputToken}:100%`)
-        .row()
-        .text("✏️ Custom", `swap:amount:${data.inputToken}:${data.outputToken}:custom`);
-    }
-
-    keyboard
-      .row()
-      .text("« Back", `swap:back_to_output:${data.inputToken}`)
-      .text("🏠 Dashboard", "nav:main");
+    return renderSwapStepSelectAmount(data.inputToken, data.outputToken);
   }
+}
+
+/**
+ * MEDIUM-7: Swap Step 1 - Select input token
+ */
+function renderSwapStepSelectInput(): {
+  text: string;
+  keyboard: InlineKeyboard;
+} {
+  const text =
+    `🔄 *Swap Tokens*\n━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `📥 *Step 1: Input Token*\n\nWhat do you want to swap FROM?`;
+
+  const keyboard = new InlineKeyboard()
+    .text("🟣 SOL", "swap:input:SOL")
+    .text("💵 USDC", "swap:input:USDC")
+    .row()
+    .text("💲 USDT", "swap:input:USDT")
+    .text("🐕 BONK", "swap:input:BONK")
+    .row()
+    .text("🐶 WIF", "swap:input:WIF")
+    .text("✏️ Custom", "swap:input:custom")
+    .row()
+    .text("« Back to Dashboard", "nav:main");
+
+  return { text, keyboard };
+}
+
+/**
+ * MEDIUM-7: Swap Step 2 - Select output token
+ */
+function renderSwapStepSelectOutput(inputToken: string): {
+  text: string;
+  keyboard: InlineKeyboard;
+} {
+  const text =
+    `🔄 *Swap Tokens*\n━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `✅ From: *${inputToken}*\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `📤 *Step 2: Output Token*\n\nWhat do you want to swap TO?`;
+
+  const keyboard = new InlineKeyboard()
+    .text("🟣 SOL", `swap:output:${inputToken}:SOL`)
+    .text("💵 USDC", `swap:output:${inputToken}:USDC`)
+    .row()
+    .text("💲 USDT", `swap:output:${inputToken}:USDT`)
+    .text("🐕 BONK", `swap:output:${inputToken}:BONK`)
+    .row()
+    .text("🐶 WIF", `swap:output:${inputToken}:WIF`)
+    .text("✏️ Custom", `swap:output:${inputToken}:custom`)
+    .row()
+    .text("« Back", "nav:swap")
+    .text("🏠 Dashboard", "nav:main");
+
+  return { text, keyboard };
+}
+
+/**
+ * MEDIUM-7: Swap Step 3 - Select amount
+ */
+function renderSwapStepSelectAmount(
+  inputToken: string,
+  outputToken: string
+): {
+  text: string;
+  keyboard: InlineKeyboard;
+} {
+  const text =
+    `🔄 *Swap Tokens*\n━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `✅ From: *${inputToken}*\n` +
+    `✅ To: *${outputToken}*\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `💰 *Step 3: Amount*\n\nHow much ${inputToken} to swap?`;
+
+  const keyboard = new InlineKeyboard();
+
+  // Show different amounts based on input token
+  if (inputToken === "SOL") {
+    keyboard
+      .text("0.1 SOL", `swap:amount:${inputToken}:${outputToken}:0.1`)
+      .text("0.5 SOL", `swap:amount:${inputToken}:${outputToken}:0.5`)
+      .row()
+      .text("1 SOL", `swap:amount:${inputToken}:${outputToken}:1`)
+      .text("5 SOL", `swap:amount:${inputToken}:${outputToken}:5`)
+      .row()
+      .text("✏️ Custom", `swap:amount:${inputToken}:${outputToken}:custom`);
+  } else if (inputToken === "USDC" || inputToken === "USDT") {
+    keyboard
+      .text("10 " + inputToken, `swap:amount:${inputToken}:${outputToken}:10`)
+      .text("50 " + inputToken, `swap:amount:${inputToken}:${outputToken}:50`)
+      .row()
+      .text("100 " + inputToken, `swap:amount:${inputToken}:${outputToken}:100`)
+      .text("500 " + inputToken, `swap:amount:${inputToken}:${outputToken}:500`)
+      .row()
+      .text("✏️ Custom", `swap:amount:${inputToken}:${outputToken}:custom`);
+  } else {
+    // For other tokens, show percentage options
+    keyboard
+      .text("25%", `swap:amount:${inputToken}:${outputToken}:25%`)
+      .text("50%", `swap:amount:${inputToken}:${outputToken}:50%`)
+      .row()
+      .text("75%", `swap:amount:${inputToken}:${outputToken}:75%`)
+      .text("100%", `swap:amount:${inputToken}:${outputToken}:100%`)
+      .row()
+      .text("✏️ Custom", `swap:amount:${inputToken}:${outputToken}:custom`);
+  }
+
+  keyboard
+    .row()
+    .text("« Back", `swap:back_to_output:${inputToken}`)
+    .text("🏠 Dashboard", "nav:main");
 
   return { text, keyboard };
 }
@@ -667,7 +708,8 @@ export function renderHelpPage(): {
 // ============================================================================
 
 /**
- * Navigate to a page and update the message
+ * MEDIUM-7: Refactored navigateToPage() (split into smaller functions)
+ * Main coordinator function
  */
 export async function navigateToPage(
   ctx: Context,
@@ -675,105 +717,14 @@ export async function navigateToPage(
   data?: any
 ): Promise<void> {
   try {
-    let result: { text: string; keyboard: InlineKeyboard };
-
-    switch (page) {
-      case "welcome":
-        result = await renderWelcomePage(ctx);
-        break;
-      case "create_wallet":
-        result = renderCreateWalletPage();
-        // Set state to await password input
-        ctx.session.awaitingPasswordForWallet = true;
-        break;
-      case "main":
-        result = await renderMainPage(ctx);
-        break;
-      case "buy":
-        result = renderBuyPage(data);
-        break;
-      case "sell":
-        result = renderSellPage(data);
-        break;
-      case "swap":
-        result = renderSwapPage(data);
-        break;
-      case "balance":
-        result = await renderBalancePage(ctx);
-        break;
-      case "wallet_info":
-        result = await renderWalletInfoPage(ctx);
-        break;
-      case "settings":
-        result = renderSettingsPage(ctx.session.settings);
-        break;
-      case "unlock":
-        result = await renderUnlockPage(ctx);
-        // Set state to await password input
-        ctx.session.awaitingPasswordForUnlock = true;
-        break;
-      case "status":
-        result = await renderStatusPage(ctx);
-        break;
-      case "help":
-        result = renderHelpPage();
-        break;
-      default:
-        result = await renderMainPage(ctx);
-    }
+    // Get page content
+    const result = await getPageContent(ctx, page, data);
 
     // Update UI state
     ctx.session.ui.currentPage = page;
 
-    // Edit message or send new one
-    const existingMessageId = ctx.session.ui.messageId;
-
-    if (ctx.callbackQuery?.message) {
-      // From callback query - edit that message
-      try {
-        await ctx.editMessageText(result.text, {
-          parse_mode: "Markdown",
-          reply_markup: result.keyboard,
-        });
-        ctx.session.ui.messageId = ctx.callbackQuery.message.message_id;
-      } catch (error: any) {
-        // Ignore "message is not modified" error - happens when navigating to same page
-        if (error?.description?.includes("message is not modified")) {
-          logger.debug("Message not modified (same content)", { page });
-          // Answer callback query to remove loading indicator
-          await ctx.answerCallbackQuery();
-        } else {
-          throw error;
-        }
-      }
-    } else if (existingMessageId && ctx.chat) {
-      // We have existing UI message - edit it
-      try {
-        await ctx.api.editMessageText(
-          ctx.chat.id,
-          existingMessageId,
-          result.text,
-          {
-            parse_mode: "Markdown",
-            reply_markup: result.keyboard,
-          }
-        );
-      } catch (error: any) {
-        // Ignore "message is not modified" error
-        if (error?.description?.includes("message is not modified")) {
-          logger.debug("Message not modified (same content)", { page });
-        } else {
-          throw error;
-        }
-      }
-    } else if (ctx.message) {
-      // No existing message - create new one
-      const sent = await ctx.reply(result.text, {
-        parse_mode: "Markdown",
-        reply_markup: result.keyboard,
-      });
-      ctx.session.ui.messageId = sent.message_id;
-    }
+    // Update the message in Telegram
+    await updateUIMessage(ctx, result, page);
 
     logger.debug("Navigated to page", { page, userId: ctx.from?.id });
 
@@ -786,6 +737,137 @@ export async function navigateToPage(
   } catch (error) {
     logger.error("Error navigating to page", { page, error });
     await ctx.reply("❌ An error occurred. Please try /start again.");
+  }
+}
+
+/**
+ * MEDIUM-7: Get page content by calling appropriate renderer
+ */
+async function getPageContent(
+  ctx: Context,
+  page: Page,
+  data?: any
+): Promise<{ text: string; keyboard: InlineKeyboard }> {
+  switch (page) {
+    case "welcome":
+      return await renderWelcomePage(ctx);
+
+    case "create_wallet":
+      // Set state to await password input
+      ctx.session.awaitingPasswordForWallet = true;
+      return renderCreateWalletPage();
+
+    case "main":
+      return await renderMainPage(ctx);
+
+    case "buy":
+      return renderBuyPage(data);
+
+    case "sell":
+      return renderSellPage(data);
+
+    case "swap":
+      return renderSwapPage(data);
+
+    case "balance":
+      return await renderBalancePage(ctx);
+
+    case "wallet_info":
+      return await renderWalletInfoPage(ctx);
+
+    case "settings":
+      return renderSettingsPage(ctx.session.settings);
+
+    case "unlock":
+      // Set state to await password input
+      ctx.session.awaitingPasswordForUnlock = true;
+      return await renderUnlockPage(ctx);
+
+    case "status":
+      return await renderStatusPage(ctx);
+
+    case "help":
+      return renderHelpPage();
+
+    default:
+      return await renderMainPage(ctx);
+  }
+}
+
+/**
+ * MEDIUM-7: Update UI message (edit existing or send new)
+ */
+async function updateUIMessage(
+  ctx: Context,
+  result: { text: string; keyboard: InlineKeyboard },
+  page: Page
+): Promise<void> {
+  const existingMessageId = ctx.session.ui.messageId;
+
+  if (ctx.callbackQuery?.message) {
+    // From callback query - edit that message
+    await editMessageWithErrorHandling(
+      ctx,
+      result,
+      page,
+      async () => {
+        await ctx.editMessageText(result.text, {
+          parse_mode: "Markdown",
+          reply_markup: result.keyboard,
+        });
+        ctx.session.ui.messageId = ctx.callbackQuery!.message!.message_id;
+      }
+    );
+  } else if (existingMessageId && ctx.chat) {
+    // We have existing UI message - edit it
+    await editMessageWithErrorHandling(
+      ctx,
+      result,
+      page,
+      async () => {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          existingMessageId,
+          result.text,
+          {
+            parse_mode: "Markdown",
+            reply_markup: result.keyboard,
+          }
+        );
+      }
+    );
+  } else if (ctx.message) {
+    // No existing message - create new one
+    const sent = await ctx.reply(result.text, {
+      parse_mode: "Markdown",
+      reply_markup: result.keyboard,
+    });
+    ctx.session.ui.messageId = sent.message_id;
+  }
+}
+
+/**
+ * MEDIUM-7: Handle message edit errors (ignore "not modified" errors)
+ */
+async function editMessageWithErrorHandling(
+  ctx: Context,
+  result: { text: string; keyboard: InlineKeyboard },
+  page: Page,
+  editFn: () => Promise<void>
+): Promise<void> {
+  try {
+    await editFn();
+  } catch (error: any) {
+    // Ignore "message is not modified" error - happens when navigating to same page
+    if (error?.description?.includes("message is not modified")) {
+      logger.debug("Message not modified (same content)", { page });
+      // Answer callback query to remove loading indicator (if applicable)
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery();
+      }
+    } else {
+      throw error;
+    }
   }
 }
 

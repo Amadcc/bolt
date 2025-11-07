@@ -75,13 +75,22 @@ export function lamportsToSol(lamports: Lamports): number {
 }
 
 /**
- * Convert SOL to lamports
+ * Convert SOL to lamports with precise decimal arithmetic (MEDIUM-3)
+ * Uses BigNumber to avoid floating point precision errors
  */
 export function solToLamports(sol: number): Lamports {
   if (sol < 0 || !Number.isFinite(sol)) {
     throw new TypeError("SOL amount must be non-negative finite number");
   }
-  return asLamports(BigInt(Math.floor(sol * 1e9)));
+
+  // MEDIUM-3: Use BigNumber for precise decimal arithmetic
+  // Avoids floating point errors like: 0.1 + 0.2 !== 0.3
+  const BigNumber = require("bignumber.js");
+  const lamports = new BigNumber(sol)
+    .multipliedBy(new BigNumber(10).pow(9))
+    .integerValue(BigNumber.ROUND_DOWN);
+
+  return asLamports(BigInt(lamports.toString()));
 }
 
 /**

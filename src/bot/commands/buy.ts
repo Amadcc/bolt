@@ -7,7 +7,7 @@ import type { Context as GrammyContext, SessionFlavor } from "grammy";
 import { logger } from "../../utils/logger.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
 import { getHoneypotDetector } from "../../services/honeypot/detector.js";
-import { asTokenMint } from "../../types/common.js";
+import { asTokenMint, solToLamports } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
 import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, SOL_MINT, getNetworkName, isDevnetMode } from "../../config/tokens.js";
@@ -118,8 +118,8 @@ export async function handleBuy(ctx: Context): Promise<void> {
       return;
     }
 
-    // Convert SOL to lamports
-    const lamports = Math.floor(solAmount * 1e9).toString();
+    // MEDIUM-3: Convert SOL to lamports using precise BigNumber arithmetic
+    const lamports = solToLamports(solAmount).toString();
 
     // Show network warning for devnet
     if (isDevnetMode()) {

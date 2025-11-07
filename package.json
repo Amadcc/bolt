@@ -36,6 +36,7 @@
     "@solana/web3.js": "^1.95.3",
     "argon2": "^0.44.0",
     "axios": "^1.13.2",
+    "bignumber.js": "^9.3.1",
     "dotenv": "^16.4.5",
     "fastify": "^4.28.1",
     "grammy": "^1.30.0",
@@ -44,6 +45,7 @@
     "zod": "^4.1.12"
   },
   "devDependencies": {
+    "@types/bignumber.js": "^5.0.4",
     "@types/node": "^22.5.5",
     "@vitest/coverage-v8": "^4.0.7",
     "@vitest/ui": "^4.0.7",

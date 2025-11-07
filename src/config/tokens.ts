@@ -157,9 +157,16 @@ export function getTokenDecimals(mint: string): number {
 }
 
 /**
- * Convert human-readable amount to minimal units
+ * Convert human-readable amount to minimal units with precise arithmetic (MEDIUM-3)
  * Example: 131921.83 BONK (5 decimals) -> 13192183000
+ * Uses BigNumber to avoid floating point precision errors
  */
 export function toMinimalUnits(amount: number, decimals: number): string {
-  return Math.floor(amount * Math.pow(10, decimals)).toString();
+  // MEDIUM-3: Use BigNumber for precise decimal arithmetic
+  const BigNumber = require("bignumber.js");
+  const minimalUnits = new BigNumber(amount)
+    .multipliedBy(new BigNumber(10).pow(decimals))
+    .integerValue(BigNumber.ROUND_DOWN);
+
+  return minimalUnits.toString();
 }

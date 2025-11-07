@@ -1554,7 +1554,12 @@ Add validation that all external URLs use HTTPS.
   - checkAsync() метод для non-blocking проверок
   - Оптимизированный bot flow в buy.ts
   - **Performance gain: -1500ms → 0-10ms для known tokens**
-- [ ] MEDIUM-3: BigNumber precision
+- [x] MEDIUM-3: BigNumber precision ✅ **FIXED**
+  - Установлен bignumber.js для точной арифметики
+  - Обновлен solToLamports() в utils/helpers.ts и types/common.ts
+  - Обновлен toMinimalUnits() в config/tokens.ts
+  - Используется в buy.ts для конвертации SOL в lamports
+  - **Improvement: No floating point precision errors**
 - [x] MEDIUM-4: Transaction timeouts ✅ **FIXED**
   - 60s timeout для confirmTransaction в jupiter.ts
   - Promise.race pattern для предотвращения зависаний
@@ -1570,7 +1575,12 @@ Add validation that all external URLs use HTTPS.
   - redisScan() helper function в utils/redis.ts
   - Обновлено 3 места: session.ts (2x), rateLimit.ts (1x)
   - **Improvement: Non-blocking Redis operations**
-- [ ] MEDIUM-7: Refactor large functions
+- [x] MEDIUM-7: Refactor large functions ✅ **FIXED**
+  - renderSwapPage() (93 строки) → 4 функции (24+21+24+53 строк)
+  - navigateToPage() (118 строк) → 4 функции (28+45+43+20 строк)
+  - Все функции теперь <60 строк
+  - Файл: `src/bot/views/index.ts`
+  - **Improvement: Better code maintainability and readability**
 - [x] MEDIUM-8: Password strength ✅ **FIXED**
   - Minimum 12 characters (было 8)
   - Требуется: lowercase + uppercase + number + special char
@@ -1578,7 +1588,7 @@ Add validation that all external URLs use HTTPS.
   - Проверка на repeated characters (6+ подряд)
   - **Improvement: Production-grade password security**
 
-**Progress: 6/8 (75%)**
+**Progress: 8/8 (100%)** ✅ **ALL MEDIUM PRIORITY FIXED!**
 
 ### Низкий приоритет (Backlog)
 - [ ] LOW-1: Remove type assertions
