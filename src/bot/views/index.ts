@@ -170,7 +170,7 @@ export async function renderMainPage(ctx: Context): Promise<{
 
   const wallet = user.wallets[0];
   // ✅ Redis Session Integration: Check Redis session instead of in-memory encryptedKey
-  const isLocked = !ctx.session.sessionToken || !ctx.session.password;
+  const isLocked = !ctx.session.sessionToken;
 
   const text =
     `⚡️ *Dashboard*\n` +

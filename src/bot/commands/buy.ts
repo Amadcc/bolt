@@ -11,6 +11,8 @@ import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
 import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, SOL_MINT, getNetworkName, isDevnetMode } from "../../config/tokens.js";
+// ✅ SECURITY (CRITICAL-4 Fix): Safe password deletion
+import { securePasswordDelete } from "../utils/secureDelete.js";
 
 // Define session data structure (should match bot/index.ts)
 interface SessionData {
@@ -208,12 +210,12 @@ async function executeBuy(
   const messageId = ctx.message?.message_id;
 
   try {
-    // Delete password message immediately
+    // Delete command message (not password - session-based auth)
     if (messageId) {
       try {
         await ctx.api.deleteMessage(ctx.chat!.id, messageId);
       } catch (error) {
-        logger.warn("Failed to delete password message", { error });
+        logger.debug("Failed to delete command message", { error });
       }
     }
 
@@ -234,22 +236,23 @@ async function executeBuy(
       return;
     }
 
-    // ✅ Redis Session Integration: Get password and sessionToken from context
-    const sessionPassword = ctx.session.password || password;
+    // ✅ SECURITY (CRITICAL-2 Fix - Variant C+): Password NOT stored in session!
+    // Session token is enough - password only for unlocking
     const sessionToken = ctx.session.sessionToken;
 
-    if (!sessionPassword) {
+    if (!sessionToken) {
       await ctx.reply(
-        `🔒 *Password Required*\n\n` +
-        `No active session. Please either:\n\n` +
-        `1. /unlock <password> - Unlock for 15 minutes\n` +
-        `2. /buy ${tokenSymbol} ${solAmount} <password> - One-time trade`,
+        `🔒 *Wallet Locked*\n\n` +
+        `Please unlock your wallet first:\n\n` +
+        `/unlock <password> - Unlock for 15 minutes\n\n` +
+        `Then you can trade without entering password again!`,
         { parse_mode: "Markdown" }
       );
       return;
     }
 
     // Execute trade via Trading Executor
+    // ✅ No password needed - session token is enough!
     const tradeResult = await executor.executeTrade(
       {
         userId,
@@ -258,7 +261,7 @@ async function executeBuy(
         amount: lamports,
         slippageBps: 50, // 0.5% slippage
       },
-      sessionPassword,
+      undefined, // No password needed with session
       sessionToken as any
     );
 

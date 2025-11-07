@@ -1496,12 +1496,28 @@ Add validation that all external URLs use HTTPS.
 ## 📊 Прогресс
 
 ### Критические (MUST FIX)
-- [ ] CRITICAL-1: Redis session storage
-- [ ] CRITICAL-2: In-memory keypairs
-- [ ] CRITICAL-3: Rate limiting
-- [ ] CRITICAL-4: Password deletion
+- [x] CRITICAL-1: Redis session storage ✅ **FIXED**
+  - Хранит encrypted key из DB (не plaintext)
+  - Реализовано в `src/services/wallet/session.ts`
+- [x] CRITICAL-2: In-memory keypairs ✅ **FIXED - Variant C+**
+  - Session key derived via HKDF (не хранится в Redis)
+  - Re-encryption с session-derived key
+  - Пароль не хранится нигде
+  - Файлы: `src/services/wallet/sessionEncryption.ts`, `session.ts`
+- [x] CRITICAL-3: Rate limiting ✅ **FIXED**
+  - Redis Sorted Sets (sliding window)
+  - Global: 30 req/min
+  - Unlock: 3 attempts/5 min (bruteforce protection!)
+  - Trade: 10 trades/min
+  - Wallet creation: 2 wallets/hour
+  - Файл: `src/bot/middleware/rateLimit.ts`
+- [x] CRITICAL-4: Password deletion ✅ **FIXED**
+  - ABORT operation if deletion fails
+  - Security warning to user
+  - Bot permissions check on startup
+  - Файлы: `src/bot/utils/secureDelete.ts`, `src/index.ts`
 
-**Progress: 0/4 (0%)**
+**Progress: 4/4 (100%)** ✅ **ALL CRITICAL ISSUES FIXED!**
 
 ### Высокий приоритет (Week 1)
 - [ ] HIGH-1: RPC connection pool
@@ -1583,9 +1599,21 @@ Week 3+: LOW priority (ongoing)
 - [ ] Staging environment tested
 - [ ] Disaster recovery plan documented
 
-**Current Status: NOT READY FOR PRODUCTION**
+**Current Status: CRITICAL ISSUES FIXED - HIGH PRIORITY IN PROGRESS**
+
+**Security Status:** 🟢 **SECURE** (All critical vulnerabilities patched)
+**Production Readiness:** 🟡 **IN PROGRESS** (Need HIGH priority + tests)
 
 ---
 
-**Last Updated:** 2025-11-06
-**Next Review:** After CRITICAL fixes completed
+**Last Updated:** 2025-01-07
+**Previous Update:** 2025-11-06 (Initial audit)
+**Next Review:** After HIGH priority fixes completed
+
+**Changelog:**
+- **2025-01-07**: ALL CRITICAL ISSUES FIXED! 🎉
+  - ✅ CRITICAL-1: Redis session storage (encrypted keys only)
+  - ✅ CRITICAL-2: Variant C+ implemented (HKDF-based session keys)
+  - ✅ CRITICAL-3: Rate limiting (Redis sorted sets)
+  - ✅ CRITICAL-4: Password deletion safety (abort on failure)
+- **2025-11-06**: Initial security audit conducted

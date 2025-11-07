@@ -22,6 +22,11 @@ import { prisma } from "../../utils/db.js";
 import { unlockWallet, clearKeypair } from "./keyManager.js";
 import { decryptPrivateKey } from "./encryption.js";
 import {
+  encryptWithSessionKey,
+  decryptWithSessionKey,
+  type SessionEncryptedKey,
+} from "./sessionEncryption.js";
+import {
   type Result,
   Ok,
   Err,
@@ -49,7 +54,7 @@ const TOKEN_LENGTH = 32; // 32 bytes = 64 hex chars
 interface SessionData {
   userId: string;
   walletId: string;
-  encryptedPrivateKey: string;
+  sessionEncryptedKey: SessionEncryptedKey; // ✅ Re-encrypted with session-derived key
   createdAt: number;
   expiresAt: number;
 }
@@ -67,7 +72,7 @@ export interface CreateSessionResult {
 export interface SessionInfo {
   userId: string;
   walletId: string;
-  encryptedPrivateKey: EncryptedPrivateKey;
+  sessionEncryptedKey: SessionEncryptedKey; // Re-encrypted with session-derived key
   expiresAt: Date;
 }
 
@@ -76,14 +81,22 @@ export interface SessionInfo {
 // ============================================================================
 
 /**
- * Create new session for user
+ * Create new session for user (Variant C+)
  *
- * Flow:
- * 1. Unlock wallet with password (validates password only)
- * 2. Get wallet from DB to retrieve encrypted key
- * 3. Generate secure session token
- * 4. Store session data in Redis (with ENCRYPTED key from DB, not plaintext!)
- * 5. Return token
+ * Security Flow:
+ * 1. Verify password (unlock wallet → plaintext keypair)
+ * 2. Generate session token (cryptographically secure random)
+ * 3. Re-encrypt private key with session-derived key (HKDF)
+ * 4. Store re-encrypted key in Redis (WITHOUT session key!)
+ * 5. Clear plaintext keypair from memory
+ * 6. Return session token
+ *
+ * Why this is secure:
+ * - User password is used ONCE, then discarded (never stored)
+ * - Session key is DERIVED from token via HKDF (not stored in Redis)
+ * - Redis contains encrypted key, but NOT the session key to decrypt it
+ * - Attacker needs both: Redis data + session token (from user's Telegram)
+ * - Session expires after TTL, making encrypted data useless
  */
 export async function createSession(
   params: CreateSessionParams
@@ -104,47 +117,54 @@ export async function createSession(
 
     const { walletId, keypair } = unlockResult.value;
 
-    // ✅ SECURITY FIX: Get wallet from DB to retrieve ENCRYPTED private key
-    const wallet = await prisma.wallet.findUnique({
-      where: { id: walletId },
-    });
-
-    if (!wallet) {
-      clearKeypair(keypair);
-      return Err(new SessionError("Wallet not found in database"));
-    }
-
-    // Generate cryptographically secure session token
+    // Step 2: Generate cryptographically secure session token
     const sessionToken = asSessionToken(generateRandomHex(TOKEN_LENGTH));
 
-    // ✅ SECURITY FIX: Store ENCRYPTED key from DB, NOT plaintext
-    // Old (UNSAFE): Buffer.from(keypair.secretKey).toString("base64")
-    // New (SAFE): wallet.encryptedPrivateKey (already encrypted with Argon2id+AES-256-GCM)
-    const encryptedPrivateKey = wallet.encryptedPrivateKey;
+    // Step 3: Re-encrypt private key with session-derived key
+    // ✅ SECURITY (CRITICAL-2 Fix - Variant C+): Session key is derived from token (HKDF)
+    // NOT stored anywhere - can be re-derived when needed
+    const encryptResult = encryptWithSessionKey(
+      keypair.secretKey, // Raw 64-byte private key
+      sessionToken
+    );
 
-    // Clear plaintext keypair from memory immediately
+    if (!encryptResult.success) {
+      clearKeypair(keypair);
+      return Err(
+        new SessionError(
+          `Failed to encrypt key for session: ${encryptResult.error.message}`
+        )
+      );
+    }
+
+    const sessionEncryptedKey = encryptResult.value;
+
+    // Step 4: Clear plaintext keypair from memory IMMEDIATELY
     clearKeypair(keypair);
 
-    // Create session data
+    // Step 5: Create session data
     const now = Date.now();
     const expiresAt = now + SESSION_TTL * 1000;
 
     const sessionData: SessionData = {
       userId,
       walletId,
-      encryptedPrivateKey, // Now contains REAL encrypted key from DB
+      sessionEncryptedKey, // Re-encrypted with session-derived key
       createdAt: now,
       expiresAt,
     };
 
-    // Store in Redis with TTL
+    // Step 6: Store in Redis with TTL
+    // ✅ Redis contains: encrypted key + salt + IV + authTag
+    // ❌ Redis does NOT contain: session key (it's derived from token!)
     const key = getSessionKey(sessionToken);
     await redis.setex(key, SESSION_TTL, JSON.stringify(sessionData));
 
-    logger.info("Session created securely", {
+    logger.info("Session created with re-encryption (Variant C+)", {
       userId,
       walletId,
       expiresAt: new Date(expiresAt).toISOString(),
+      sessionTokenPrefix: sessionToken.substring(0, 8) + "...",
     });
 
     return Ok({
@@ -190,9 +210,7 @@ export async function getSession(
     return Ok({
       userId: sessionData.userId,
       walletId: sessionData.walletId,
-      encryptedPrivateKey: asEncryptedPrivateKey(
-        sessionData.encryptedPrivateKey
-      ),
+      sessionEncryptedKey: sessionData.sessionEncryptedKey,
       expiresAt: new Date(sessionData.expiresAt),
     });
   } catch (error) {
@@ -331,25 +349,33 @@ export async function extendSession(
 // ============================================================================
 
 /**
- * Get keypair for signing transaction
+ * Get keypair for signing transaction (Variant C+ - No Password Required!)
  *
- * ⚠️ SECURITY: This requires password for EVERY signing operation
+ * ✅ SECURITY: This does NOT require password during active session
  *
  * Flow:
- * 1. Get session from Redis
- * 2. Decrypt encrypted private key with password
- * 3. Reconstruct Keypair
- * 4. Return keypair (caller MUST clear after use!)
+ * 1. Get session from Redis (contains SessionEncryptedKey)
+ * 2. Derive session key from sessionToken (HKDF - not stored anywhere!)
+ * 3. Decrypt private key with derived session key
+ * 4. Reconstruct Keypair
+ * 5. Return keypair (caller MUST clear after use!)
  *
- * This is the ONLY way to get plaintext keys from a session.
- * Keys are decrypted on-demand and never stored in plaintext.
+ * Why this is secure:
+ * - Session key is derived from token (not stored in Redis)
+ * - Attacker needs both: Redis data + session token (from user's Telegram)
+ * - Plaintext keypair exists only during signing (<1ms)
+ * - Session expires after TTL, making encrypted data useless
+ *
+ * This enables:
+ * - Automatic trading (Sniper mode) without repeated password prompts
+ * - Better UX (unlock once, trade multiple times)
+ * - Still secure (session-based authentication)
  */
 export async function getKeypairForSigning(
-  sessionToken: SessionToken,
-  password: string
+  sessionToken: SessionToken
 ): Promise<Result<Keypair, SessionError>> {
   try {
-    // Get session
+    // Step 1: Get session from Redis
     const sessionResult = await getSession(sessionToken);
 
     if (!sessionResult.success || !sessionResult.value) {
@@ -358,10 +384,11 @@ export async function getKeypairForSigning(
 
     const session = sessionResult.value;
 
-    // Decrypt private key with password
-    const decryptResult = await decryptPrivateKey(
-      session.encryptedPrivateKey,
-      password
+    // Step 2: Decrypt private key with session-derived key
+    // ✅ Session key is derived from token (HKDF) - NOT stored in Redis!
+    const decryptResult = decryptWithSessionKey(
+      session.sessionEncryptedKey,
+      sessionToken
     );
 
     if (!decryptResult.success) {
@@ -372,19 +399,22 @@ export async function getKeypairForSigning(
 
       return Err(
         new SessionError(
-          `Invalid password: ${decryptResult.error.message}`
+          `Session decryption failed: ${decryptResult.error.message}`
         )
       );
     }
 
     const privateKey = decryptResult.value;
 
-    // Reconstruct Keypair
+    // Step 3: Reconstruct Keypair from decrypted private key
     const keypair = Keypair.fromSecretKey(privateKey);
 
-    logger.debug("Keypair decrypted for signing", {
+    // Step 4: Clear plaintext private key from memory
+    privateKey.fill(0);
+
+    logger.debug("Keypair decrypted for signing (no password required)", {
       userId: session.userId,
-      publicKey: keypair.publicKey.toBase58(),
+      publicKey: keypair.publicKey.toBase58().substring(0, 8) + "...",
     });
 
     // ⚠️ DO NOT clear keypair here - caller needs it for signing

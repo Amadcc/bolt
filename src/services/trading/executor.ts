@@ -58,13 +58,13 @@ export class TradingExecutor {
   /**
    * Execute a trade with commission calculation and database recording
    *
-   * ✅ Redis Session Integration: Two modes
-   * 1. With sessionToken: Uses getKeypairForSigning (requires password in Grammy session)
+   * ✅ SECURITY (CRITICAL-2 Fix - Variant C+): Two modes
+   * 1. With sessionToken: Uses getKeypairForSigning (NO PASSWORD REQUIRED!)
    * 2. Without sessionToken: Falls back to unlockWallet (requires password parameter)
    */
   async executeTrade(
     params: TradeParams,
-    password: string,
+    password?: string, // ✅ Optional when sessionToken is provided
     sessionToken?: SessionToken // ✅ Optional Redis session token
   ): Promise<Result<TradeResult, TradingError>> {
     const { userId, inputMint, outputMint, amount, slippageBps } = params;
@@ -84,16 +84,20 @@ export class TradingExecutor {
       let publicKey;
 
       // ✅ Step 1: Get keypair - prefer Redis session, fallback to unlockWallet
-      if (sessionToken && password) {
-        // Use Redis session + getKeypairForSigning
-        logger.info("Using Redis session for trade", { userId, sessionToken: sessionToken.substring(0, 10) + "..." });
+      // ✅ SECURITY (CRITICAL-2 Fix - Variant C+): No password required with session!
+      if (sessionToken) {
+        // Use Redis session + getKeypairForSigning (NO PASSWORD NEEDED!)
+        logger.info("Using Redis session for trade (no password required)", {
+          userId,
+          sessionToken: sessionToken.substring(0, 10) + "..."
+        });
 
-        const keypairResult = await getKeypairForSigning(sessionToken, password);
+        const keypairResult = await getKeypairForSigning(sessionToken);
 
         if (!keypairResult.success) {
           return Err({
             type: "INVALID_PASSWORD",
-            message: "Session expired or invalid password. Please /unlock again."
+            message: "Session expired or invalid. Please /unlock again."
           });
         }
 
@@ -102,15 +106,15 @@ export class TradingExecutor {
 
         logger.info("Keypair retrieved from Redis session", { userId, publicKey });
       } else {
-        // Fallback: unlock wallet directly
+        // Fallback: unlock wallet directly (requires password)
         if (!password) {
           return Err({
             type: "INVALID_PASSWORD",
-            message: "Password is required for trading"
+            message: "Password is required for trading without active session. Use /unlock first."
           });
         }
 
-        logger.info("No session - unlocking wallet directly", { userId });
+        logger.info("No session - unlocking wallet directly with password", { userId });
 
         const unlockResult = await unlockWallet({ userId, password });
 

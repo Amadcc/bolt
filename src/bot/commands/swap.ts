@@ -169,12 +169,12 @@ async function executeSwap(
   const messageId = ctx.message?.message_id;
 
   try {
-    // Delete password message immediately
+    // Delete command message (not password - session-based auth)
     if (messageId) {
       try {
         await ctx.api.deleteMessage(ctx.chat!.id, messageId);
       } catch (error) {
-        logger.warn("Failed to delete password message", { error });
+        logger.debug("Failed to delete command message", { error });
       }
     }
 
@@ -196,10 +196,10 @@ async function executeSwap(
     }
 
     // ✅ Redis Session Integration: Get password and sessionToken from context
-    const sessionPassword = ctx.session.password || password;
+    // ✅ SECURITY (CRITICAL-2 Fix): Password NOT stored in session!
     const sessionToken = ctx.session.sessionToken;
 
-    if (!sessionPassword) {
+    if (!ctx.session.sessionToken) {
       await ctx.reply(
         `🔒 *Password Required*\n\n` +
         `No active session. Please either:\n\n` +
@@ -219,7 +219,7 @@ async function executeSwap(
         amount,
         slippageBps: 50, // 0.5% slippage
       },
-      sessionPassword,
+      undefined, // No password needed with session
       sessionToken as any
     );
 

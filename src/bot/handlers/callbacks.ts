@@ -368,7 +368,7 @@ async function executeBuyFlow(
   amount: string
 ): Promise<void> {
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
+  if (!ctx.session.sessionToken) {
     await ctx.answerCallbackQuery();
 
     // Show unlock prompt with buttons
@@ -537,7 +537,7 @@ async function executeSellFlow(
   percentage: string
 ): Promise<void> {
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
+  if (!ctx.session.sessionToken) {
     await ctx.answerCallbackQuery();
 
     // Show unlock prompt with buttons
@@ -828,7 +828,7 @@ async function executeSwapFlow(
   }
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
+  if (!ctx.session.sessionToken) {
     await ctx.editMessageText(
       `🔒 *Wallet Locked*\n\n` +
         `To swap ${amount} ${inputToken} → ${outputToken}, please unlock your wallet first.\n\n` +

@@ -21,6 +21,15 @@ import {
   handleSwapCallback,
   handleSettingsCallback,
 } from "./handlers/callbacks.js";
+// ✅ SECURITY (CRITICAL-3 Fix): Rate limiting to prevent DoS and bruteforce
+import {
+  globalLimiter,
+  unlockLimiter,
+  tradeLimiter,
+  walletCreationLimiter,
+} from "./middleware/rateLimit.js";
+// ✅ SECURITY (CRITICAL-4 Fix): Safe password deletion with abort on failure
+import { securePasswordDelete } from "./utils/secureDelete.js";
 
 interface SessionData {
   walletId?: string;
@@ -65,6 +74,11 @@ bot.use(
     }),
   })
 );
+
+// ✅ SECURITY (CRITICAL-3 Fix): Global rate limiting
+// Applies to ALL commands to prevent DoS attacks
+// 30 requests per minute per user
+bot.use(globalLimiter);
 
 // Middleware для проверки/создания пользователя
 bot.use(async (ctx, next) => {
@@ -133,7 +147,8 @@ bot.command("wallet", async (ctx) => {
   await navigateToPage(ctx, "wallet_info");
 });
 
-bot.command("createwallet", async (ctx) => {
+// ✅ SECURITY (CRITICAL-3): Rate limit wallet creation (2 per hour)
+bot.command("createwallet", walletCreationLimiter, async (ctx) => {
   // Delete the command message
   try {
     await ctx.deleteMessage();
@@ -144,7 +159,8 @@ bot.command("createwallet", async (ctx) => {
   await navigateToPage(ctx, "create_wallet");
 });
 
-bot.command("buy", async (ctx) => {
+// ✅ SECURITY (CRITICAL-3): Rate limit trading commands (10 per minute)
+bot.command("buy", tradeLimiter, async (ctx) => {
   // Delete the command message
   try {
     await ctx.deleteMessage();
@@ -156,7 +172,7 @@ bot.command("buy", async (ctx) => {
   await navigateToPage(ctx, "buy");
 });
 
-bot.command("sell", async (ctx) => {
+bot.command("sell", tradeLimiter, async (ctx) => {
   // Delete the command message
   try {
     await ctx.deleteMessage();
@@ -168,7 +184,7 @@ bot.command("sell", async (ctx) => {
   await navigateToPage(ctx, "sell");
 });
 
-bot.command("swap", async (ctx) => {
+bot.command("swap", tradeLimiter, async (ctx) => {
   // Delete the command message
   try {
     await ctx.deleteMessage();
@@ -204,7 +220,8 @@ bot.command("settings", async (ctx) => {
 });
 
 // ✅ Redis Session Integration: Secure Redis sessions (encrypted keys + password)
-bot.command("unlock", handleUnlock);
+// ✅ SECURITY (CRITICAL-3): Rate limit unlock (3 attempts per 5 minutes) - prevents bruteforce!
+bot.command("unlock", unlockLimiter, handleUnlock);
 bot.command("lock", handleLock);
 bot.command("status", handleStatus);
 
@@ -286,12 +303,12 @@ bot.on("message:text", async (ctx, next) => {
   // Check if we're waiting for password input for wallet creation
   if (ctx.session.awaitingPasswordForWallet) {
     const password = ctx.message.text;
+    const messageId = ctx.message.message_id;
 
-    // Delete password message immediately
-    try {
-      await ctx.deleteMessage();
-    } catch (error) {
-      logger.warn("Failed to delete password message", { error });
+    // ✅ SECURITY (CRITICAL-4 Fix): Safely delete password, ABORT if fails
+    if (!(await securePasswordDelete(ctx, messageId, "wallet creation"))) {
+      ctx.session.awaitingPasswordForWallet = false;
+      return; // ABORT wallet creation
     }
 
     // Reset conversation state
@@ -323,12 +340,12 @@ bot.on("message:text", async (ctx, next) => {
   // ✅ Redis Session Integration: Handle password input for unlock
   if (ctx.session.awaitingPasswordForUnlock) {
     const password = ctx.message.text;
+    const messageId = ctx.message.message_id;
 
-    // Delete password message immediately
-    try {
-      await ctx.deleteMessage();
-    } catch (error) {
-      logger.warn("Failed to delete password message", { error });
+    // ✅ SECURITY (CRITICAL-4 Fix): Safely delete password, ABORT if fails
+    if (!(await securePasswordDelete(ctx, messageId, "unlock"))) {
+      ctx.session.awaitingPasswordForUnlock = false;
+      return; // ABORT unlock
     }
 
     // Reset conversation state
@@ -341,7 +358,7 @@ bot.on("message:text", async (ctx, next) => {
     setTimeout(async () => {
       try {
         // Check if Redis session was successfully created
-        if (ctx.session.sessionToken && ctx.session.password) {
+        if (ctx.session.sessionToken) {
           await navigateToPage(ctx, "main");
         }
       } catch (error) {
@@ -523,7 +540,7 @@ async function executeBuyFromAmount(
   }
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
+  if (!ctx.session.sessionToken) {
     // Wallet is locked - show unlock prompt
     await ctx.api.editMessageText(
       ctx.chat.id,
@@ -599,7 +616,7 @@ async function executeSellFromAmount(
   }
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
+  if (!ctx.session.sessionToken) {
     // Wallet is locked - show unlock prompt
     await ctx.api.editMessageText(
       ctx.chat.id,
@@ -675,7 +692,7 @@ async function executeSwapFromAmount(
   }
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
+  if (!ctx.session.sessionToken) {
     // Wallet is locked - show unlock prompt
     await ctx.api.editMessageText(
       ctx.chat.id,
