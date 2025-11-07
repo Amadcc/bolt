@@ -244,9 +244,17 @@ export async function clearRateLimit(
       await redis.del(`ratelimit:${commandName}:${userId}`);
       logger.info("Rate limit cleared", { userId, commandName });
     } else {
-      // MEDIUM-6: Use non-blocking SCAN instead of blocking KEYS
+      // MEDIUM-6 + LOW-4: Use non-blocking SCAN with error handling
       const { redisScan } = await import("../../utils/redis.js");
-      const keys = await redisScan(`ratelimit:*:${userId}`);
+      const scanResult = await redisScan(`ratelimit:*:${userId}`);
+
+      // LOW-4: Handle scan failure gracefully
+      if (!scanResult.success) {
+        logger.error("Failed to scan rate limits", { userId, error: scanResult.error });
+        return;
+      }
+
+      const keys = scanResult.value;
       if (keys.length > 0) {
         await redis.del(...keys);
         logger.info("All rate limits cleared", { userId, count: keys.length });

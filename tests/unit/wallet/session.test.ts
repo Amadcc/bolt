@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeAll, afterEach } from "vitest";
 import { Keypair } from "@solana/web3.js";
 import { prisma } from "../../../src/utils/db.js";
+import { validateEnv } from "../../../src/config/env.js";
 import { createWallet } from "../../../src/services/wallet/keyManager.js";
 import {
   createSession,
@@ -17,9 +18,13 @@ import type { SessionToken } from "../../../src/types/common.js";
 
 describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
   let testUserId: string;
-  const testPassword = "test-password-123";
+  // Password must meet MEDIUM-8 requirements: 12+ chars, uppercase, lowercase, numbers, special char
+  const testPassword = "TestPassword123!";
 
   beforeAll(async () => {
+    // Initialize environment (required for session encryption)
+    validateEnv();
+
     // Create test user
     const user = await prisma.user.create({
       data: {
@@ -34,6 +39,13 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
       userId: testUserId,
       password: testPassword,
     });
+
+    if (!walletResult.success) {
+      console.error("Wallet creation failed:", walletResult.error);
+      throw new Error(
+        `Wallet creation failed: ${JSON.stringify(walletResult.error)}`
+      );
+    }
 
     expect(walletResult.success).toBe(true);
   });
@@ -73,7 +85,8 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
       if (!session) return;
 
       expect(session.userId).toBe(testUserId);
-      expect(session.encryptedPrivateKey).toBeDefined();
+      // VARIANT C+: Session contains sessionEncryptedKey, not encryptedPrivateKey
+      expect(session.sessionEncryptedKey).toBeDefined();
       expect(session.walletId).toBeDefined();
     });
 
@@ -142,7 +155,8 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
       if (!session) return;
 
       expect(session.userId).toBe(testUserId);
-      expect(session.encryptedPrivateKey).toBeDefined();
+      // VARIANT C+: Session contains sessionEncryptedKey object
+      expect(session.sessionEncryptedKey).toBeDefined();
       expect(session.walletId).toBeDefined();
     });
 
@@ -219,8 +233,8 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
     });
   });
 
-  describe("getKeypairForSigning (CRITICAL-2 fix)", () => {
-    it("should retrieve keypair from Redis session with password", async () => {
+  describe("getKeypairForSigning (CRITICAL-2 fix: Variant C+)", () => {
+    it("should retrieve keypair from Redis session WITHOUT password (session-based auth)", async () => {
       const createResult = await createSession({
         userId: testUserId,
         password: testPassword,
@@ -230,11 +244,8 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
 
       const { sessionToken } = createResult.value;
 
-      // Get keypair for signing
-      const keypairResult = await getKeypairForSigning(
-        sessionToken,
-        testPassword
-      );
+      // VARIANT C+: Get keypair using session token only (no password needed)
+      const keypairResult = await getKeypairForSigning(sessionToken);
       expect(keypairResult.success).toBe(true);
       if (!keypairResult.success) return;
 
@@ -247,28 +258,9 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
       expect(keypair.secretKey.length).toBe(64);
     });
 
-    it("should reject invalid password", async () => {
-      const createResult = await createSession({
-        userId: testUserId,
-        password: testPassword,
-      });
-      expect(createResult.success).toBe(true);
-      if (!createResult.success) return;
-
-      const { sessionToken } = createResult.value;
-
-      // Try with wrong password
-      const keypairResult = await getKeypairForSigning(
-        sessionToken,
-        "wrong-password"
-      );
-      expect(keypairResult.success).toBe(false);
-    });
-
     it("should reject invalid session token", async () => {
       const keypairResult = await getKeypairForSigning(
-        "00000000-0000-0000-0000-000000000000" as SessionToken,
-        testPassword
+        "0000000000000000000000000000000000000000000000000000000000000000" as SessionToken
       );
 
       expect(keypairResult.success).toBe(false);
@@ -293,13 +285,22 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
       expect(session).not.toBeNull();
       if (!session) return;
 
-      // Encrypted private key should NOT be plaintext
-      // It should be hex-encoded encrypted data (longer than 64 bytes)
-      expect(session.encryptedPrivateKey.length).toBeGreaterThan(128); // Base64 encoded encrypted data
+      // VARIANT C+: Session encrypted key should be an object with ciphertext, iv, authTag, salt
+      expect(session.sessionEncryptedKey).toBeDefined();
+      expect(session.sessionEncryptedKey.ciphertext).toBeDefined();
+      expect(session.sessionEncryptedKey.iv).toBeDefined();
+      expect(session.sessionEncryptedKey.authTag).toBeDefined();
+      expect(session.sessionEncryptedKey.salt).toBeDefined();
 
-      // Should not be able to create Keypair directly from encrypted key
+      // Ciphertext should be hex-encoded (not plaintext)
+      expect(session.sessionEncryptedKey.ciphertext.length).toBeGreaterThan(64);
+
+      // Should not be able to create Keypair directly from ciphertext
       expect(() => {
-        const bytes = Buffer.from(session.encryptedPrivateKey, "base64");
+        const bytes = Buffer.from(
+          session.sessionEncryptedKey.ciphertext,
+          "hex"
+        );
         Keypair.fromSecretKey(bytes);
       }).toThrow();
     });
@@ -374,14 +375,22 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
       expect(session).not.toBeNull();
       if (!session) return;
 
-      // Encrypted key should be base64 encoded and longer than plaintext
-      const encryptedKey = session.encryptedPrivateKey;
-      expect(encryptedKey).toBeDefined();
-      expect(encryptedKey.length).toBeGreaterThan(128); // Encrypted data is longer
+      // VARIANT C+: Session encrypted key should be structured object
+      expect(session.sessionEncryptedKey).toBeDefined();
+      expect(session.sessionEncryptedKey.ciphertext).toBeDefined();
+      expect(session.sessionEncryptedKey.iv).toBeDefined();
+      expect(session.sessionEncryptedKey.authTag).toBeDefined();
+      expect(session.sessionEncryptedKey.salt).toBeDefined();
 
-      // Should not be able to use it as a keypair directly
+      // Ciphertext should be hex-encoded (not plaintext, longer than 64 bytes)
+      expect(session.sessionEncryptedKey.ciphertext.length).toBeGreaterThan(64);
+
+      // Should not be able to use ciphertext as a keypair directly
       expect(() => {
-        const bytes = Buffer.from(encryptedKey, "base64");
+        const bytes = Buffer.from(
+          session.sessionEncryptedKey.ciphertext,
+          "hex"
+        );
         Keypair.fromSecretKey(bytes);
       }).toThrow();
     });
@@ -396,11 +405,8 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
 
       const { sessionToken } = createResult.value;
 
-      // Get keypair
-      const keypairResult = await getKeypairForSigning(
-        sessionToken,
-        testPassword
-      );
+      // VARIANT C+: Get keypair using session token only
+      const keypairResult = await getKeypairForSigning(sessionToken);
       expect(keypairResult.success).toBe(true);
       if (!keypairResult.success) return;
 
@@ -420,12 +426,13 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
       expect(session).not.toBeNull();
       if (!session) return;
 
-      // Redis should still only have encrypted key
-      expect(session.encryptedPrivateKey).toBeDefined();
-      expect(session.encryptedPrivateKey.length).toBeGreaterThan(128);
+      // VARIANT C+: Redis should still only have encrypted key (re-encrypted with session key)
+      expect(session.sessionEncryptedKey).toBeDefined();
+      expect(session.sessionEncryptedKey.ciphertext).toBeDefined();
+      expect(session.sessionEncryptedKey.ciphertext.length).toBeGreaterThan(64);
     });
 
-    it("CRITICAL-2: Password required for every getKeypairForSigning call", async () => {
+    it("CRITICAL-2: Session-based auth - NO password required for getKeypairForSigning (Variant C+)", async () => {
       const createResult = await createSession({
         userId: testUserId,
         password: testPassword,
@@ -435,23 +442,20 @@ describe("Redis Session Management (CRITICAL-1 + CRITICAL-2 fixes)", () => {
 
       const { sessionToken } = createResult.value;
 
-      // First call should succeed
-      const keypairResult1 = await getKeypairForSigning(
-        sessionToken,
-        testPassword
-      );
+      // VARIANT C+: First call should succeed WITHOUT password
+      const keypairResult1 = await getKeypairForSigning(sessionToken);
       expect(keypairResult1.success).toBe(true);
+      if (!keypairResult1.success) return;
 
-      // Second call should also require password
-      const keypairResult2 = await getKeypairForSigning(
-        sessionToken,
-        testPassword
-      );
+      // VARIANT C+: Second call should also succeed WITHOUT password
+      const keypairResult2 = await getKeypairForSigning(sessionToken);
       expect(keypairResult2.success).toBe(true);
+      if (!keypairResult2.success) return;
 
-      // Without password should fail
-      const keypairResult3 = await getKeypairForSigning(sessionToken, "");
-      expect(keypairResult3.success).toBe(false);
+      // VARIANT C+: Session token is the only credential needed
+      // This enables automatic trading without repeated password prompts
+      expect(keypairResult1.value).toBeInstanceOf(Keypair);
+      expect(keypairResult2.value).toBeInstanceOf(Keypair);
     });
   });
 });

@@ -266,11 +266,22 @@ export async function destroyAllUserSessions(
   userId: string
 ): Promise<Result<void, SessionError>> {
   try {
-    // MEDIUM-6: Use non-blocking SCAN instead of blocking KEYS
+    // MEDIUM-6 + LOW-4: Use non-blocking SCAN with error handling
     const pattern = `${SESSION_PREFIX}*`;
     const { redisScan } = await import("../../utils/redis.js");
-    const keys = await redisScan(pattern);
+    const scanResult = await redisScan(pattern);
 
+    // LOW-4: Handle scan failure
+    if (!scanResult.success) {
+      logger.error("Failed to scan sessions", { userId, error: scanResult.error });
+      return Err(
+        new SessionError(
+          `Failed to scan sessions: ${scanResult.error.message}`
+        )
+      );
+    }
+
+    const keys = scanResult.value;
     let deletedCount = 0;
 
     for (const key of keys) {
@@ -448,11 +459,21 @@ export async function getSessionStats(): Promise<{
   activeUsers: Set<string>;
 }> {
   try {
-    // MEDIUM-6: Use non-blocking SCAN instead of blocking KEYS
+    // MEDIUM-6 + LOW-4: Use non-blocking SCAN with error handling
     const pattern = `${SESSION_PREFIX}*`;
     const { redisScan } = await import("../../utils/redis.js");
-    const keys = await redisScan(pattern);
+    const scanResult = await redisScan(pattern);
 
+    // LOW-4: Handle scan failure gracefully
+    if (!scanResult.success) {
+      logger.error("Failed to scan sessions for stats", { error: scanResult.error });
+      return {
+        totalSessions: 0,
+        activeUsers: new Set(),
+      };
+    }
+
+    const keys = scanResult.value;
     const activeUsers = new Set<string>();
 
     for (const key of keys) {

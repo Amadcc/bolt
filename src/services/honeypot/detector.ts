@@ -17,6 +17,8 @@ import { redis } from "../../utils/redis.js";
 import { getSolana } from "../blockchain/solana.js";
 import type { Result } from "../../types/common.js";
 import { Ok, Err } from "../../types/common.js";
+import { requireHttpsUrl } from "../../utils/helpers.js";
+
 // LOW-1: Interface for Axios config with retry property
 interface AxiosConfigWithRetry extends AxiosRequestConfig {
   retry?: number;
@@ -38,6 +40,21 @@ import { asRiskScore } from "../../types/honeypot.js";
 // ============================================================================
 // Configuration
 // ============================================================================
+
+/**
+ * GoPlus Security API Endpoint (LOW-5: HTTPS validated)
+ */
+const GOPLUS_API_URL = "https://api.gopluslabs.io/api/v1/token_security/solana";
+
+// LOW-5: Validate HTTPS on module load
+try {
+  requireHttpsUrl(GOPLUS_API_URL, "GoPlus API URL");
+} catch (error) {
+  logger.error("GoPlus API URL validation failed", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+  throw error;
+}
 
 /**
  * Well-known safe tokens (MEDIUM-2: Whitelist optimization)
@@ -331,8 +348,9 @@ export class HoneypotDetector {
       // Rate limiting: max 60 requests per minute
       await this.rateLimit();
 
+      // LOW-5: Use validated HTTPS constant
       const response = await this.apiClient.get<GoPlusResponse>(
-        "https://api.gopluslabs.io/api/v1/token_security/solana",
+        GOPLUS_API_URL,
         {
           params: {
             contract_addresses: tokenMint,

@@ -168,3 +168,103 @@ export function clamp(value: number, min: number, max: number): number {
 export async function nextTick(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
+
+// ============================================================================
+// URL Validation (LOW-5: HTTPS Enforcement)
+// ============================================================================
+
+/**
+ * Validate that URL uses HTTPS protocol (LOW-5)
+ *
+ * Security requirement: All external URLs must use HTTPS to prevent
+ * man-in-the-middle attacks and ensure data confidentiality.
+ *
+ * Exceptions:
+ * - localhost URLs (development)
+ * - 127.0.0.1 URLs (development)
+ * - redis:// protocol (internal service)
+ *
+ * @param url - URL to validate
+ * @param options - Validation options
+ * @returns true if URL is secure, false otherwise
+ */
+export function isSecureUrl(
+  url: string,
+  options: {
+    allowLocalhost?: boolean;
+    allowRedis?: boolean;
+    context?: string; // For error messages
+  } = {}
+): { valid: boolean; error?: string } {
+  const { allowLocalhost = true, allowRedis = false, context = "URL" } = options;
+
+  try {
+    const parsed = new URL(url);
+
+    // Allow redis:// for internal services
+    if (allowRedis && parsed.protocol === "redis:") {
+      return { valid: true };
+    }
+
+    // Allow localhost in development
+    if (allowLocalhost) {
+      const isLocalhost =
+        parsed.hostname === "localhost" ||
+        parsed.hostname === "127.0.0.1" ||
+        parsed.hostname === "::1";
+
+      if (isLocalhost) {
+        return { valid: true };
+      }
+    }
+
+    // Require HTTPS for all external URLs
+    if (parsed.protocol !== "https:") {
+      return {
+        valid: false,
+        error: `${context} must use HTTPS protocol. Got: ${parsed.protocol}//${parsed.hostname}`,
+      };
+    }
+
+    return { valid: true };
+  } catch (error) {
+    return {
+      valid: false,
+      error: `Invalid ${context} format: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/**
+ * Validate HTTPS URL and throw if invalid (LOW-5)
+ *
+ * @param url - URL to validate
+ * @param context - Context for error message
+ * @throws {Error} If URL is not HTTPS
+ */
+export function requireHttpsUrl(url: string, context: string): void {
+  const result = isSecureUrl(url, { allowLocalhost: false, context });
+  if (!result.valid) {
+    throw new Error(result.error || `${context} validation failed`);
+  }
+}
+
+/**
+ * Validate array of HTTPS URLs (LOW-5)
+ *
+ * @param urls - URLs to validate
+ * @param context - Context for error messages
+ * @returns Array of validation results
+ */
+export function validateHttpsUrls(
+  urls: string[],
+  context: string
+): Array<{ url: string; valid: boolean; error?: string }> {
+  return urls.map((url) => {
+    const result = isSecureUrl(url, { allowLocalhost: false, context });
+    return {
+      url,
+      ...result,
+    };
+  });
+}

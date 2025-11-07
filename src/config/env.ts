@@ -13,6 +13,7 @@
 
 import { z } from "zod";
 import { logger } from "../utils/logger.js";
+import { isSecureUrl } from "../utils/helpers.js";
 
 // ============================================================================
 // Schema Definition
@@ -182,29 +183,51 @@ function validateSecurityConstraints(env: Env): void {
   // Get RPC URLs for validation
   const rpcUrls = getRpcEndpointsFromEnv(env);
 
-  // Validate all RPC URLs
+  // LOW-5: Validate all RPC URLs use HTTPS (production) or valid format (development)
   for (const url of rpcUrls) {
+    // Basic URL format validation
     try {
       new URL(url);
     } catch {
       throw new Error(`Invalid RPC URL format: ${url}`);
     }
 
-    // Ensure HTTPS in production
-    if (env.NODE_ENV === "production" && !url.startsWith("https://")) {
-      throw new Error(
-        `RPC URL must use HTTPS in production: ${url}`
-      );
+    // LOW-5: HTTPS enforcement - stricter in production, warning in development
+    const securityCheck = isSecureUrl(url, {
+      allowLocalhost: env.NODE_ENV !== "production",
+      context: "Solana RPC URL",
+    });
+
+    if (!securityCheck.valid) {
+      if (env.NODE_ENV === "production") {
+        // Hard fail in production
+        throw new Error(securityCheck.error || `Invalid RPC URL: ${url}`);
+      } else {
+        // Warn in development
+        logger.warn(`⚠️  ${securityCheck.error}`, { url, env: env.NODE_ENV });
+      }
     }
   }
 
-  // Production-specific checks
-  if (env.NODE_ENV === "production") {
-    if (!env.JUPITER_API_URL.startsWith("https://")) {
-      throw new Error(
-        "JUPITER_API_URL must use HTTPS in production environment"
-      );
+  // LOW-5: Validate Jupiter API URL uses HTTPS
+  const jupiterCheck = isSecureUrl(env.JUPITER_API_URL, {
+    allowLocalhost: env.NODE_ENV !== "production",
+    context: "Jupiter API URL",
+  });
+
+  if (!jupiterCheck.valid) {
+    if (env.NODE_ENV === "production") {
+      throw new Error(jupiterCheck.error || "Invalid Jupiter API URL");
+    } else {
+      logger.warn(`⚠️  ${jupiterCheck.error}`, {
+        url: env.JUPITER_API_URL,
+        env: env.NODE_ENV,
+      });
     }
+  }
+
+  // Production-specific checks (kept for backward compatibility)
+  if (env.NODE_ENV === "production") {
 
     // Ensure strong session secret in production
     if (env.SESSION_MASTER_SECRET.length < 64) {
