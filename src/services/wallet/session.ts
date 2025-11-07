@@ -109,9 +109,7 @@ export async function createSession(
 
     if (!unlockResult.success) {
       return Err(
-        new SessionError(
-          `Failed to create session: ${unlockResult.error.type}`
-        )
+        new SessionError(`Failed to create session: ${unlockResult.error.type}`)
       );
     }
 
@@ -175,7 +173,9 @@ export async function createSession(
     logger.error("Failed to create session", { userId, error });
     return Err(
       new SessionError(
-        `Failed to create session: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to create session: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       )
     );
   }
@@ -217,7 +217,9 @@ export async function getSession(
     logger.error("Failed to get session", { error });
     return Err(
       new SessionError(
-        `Failed to get session: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to get session: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       )
     );
   }
@@ -253,7 +255,9 @@ export async function destroySession(
     logger.error("Failed to destroy session", { error });
     return Err(
       new SessionError(
-        `Failed to destroy session: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to destroy session: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       )
     );
   }
@@ -273,11 +277,12 @@ export async function destroyAllUserSessions(
 
     // LOW-4: Handle scan failure
     if (!scanResult.success) {
-      logger.error("Failed to scan sessions", { userId, error: scanResult.error });
+      logger.error("Failed to scan sessions", {
+        userId,
+        error: scanResult.error,
+      });
       return Err(
-        new SessionError(
-          `Failed to scan sessions: ${scanResult.error.message}`
-        )
+        new SessionError(`Failed to scan sessions: ${scanResult.error.message}`)
       );
     }
 
@@ -301,7 +306,9 @@ export async function destroyAllUserSessions(
     logger.error("Failed to destroy user sessions", { userId, error });
     return Err(
       new SessionError(
-        `Failed to destroy user sessions: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to destroy user sessions: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       )
     );
   }
@@ -350,7 +357,9 @@ export async function extendSession(
     logger.error("Failed to extend session", { error });
     return Err(
       new SessionError(
-        `Failed to extend session: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to extend session: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       )
     );
   }
@@ -384,7 +393,8 @@ export async function extendSession(
  * - Still secure (session-based authentication)
  */
 export async function getKeypairForSigning(
-  sessionToken: SessionToken
+  sessionToken: SessionToken,
+  p0: string
 ): Promise<Result<Keypair, SessionError>> {
   try {
     // Step 1: Get session from Redis
@@ -437,7 +447,9 @@ export async function getKeypairForSigning(
     logger.error("Failed to get keypair for signing", { error });
     return Err(
       new SessionError(
-        `Failed to decrypt key: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to decrypt key: ${
+          error instanceof Error ? error.message : String(error)
+        }`
       )
     );
   }
@@ -466,7 +478,9 @@ export async function getSessionStats(): Promise<{
 
     // LOW-4: Handle scan failure gracefully
     if (!scanResult.success) {
-      logger.error("Failed to scan sessions for stats", { error: scanResult.error });
+      logger.error("Failed to scan sessions for stats", {
+        error: scanResult.error,
+      });
       return {
         totalSessions: 0,
         activeUsers: new Set(),
