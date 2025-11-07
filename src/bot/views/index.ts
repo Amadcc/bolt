@@ -86,23 +86,12 @@ export async function renderWelcomePage(ctx: Context): Promise<{
   const hasWallet = user?.wallets && user.wallets.length > 0;
 
   const text =
-    `⚡️ *Bolt Sniper Bot*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `🎯 Fastest way to snipe new Solana tokens with military-grade security\n\n` +
-    `✨ *What You Get:*\n\n` +
-    `⚡️ Lightning-fast sniping (<500ms)\n` +
-    `🛡 Honeypot detection (95%+ accuracy)\n` +
-    `🔐 Non-custodial wallet (you own keys)\n` +
-    `🔄 Jupiter v6 best prices\n` +
-    `🚀 MEV protection built-in\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `💎 *Your keys, your crypto*\n` +
-    `All private keys encrypted with\n` +
-    `Argon2id + AES-256-GCM\n\n` +
+    `⚡️ *Bolt Sniper Bot*\n\n` +
+    `Trade Solana tokens instantly with built-in honeypot protection and best prices from Jupiter.\n\n` +
     (hasWallet
-      ? `✅ *Wallet ready!* Let's start trading\n\n`
-      : `⚠️ *No wallet yet* - Create one to start\n\n`) +
-    `Made with ❤️ by @amadevstudio`;
+      ? `✅ Your wallet is ready — let's trade!\n\n`
+      : `👉 Create your secure wallet in 30 seconds\n\n`) +
+    `*Your keys, your crypto* 🔐`;
 
   const keyboard = new InlineKeyboard();
 
@@ -123,28 +112,18 @@ export function renderCreateWalletPage(): {
   keyboard: InlineKeyboard;
 } {
   const text =
-    `⚡️ *Bolt Sniper Bot*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `💼 *Create Your Wallet*\n\n` +
-    `You're about to create a secure,\n` +
-    `non-custodial Solana wallet.\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `📝 *How it works:*\n\n` +
-    `1️⃣ Choose a strong password\n` +
-    `   (minimum 8 characters)\n\n` +
-    `2️⃣ Send it in the next message\n\n` +
-    `3️⃣ We generate & encrypt your keys\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `🔐 *Military-grade security:*\n\n` +
-    `🔹 Argon2id key derivation\n` +
-    `🔹 AES-256-GCM encryption\n` +
-    `🔹 Password NEVER stored\n` +
-    `🔹 Message auto-deleted\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `⚠️ *Critical:* Store your password\n` +
-    `safely. No recovery possible!\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `✍️ *Ready?* Send your password now...`;
+    `💼 *Create Wallet*\n\n` +
+    `Let's create your secure Solana wallet!\n\n` +
+    `*How it works:*\n` +
+    `1️⃣ Choose a strong password (min 8 chars)\n` +
+    `2️⃣ Send it in next message\n` +
+    `3️⃣ Done! Your wallet is ready\n\n` +
+    `🔐 *Security:*\n` +
+    `• Your password encrypts your private keys\n` +
+    `• Password is NEVER stored anywhere\n` +
+    `• Your message will auto-delete\n\n` +
+    `⚠️ *Important:* Save your password safely — we can't recover it!\n\n` +
+    `✍️ Ready? Send your password now...`;
 
   const keyboard = new InlineKeyboard()
     .text("« Cancel", "nav:main");
@@ -173,14 +152,11 @@ export async function renderMainPage(ctx: Context): Promise<{
   const isLocked = !ctx.session.sessionToken;
 
   const text =
-    `⚡️ *Dashboard*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `💼 *Your Wallet*\n` +
-    `\`${wallet.publicKey}\`\n\n` +
-    `${isLocked ? "🔒 Status: *Locked* - unlock to trade" : "🔓 Status: *Unlocked* - ready to trade"}\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `⚡️ *Quick Actions*\n\n` +
-    `Choose what you want to do:`;
+    `🏠 *Dashboard*\n\n` +
+    `💼 Wallet: \`${wallet.publicKey.slice(0, 8)}...${wallet.publicKey.slice(-6)}\`\n\n` +
+    `${isLocked ? "🔒 *Locked* — unlock to start trading" : "🔓 *Unlocked* — ready to trade"}\n\n` +
+    `━━━━━━━━━━━━━━━\n` +
+    `What would you like to do?`;
 
   const keyboard = new InlineKeyboard()
     .text("🛒 Buy", "nav:buy")
@@ -212,15 +188,11 @@ export function renderBuyPage(data?: { selectedToken?: string }): {
   keyboard: InlineKeyboard;
 } {
   const text =
-    `🛒 *Buy Tokens*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n\n` +
     (data?.selectedToken
-      ? `✅ Selected: *${data.selectedToken}*\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `💰 *Choose Amount*\n\n` +
+      ? `🛒 *Buy ${data.selectedToken}*\n\n` +
         `How much SOL to spend?`
-      : `🪙 *Select Token*\n\n` +
-        `Which token do you want to buy?`);
+      : `🛒 *Buy Tokens*\n\n` +
+        `Choose a token to buy:`);
 
   const keyboard = new InlineKeyboard();
 
@@ -262,15 +234,11 @@ export function renderSellPage(data?: { selectedToken?: string }): {
   keyboard: InlineKeyboard;
 } {
   const text =
-    `💸 *Sell Tokens*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n\n` +
     (data?.selectedToken
-      ? `✅ Selected: *${data.selectedToken}*\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n` +
-        `📊 *Choose Amount*\n\n` +
-        `How much to sell for SOL?`
-      : `🪙 *Select Token*\n\n` +
-        `Which token do you want to sell?`);
+      ? `💸 *Sell ${data.selectedToken}*\n\n` +
+        `How much to sell?`
+      : `💸 *Sell Tokens*\n\n` +
+        `Choose a token to sell:`);
 
   const keyboard = new InlineKeyboard();
 
@@ -336,8 +304,9 @@ function renderSwapStepSelectInput(): {
   keyboard: InlineKeyboard;
 } {
   const text =
-    `🔄 *Swap Tokens*\n━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `📥 *Step 1: Input Token*\n\nWhat do you want to swap FROM?`;
+    `🔄 *Swap Tokens*\n\n` +
+    `*Step 1 of 3:* Choose input token\n\n` +
+    `What do you want to swap FROM?`;
 
   const keyboard = new InlineKeyboard()
     .text("🟣 SOL", "swap:input:SOL")
@@ -362,10 +331,10 @@ function renderSwapStepSelectOutput(inputToken: string): {
   keyboard: InlineKeyboard;
 } {
   const text =
-    `🔄 *Swap Tokens*\n━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `✅ From: *${inputToken}*\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `📤 *Step 2: Output Token*\n\nWhat do you want to swap TO?`;
+    `🔄 *Swap Tokens*\n\n` +
+    `From: *${inputToken}*\n\n` +
+    `*Step 2 of 3:* Choose output token\n\n` +
+    `What do you want to swap TO?`;
 
   const keyboard = new InlineKeyboard()
     .text("🟣 SOL", `swap:output:${inputToken}:SOL`)
@@ -394,11 +363,10 @@ function renderSwapStepSelectAmount(
   keyboard: InlineKeyboard;
 } {
   const text =
-    `🔄 *Swap Tokens*\n━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `✅ From: *${inputToken}*\n` +
-    `✅ To: *${outputToken}*\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `💰 *Step 3: Amount*\n\nHow much ${inputToken} to swap?`;
+    `🔄 *Swap Tokens*\n\n` +
+    `*${inputToken}* → *${outputToken}*\n\n` +
+    `*Step 3 of 3:* Choose amount\n\n` +
+    `How much ${inputToken} to swap?`;
 
   const keyboard = new InlineKeyboard();
 
@@ -458,10 +426,9 @@ export async function renderBalancePage(ctx: Context): Promise<{
   }
 
   const text =
-    `📊 *Your Balance*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `⏳ Fetching balances...\n\n` +
-    `Please wait...`;
+    `📊 *Balance*\n\n` +
+    `⏳ Loading balances...\n\n` +
+    `Please wait a moment.`;
 
   const keyboard = new InlineKeyboard()
     .text("🔄 Refresh", "action:refresh_balance")
@@ -490,14 +457,11 @@ export async function renderWalletInfoPage(ctx: Context): Promise<{
   const wallet = user.wallets[0];
 
   const text =
-    `💼 *Wallet Information*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `📍 *Address:*\n\`${wallet.publicKey}\`\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `⛓ Chain: *${wallet.chain.toUpperCase()}*\n` +
-    `${wallet.isActive ? "🟢 Status: *Active*" : "🔴 Status: *Inactive*"}\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `🔗 *View on Explorers:*\n\n` +
+    `💼 *Wallet Info*\n\n` +
+    `*Address:*\n\`${wallet.publicKey}\`\n\n` +
+    `Chain: *${wallet.chain.toUpperCase()}*\n` +
+    `Status: ${wallet.isActive ? "*Active* 🟢" : "*Inactive* 🔴"}\n\n` +
+    `*View on:*\n` +
     `• [Solscan](https://solscan.io/account/${wallet.publicKey})\n` +
     `• [Solana Explorer](https://explorer.solana.com/address/${wallet.publicKey})`;
 
@@ -521,15 +485,10 @@ export function renderSettingsPage(settings?: {
   const autoApprove = settings?.autoApprove ?? false;
 
   const text =
-    `⚙️ *Settings*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `🎯 *Slippage Tolerance*\n` +
-    `Current: ${slippage}%\n\n` +
-    `${autoApprove ? "✅" : "❌"} *Auto-approve Trades*\n` +
-    `Status: ${autoApprove ? "Enabled" : "Disabled"}\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `Adjust your trading preferences\n` +
-    `using the buttons below`;
+    `⚙️ *Settings*\n\n` +
+    `*Slippage:* ${slippage}%\n` +
+    `*Auto-approve:* ${autoApprove ? "✅ Enabled" : "❌ Disabled"}\n\n` +
+    `Use buttons below to adjust:`;
 
   const keyboard = new InlineKeyboard()
     .text("🎯 Change Slippage", "settings:slippage")
@@ -563,19 +522,13 @@ export async function renderUnlockPage(ctx: Context): Promise<{
   const wallet = user.wallets[0];
 
   const text =
-    `🔓 *Unlock Wallet*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `💼 *Wallet:*\n\`${wallet.publicKey}\`\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `🔐 *Security Information*\n\n` +
-    `• Session duration: *15 minutes*\n` +
-    `• Password encrypted in transit\n` +
-    `• Message auto-deleted\n` +
-    `• No password storage\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `⚠️ *Ready to unlock?*\n\n` +
-    `Send your password in the next message.\n` +
-    `It will be deleted immediately.`;
+    `🔓 *Unlock Wallet*\n\n` +
+    `Wallet: \`${wallet.publicKey.slice(0, 8)}...${wallet.publicKey.slice(-6)}\`\n\n` +
+    `*How it works:*\n` +
+    `• Session lasts *15 minutes*\n` +
+    `• Password auto-deleted\n` +
+    `• Never stored\n\n` +
+    `✍️ Send your password in the next message...`;
 
   const keyboard = new InlineKeyboard()
     .text("« Cancel", "nav:main");
@@ -607,40 +560,33 @@ export async function renderStatusPage(ctx: Context): Promise<{
   const now = Date.now();
   const isActive = hasSession && sessionExpiresAt > now;
 
-  let text = `💼 *Wallet Status*\n━━━━━━━━━━━━━━━━━━━━\n\n`;
-  text += `📍 *Address:*\n\`${wallet.publicKey}\`\n\n`;
-  text += `━━━━━━━━━━━━━━━━━━━━\n`;
+  let text = `📊 *Session Status*\n\n`;
+  text += `Wallet: \`${wallet.publicKey.slice(0, 8)}...${wallet.publicKey.slice(-6)}\`\n\n`;
 
   const keyboard = new InlineKeyboard();
 
   if (isActive) {
     const timeLeft = Math.floor((sessionExpiresAt - now) / 1000 / 60);
     text +=
-      `🟢 *Session Active*\n\n` +
-      `⏱ Time remaining: *${timeLeft} minutes*\n\n` +
-      `You can trade without entering password\n` +
-      `until session expires.\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `🔒 Want to lock now?`;
+      `🟢 *Unlocked*\n\n` +
+      `Time left: *${timeLeft} min*\n\n` +
+      `You can trade without password until session expires.`;
 
     keyboard
-      .text("🔒 Lock Wallet", "action:lock")
+      .text("🔒 Lock Now", "action:lock")
       .row()
-      .text("🔄 Refresh Status", "nav:status")
+      .text("🔄 Refresh", "nav:status")
       .row()
-      .text("« Back to Dashboard", "nav:main");
+      .text("« Back", "nav:main");
   } else {
     text +=
-      `🔴 *Session Locked*\n\n` +
-      `Your wallet is currently locked.\n` +
-      `Unlock it to start trading.\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
-      `🔓 Want to unlock?`;
+      `🔴 *Locked*\n\n` +
+      `Unlock your wallet to start trading.`;
 
     keyboard
-      .text("🔓 Unlock Wallet", "action:unlock")
+      .text("🔓 Unlock", "action:unlock")
       .row()
-      .text("« Back to Dashboard", "nav:main");
+      .text("« Back", "nav:main");
   }
 
   return { text, keyboard };
@@ -654,36 +600,27 @@ export function renderHelpPage(): {
   keyboard: InlineKeyboard;
 } {
   const text =
-    `📚 *Bolt Sniper Bot - Help*\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n\n` +
-    `🎯 *Quick Start:*\n` +
-    `1. /start - Open dashboard\n` +
-    `2. Create wallet if needed\n` +
-    `3. Use inline buttons to trade\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `⚡️ *Available Commands:*\n\n` +
-    `💼 *Wallet Commands:*\n` +
-    `• /createwallet - Create new wallet\n` +
-    `• /wallet - View wallet info\n` +
-    `• /balance - Check balances\n\n` +
-    `💱 *Trading Commands:*\n` +
-    `• /buy - Buy tokens with SOL\n` +
-    `• /sell - Sell tokens for SOL\n` +
-    `• /swap - Swap any tokens\n\n` +
-    `🔐 *Security Commands:*\n` +
-    `• /unlock - Unlock wallet (15 min)\n` +
-    `• /lock - Lock wallet immediately\n` +
-    `• /status - Check session status\n\n` +
-    `⚙️ *Other:*\n` +
-    `• /settings - Configure settings\n` +
-    `• /help - Show this help\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `🛡 *Security Features:*\n\n` +
-    `• Non-custodial (your keys, your crypto)\n` +
-    `• Argon2id + AES-256-GCM encryption\n` +
-    `• Session-based unlocking (15 min TTL)\n` +
-    `• Honeypot detection (95%+ accuracy)\n` +
-    `• All commands use single-page UI`;
+    `📚 *Help & Commands*\n\n` +
+    `*Quick Start:*\n` +
+    `1. /start — open dashboard\n` +
+    `2. Create wallet\n` +
+    `3. Use buttons to trade\n\n` +
+    `*Main Commands:*\n` +
+    `🛒 /buy — buy tokens with SOL\n` +
+    `💸 /sell — sell tokens for SOL\n` +
+    `🔄 /swap — swap any tokens\n` +
+    `📊 /balance — check balances\n\n` +
+    `*Wallet & Security:*\n` +
+    `💼 /wallet — view wallet info\n` +
+    `🔓 /unlock — unlock for 15 min\n` +
+    `🔒 /lock — lock immediately\n` +
+    `📊 /status — session status\n\n` +
+    `*Features:*\n` +
+    `✅ Non-custodial wallet\n` +
+    `✅ Honeypot protection\n` +
+    `✅ Best prices (Jupiter)\n` +
+    `✅ 15-min session unlock\n\n` +
+    `Use the buttons below for quick access 👇`;
 
   const keyboard = new InlineKeyboard()
     .text("🏠 Dashboard", "nav:main")

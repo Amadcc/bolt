@@ -8,6 +8,11 @@ import { navigateToPage } from "../views/index.js";
 import { logger } from "../../utils/logger.js";
 import { prisma } from "../../utils/db.js";
 import { handleUnlockPasswordInput, lockSession } from "../commands/session.js";
+// Trading services for real execution
+import { getTradingExecutor } from "../../services/trading/executor.js";
+import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
+import { asTokenMint, solToLamports, asSessionToken } from "../../types/common.js";
+import type { TradingError } from "../../types/trading.js";
 
 // ============================================================================
 // Navigation Callbacks
@@ -408,29 +413,167 @@ async function executeBuyFlow(
     { parse_mode: "Markdown" }
   );
 
-  // TODO: Implement actual buy execution
-  setTimeout(async () => {
-    try {
+  try {
+    // Get user from database
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
       await ctx.editMessageText(
-        `✅ *Buy Executed* (Demo)\n\n` +
-          `Token: ${token}\n` +
-          `Amount: ${amount} SOL\n\n` +
-          `_This is a demo. Real execution coming soon._\n\n` +
-          `Returning to dashboard...`,
+        `❌ Could not identify user`,
         { parse_mode: "Markdown" }
       );
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(telegramId) },
+    });
+
+    if (!user) {
+      await ctx.editMessageText(
+        `❌ User not found. Please use /start first.`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    const userId = user.id;
+
+    // Resolve token mint
+    let tokenMint: string;
+    try {
+      tokenMint = resolveTokenSymbol(token);
+    } catch (error) {
+      await ctx.editMessageText(
+        `❌ Invalid token: ${error instanceof Error ? error.message : String(error)}`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    // Parse SOL amount
+    const solAmount = parseFloat(amount);
+    if (isNaN(solAmount) || solAmount <= 0) {
+      await ctx.editMessageText(
+        `❌ Invalid SOL amount`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    // Convert SOL to lamports
+    const lamports = solToLamports(solAmount).toString();
+
+    // Validate mints
+    const inputMint = asTokenMint(SOL_MINT);
+    const outputMint = asTokenMint(tokenMint);
+
+    // Execute trade
+    const executor = getTradingExecutor();
+    const tradeResult = await executor.executeTrade(
+      {
+        userId,
+        inputMint,
+        outputMint,
+        amount: lamports,
+        slippageBps: 50, // 0.5% slippage
+      },
+      undefined,
+      asSessionToken(ctx.session.sessionToken!)
+    );
+
+    if (!tradeResult.success) {
+      const error = tradeResult.error as TradingError;
+      await ctx.editMessageText(
+        `❌ *Buy Failed*\n\n` +
+        `${getErrorMessage(error)}\n\n` +
+        `Returning to dashboard...`,
+        { parse_mode: "Markdown" }
+      );
+
+      logger.error("Buy execution failed (callback)", { userId, token, error });
 
       setTimeout(async () => {
         try {
           await navigateToPage(ctx, "main");
         } catch (error) {
-          logger.error("Error navigating after buy", { error });
+          logger.error("Error navigating after failed buy", { error });
         }
-      }, 2000);
-    } catch (error) {
-      logger.error("Error showing buy result", { error });
+      }, 3000);
+      return;
     }
-  }, 1500);
+
+    const result = tradeResult.value;
+
+    // Success!
+    await ctx.editMessageText(
+      `✅ *Buy Successful!*\n\n` +
+      `Bought **${token}** with **${solAmount} SOL**\n\n` +
+      `Transaction: \`${result.signature}\`\n` +
+      `Slot: ${result.slot}\n\n` +
+      `Input: ${formatTokenAmount(result.inputAmount, 9)} SOL\n` +
+      `Output: ${formatTokenAmount(result.outputAmount, 9)} ${token}\n` +
+      `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
+      `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
+      `[View on Solscan](https://solscan.io/tx/${result.signature})\n\n` +
+      `Returning to dashboard...`,
+      { parse_mode: "Markdown" }
+    );
+
+    logger.info("Buy completed successfully via callback", {
+      userId,
+      token,
+      tokenMint,
+      orderId: result.orderId,
+      signature: result.signature,
+      inputAmount: result.inputAmount.toString(),
+      outputAmount: result.outputAmount.toString(),
+      commissionUsd: result.commissionUsd,
+    });
+
+    setTimeout(async () => {
+      try {
+        await navigateToPage(ctx, "main");
+      } catch (error) {
+        logger.error("Error navigating after buy", { error });
+      }
+    }, 5000);
+
+  } catch (error) {
+    logger.error("Error executing buy (callback)", { token, error });
+    await ctx.editMessageText(
+      `❌ An unexpected error occurred.\n\nReturning to dashboard...`,
+      { parse_mode: "Markdown" }
+    );
+
+    setTimeout(async () => {
+      try {
+        await navigateToPage(ctx, "main");
+      } catch (error) {
+        logger.error("Error navigating after error", { error });
+      }
+    }, 3000);
+  }
+}
+
+/**
+ * Format token amount from smallest units to human-readable
+ */
+function formatTokenAmount(amount: bigint, decimals: number): string {
+  const num = Number(amount) / Math.pow(10, decimals);
+  return num.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: decimals,
+  });
+}
+
+/**
+ * Get error message from TradingError discriminated union
+ */
+function getErrorMessage(error: TradingError): string {
+  if (error.type === "SWAP_FAILED") {
+    return error.reason;
+  }
+  return error.message;
 }
 
 // ============================================================================
@@ -568,38 +711,29 @@ async function executeSellFlow(
 
   await ctx.answerCallbackQuery();
 
-  // Wallet is unlocked - show processing
+  // TODO: Implement percentage-based selling with balance fetching
+  // For now, show a message directing users to use /sell command with exact amount
   await ctx.editMessageText(
-    `⏳ *Executing Sell*\n\n` +
-      `Token: ${token}\n` +
-      `Amount: ${percentage}% of balance\n\n` +
-      `Processing transaction...`,
-    { parse_mode: "Markdown" }
+    `⚠️ *Percentage-based selling not yet implemented*\n\n` +
+      `Please use the \`/sell\` command with exact token amount:\n\n` +
+      `\`/sell ${token} <amount>\`\n\n` +
+      `Example: \`/sell ${token} 1000000\`\n\n` +
+      `This will be implemented in a future update.`,
+    {
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [[
+          { text: "« Back to Dashboard", callback_data: "nav:main" }
+        ]]
+      }
+    }
   );
 
-  // TODO: Implement actual sell execution
-  setTimeout(async () => {
-    try {
-      await ctx.editMessageText(
-        `✅ *Sell Executed* (Demo)\n\n` +
-          `Token: ${token}\n` +
-          `Amount: ${percentage}% of balance\n\n` +
-          `_This is a demo. Real execution coming soon._\n\n` +
-          `Returning to dashboard...`,
-        { parse_mode: "Markdown" }
-      );
-
-      setTimeout(async () => {
-        try {
-          await navigateToPage(ctx, "main");
-        } catch (error) {
-          logger.error("Error navigating after sell", { error });
-        }
-      }, 2000);
-    } catch (error) {
-      logger.error("Error showing sell result", { error });
-    }
-  }, 1500);
+  logger.info("Percentage-based sell requested but not implemented", {
+    userId: ctx.from?.id,
+    token,
+    percentage,
+  });
 }
 
 // ============================================================================

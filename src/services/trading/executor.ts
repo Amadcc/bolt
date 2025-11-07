@@ -9,9 +9,18 @@ import { unlockWallet, clearKeypair } from "../wallet/keyManager.js";
 // ✅ Redis Session Integration
 import { getKeypairForSigning } from "../wallet/session.js";
 import { getJupiter } from "./jupiter.js";
-import type { Result, SessionToken, SolanaAddress, TokenMint } from "../../types/common.js";
+import type {
+  Result,
+  SessionToken,
+  SolanaAddress,
+  TokenMint,
+} from "../../types/common.js";
 import { Ok, Err, asSolanaAddress, asTokenMint } from "../../types/common.js";
-import type { TradeParams, TradeResult, TradingError } from "../../types/trading.js";
+import type {
+  TradeParams,
+  TradeResult,
+  TradingError,
+} from "../../types/trading.js";
 import type { JupiterError } from "../../types/jupiter.js";
 import type { WalletError } from "../../types/solana.js";
 import { asTransactionSignature } from "../../types/common.js";
@@ -90,15 +99,15 @@ export class TradingExecutor {
         // Use Redis session + getKeypairForSigning (NO PASSWORD NEEDED!)
         logger.info("Using Redis session for trade (no password required)", {
           userId,
-          sessionToken: sessionToken.substring(0, 10) + "..."
+          sessionToken: sessionToken.substring(0, 10) + "...",
         });
 
-        const keypairResult = await getKeypairForSigning(sessionToken);
+        const keypairResult = await getKeypairForSigning(sessionToken, userId);
 
         if (!keypairResult.success) {
           return Err({
             type: "INVALID_PASSWORD",
-            message: "Session expired or invalid. Please /unlock again."
+            message: "Session expired or invalid. Please /unlock again.",
           });
         }
 
@@ -106,17 +115,23 @@ export class TradingExecutor {
         // LOW-1: Use asSolanaAddress() instead of 'as any'
         publicKey = asSolanaAddress(keypair.publicKey.toBase58());
 
-        logger.info("Keypair retrieved from Redis session", { userId, publicKey });
+        logger.info("Keypair retrieved from Redis session", {
+          userId,
+          publicKey,
+        });
       } else {
         // Fallback: unlock wallet directly (requires password)
         if (!password) {
           return Err({
             type: "INVALID_PASSWORD",
-            message: "Password is required for trading without active session. Use /unlock first."
+            message:
+              "Password is required for trading without active session. Use /unlock first.",
           });
         }
 
-        logger.info("No session - unlocking wallet directly with password", { userId });
+        logger.info("No session - unlocking wallet directly with password", {
+          userId,
+        });
 
         const unlockResult = await unlockWallet({ userId, password });
 
@@ -124,7 +139,10 @@ export class TradingExecutor {
           const error = unlockResult.error as WalletError;
 
           if (error.type === "WALLET_NOT_FOUND") {
-            return Err({ type: "WALLET_NOT_FOUND", message: `Wallet not found for user ${error.userId}` });
+            return Err({
+              type: "WALLET_NOT_FOUND",
+              message: `Wallet not found for user ${error.userId}`,
+            });
           }
 
           if (error.type === "INVALID_PASSWORD") {
@@ -137,7 +155,10 @@ export class TradingExecutor {
         keypair = unlockResult.value.keypair;
         publicKey = unlockResult.value.publicKey;
 
-        logger.info("Unlocked wallet for one-time trade", { userId, publicKey });
+        logger.info("Unlocked wallet for one-time trade", {
+          userId,
+          publicKey,
+        });
       }
 
       // Step 2: Create pending order in database
@@ -172,7 +193,9 @@ export class TradingExecutor {
       logger.info("Swap executed with platform fee", {
         platformFeeBps: this.config.platformFeeBps,
         feeAccount: this.config.feeAccount,
-        platformFeeEnabled: !!(this.config.platformFeeBps && this.config.feeAccount),
+        platformFeeEnabled: !!(
+          this.config.platformFeeBps && this.config.feeAccount
+        ),
       });
 
       // ✅ SECURITY: ALWAYS clear keypair from memory after use
@@ -182,15 +205,17 @@ export class TradingExecutor {
         const error = swapResult.error as JupiterError;
 
         // MEDIUM-1: Async DB write (fire-and-forget, don't block error return)
-        prisma.order.update({
-          where: { id: order.id },
-          data: { status: "failed" },
-        }).catch((dbError) => {
-          logger.error("Failed to update order status to failed", {
-            orderId: order.id,
-            error: dbError,
+        prisma.order
+          .update({
+            where: { id: order.id },
+            data: { status: "failed" },
+          })
+          .catch((dbError) => {
+            logger.error("Failed to update order status to failed", {
+              orderId: order.id,
+              error: dbError,
+            });
           });
-        });
 
         logger.error("Swap failed", { orderId: order.id, error });
 
@@ -215,27 +240,28 @@ export class TradingExecutor {
         });
       }
 
-      const commissionUsd =
-        commissionResult.success
-          ? commissionResult.value
-          : this.config.minCommissionUsd;
+      const commissionUsd = commissionResult.success
+        ? commissionResult.value
+        : this.config.minCommissionUsd;
 
       // MEDIUM-1: Async DB write (fire-and-forget, don't block return)
       // This saves ~20-50ms on the critical path
-      prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: "filled",
-          transactionSignature: swapData.signature,
-          commissionUsd,
-        },
-      }).catch((dbError) => {
-        logger.error("Failed to update order status to filled", {
-          orderId: order.id,
-          signature: swapData.signature,
-          error: dbError,
+      prisma.order
+        .update({
+          where: { id: order.id },
+          data: {
+            status: "filled",
+            transactionSignature: swapData.signature,
+            commissionUsd,
+          },
+        })
+        .catch((dbError) => {
+          logger.error("Failed to update order status to filled", {
+            orderId: order.id,
+            signature: swapData.signature,
+            error: dbError,
+          });
         });
-      });
 
       logger.info("Trade executed successfully", {
         orderId: order.id,
@@ -296,7 +322,10 @@ export class TradingExecutor {
       const commission = (outputValueUsd * this.config.commissionBps) / 10000;
 
       // Apply minimum commission
-      const finalCommission = Math.max(commission, this.config.minCommissionUsd);
+      const finalCommission = Math.max(
+        commission,
+        this.config.minCommissionUsd
+      );
 
       logger.info("Commission calculated", {
         tokenMint,
@@ -342,7 +371,9 @@ export function initializeTradingExecutor(
   config?: Partial<TradingExecutorConfig>
 ): TradingExecutor {
   if (tradingExecutorInstance) {
-    logger.warn("Trading executor already initialized, returning existing instance");
+    logger.warn(
+      "Trading executor already initialized, returning existing instance"
+    );
     return tradingExecutorInstance;
   }
 

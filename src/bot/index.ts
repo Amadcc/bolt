@@ -30,6 +30,11 @@ import {
 } from "./middleware/rateLimit.js";
 // ✅ SECURITY (CRITICAL-4 Fix): Safe password deletion with abort on failure
 import { securePasswordDelete } from "./utils/secureDelete.js";
+// Trading services for real execution
+import { getTradingExecutor } from "../services/trading/executor.js";
+import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../config/tokens.js";
+import { asTokenMint, solToLamports, asSessionToken } from "../types/common.js";
+import type { TradingError } from "../types/trading.js";
 
 interface SessionData {
   walletId?: string;
@@ -546,13 +551,13 @@ async function executeBuyFromAmount(
       ctx.chat.id,
       msgId,
       `🔒 *Wallet Locked*\n\n` +
-      `To buy ${token} with ${solAmount} SOL, please unlock your wallet first.\n\n` +
-      `Your session will be active for 15 minutes.`,
+      `Please unlock to buy ${token} with ${solAmount} SOL.\n\n` +
+      `Session lasts 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [[
-            { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
+            { text: "🔓 Unlock", callback_data: "action:unlock" },
             { text: "« Cancel", callback_data: "nav:main" }
           ]]
         }
@@ -565,39 +570,171 @@ async function executeBuyFromAmount(
   await ctx.api.editMessageText(
     ctx.chat.id,
     msgId,
-    `⏳ *Executing Buy*\n\n` +
-    `Token: ${token}\n` +
-    `Amount: ${solAmount} SOL\n\n` +
-    `Processing transaction...`,
+    `⏳ *Processing...*\n\n` +
+    `Buying ${token} with ${solAmount} SOL\n\n` +
+    `Please wait...`,
     { parse_mode: "Markdown" }
   );
 
-  // TODO: Implement actual buy execution
-  // For now just show success and return to main
-  setTimeout(async () => {
-    try {
+  try {
+    // Get user from database
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
       await ctx.api.editMessageText(
-        ctx.chat!.id,
+        ctx.chat.id,
         msgId,
-        `✅ *Buy Executed* (Demo)\n\n` +
-        `Token: ${token}\n` +
-        `Amount: ${solAmount} SOL\n\n` +
-        `_This is a demo. Real execution coming soon._\n\n` +
-        `Returning to dashboard...`,
+        `❌ Could not identify user`,
         { parse_mode: "Markdown" }
       );
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(telegramId) },
+    });
+
+    if (!user) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ User not found. Please use /start first.`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    const userId = user.id;
+
+    // Resolve token mint
+    let tokenMint: string;
+    try {
+      tokenMint = resolveTokenSymbol(token);
+    } catch (error) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ Invalid token: ${error instanceof Error ? error.message : String(error)}`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    // Convert SOL to lamports
+    const lamports = solToLamports(solAmount).toString();
+
+    // Validate mints
+    const inputMint = asTokenMint(SOL_MINT);
+    const outputMint = asTokenMint(tokenMint);
+
+    // Execute trade
+    const executor = getTradingExecutor();
+    const tradeResult = await executor.executeTrade(
+      {
+        userId,
+        inputMint,
+        outputMint,
+        amount: lamports,
+        slippageBps: 50, // 0.5% slippage
+      },
+      undefined,
+      asSessionToken(ctx.session.sessionToken!)
+    );
+
+    if (!tradeResult.success) {
+      const error = tradeResult.error as TradingError;
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ *Buy Failed*\n\n` +
+        `${getErrorMessage(error)}`,
+        { parse_mode: "Markdown" }
+      );
+
+      logger.error("Buy execution failed", { userId, token, error });
 
       setTimeout(async () => {
         try {
           await navigateToPage(ctx, "main");
         } catch (error) {
-          logger.error("Error navigating after buy", { error });
+          logger.error("Error navigating after failed buy", { error });
         }
-      }, 2000);
-    } catch (error) {
-      logger.error("Error showing buy result", { error });
+      }, 3000);
+      return;
     }
-  }, 1500);
+
+    const result = tradeResult.value;
+
+    // Success!
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `✅ *Buy Successful!*\n\n` +
+      `Bought *${token}* with *${solAmount} SOL*\n\n` +
+      `*Transaction Details:*\n` +
+      `Signature: \`${result.signature.slice(0, 12)}...\`\n` +
+      `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
+      `Fee: $${result.commissionUsd.toFixed(4)}\n\n` +
+      `[View on Solscan](https://solscan.io/tx/${result.signature})`,
+      { parse_mode: "Markdown" }
+    );
+
+    logger.info("Buy completed successfully via UI", {
+      userId,
+      token,
+      tokenMint,
+      orderId: result.orderId,
+      signature: result.signature,
+      inputAmount: result.inputAmount.toString(),
+      outputAmount: result.outputAmount.toString(),
+      commissionUsd: result.commissionUsd,
+    });
+
+    setTimeout(async () => {
+      try {
+        await navigateToPage(ctx, "main");
+      } catch (error) {
+        logger.error("Error navigating after buy", { error });
+      }
+    }, 5000);
+
+  } catch (error) {
+    logger.error("Error executing buy", { token, error });
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `❌ *Error*\n\nSomething went wrong. Please try again.`,
+      { parse_mode: "Markdown" }
+    );
+
+    setTimeout(async () => {
+      try {
+        await navigateToPage(ctx, "main");
+      } catch (error) {
+        logger.error("Error navigating after error", { error });
+      }
+    }, 3000);
+  }
+}
+
+/**
+ * Format token amount from smallest units to human-readable
+ */
+function formatTokenAmount(amount: bigint, decimals: number): string {
+  const num = Number(amount) / Math.pow(10, decimals);
+  return num.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: decimals,
+  });
+}
+
+/**
+ * Get error message from TradingError discriminated union
+ */
+function getErrorMessage(error: TradingError): string {
+  if (error.type === "SWAP_FAILED") {
+    return error.reason;
+  }
+  return error.message;
 }
 
 /**
@@ -622,13 +759,13 @@ async function executeSellFromAmount(
       ctx.chat.id,
       msgId,
       `🔒 *Wallet Locked*\n\n` +
-      `To sell ${amount} ${token}, please unlock your wallet first.\n\n` +
-      `Your session will be active for 15 minutes.`,
+      `Please unlock to sell ${amount} ${token}.\n\n` +
+      `Session lasts 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [[
-            { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
+            { text: "🔓 Unlock", callback_data: "action:unlock" },
             { text: "« Cancel", callback_data: "nav:main" }
           ]]
         }
@@ -641,38 +778,154 @@ async function executeSellFromAmount(
   await ctx.api.editMessageText(
     ctx.chat.id,
     msgId,
-    `⏳ *Executing Sell*\n\n` +
-    `Token: ${token}\n` +
-    `Amount: ${amount} tokens\n\n` +
-    `Processing transaction...`,
+    `⏳ *Processing...*\n\n` +
+    `Selling ${amount} ${token}\n\n` +
+    `Please wait...`,
     { parse_mode: "Markdown" }
   );
 
-  // TODO: Implement actual sell execution
-  setTimeout(async () => {
-    try {
+  try {
+    // Get user from database
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
       await ctx.api.editMessageText(
-        ctx.chat!.id,
+        ctx.chat.id,
         msgId,
-        `✅ *Sell Executed* (Demo)\n\n` +
-        `Token: ${token}\n` +
-        `Amount: ${amount} tokens\n\n` +
-        `_This is a demo. Real execution coming soon._\n\n` +
+        `❌ Could not identify user`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(telegramId) },
+    });
+
+    if (!user) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ User not found. Please use /start first.`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    const userId = user.id;
+
+    // Resolve token mint
+    let tokenMint: string;
+    try {
+      tokenMint = resolveTokenSymbol(token);
+    } catch (error) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ Invalid token: ${error instanceof Error ? error.message : String(error)}`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    // Convert to minimal units
+    const decimals = getTokenDecimals(tokenMint);
+    const minimalUnits = toMinimalUnits(amount, decimals);
+
+    // Validate mints
+    const inputMint = asTokenMint(tokenMint);
+    const outputMint = asTokenMint(SOL_MINT);
+
+    // Execute trade
+    const executor = getTradingExecutor();
+    const tradeResult = await executor.executeTrade(
+      {
+        userId,
+        inputMint,
+        outputMint,
+        amount: minimalUnits,
+        slippageBps: 50, // 0.5% slippage
+      },
+      undefined,
+      asSessionToken(ctx.session.sessionToken!)
+    );
+
+    if (!tradeResult.success) {
+      const error = tradeResult.error as TradingError;
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ *Sell Failed*\n\n` +
+        `${getErrorMessage(error)}\n\n` +
         `Returning to dashboard...`,
         { parse_mode: "Markdown" }
       );
+
+      logger.error("Sell execution failed", { userId, token, error });
 
       setTimeout(async () => {
         try {
           await navigateToPage(ctx, "main");
         } catch (error) {
-          logger.error("Error navigating after sell", { error });
+          logger.error("Error navigating after failed sell", { error });
         }
-      }, 2000);
-    } catch (error) {
-      logger.error("Error showing sell result", { error });
+      }, 3000);
+      return;
     }
-  }, 1500);
+
+    const result = tradeResult.value;
+    const solReceived = Number(result.outputAmount) / 1e9;
+
+    // Success!
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `✅ *Sell Successful!*\n\n` +
+      `Sold *${token}* for *${solReceived.toFixed(4)} SOL*\n\n` +
+      `*Transaction Details:*\n` +
+      `Signature: \`${result.signature.slice(0, 12)}...\`\n` +
+      `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
+      `Fee: $${result.commissionUsd.toFixed(4)}\n\n` +
+      `[View on Solscan](https://solscan.io/tx/${result.signature})`,
+      { parse_mode: "Markdown" }
+    );
+
+    logger.info("Sell completed successfully via UI", {
+      userId,
+      token,
+      tokenMint,
+      orderId: result.orderId,
+      signature: result.signature,
+      inputAmount: result.inputAmount.toString(),
+      outputAmount: result.outputAmount.toString(),
+      solReceived,
+      commissionUsd: result.commissionUsd,
+    });
+
+    setTimeout(async () => {
+      try {
+        await navigateToPage(ctx, "main");
+      } catch (error) {
+        logger.error("Error navigating after sell", { error });
+      }
+    }, 5000);
+
+  } catch (error) {
+    logger.error("Error executing sell", { token, error });
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `❌ An unexpected error occurred.\n\nReturning to dashboard...`,
+      { parse_mode: "Markdown" }
+    );
+
+    setTimeout(async () => {
+      try {
+        await navigateToPage(ctx, "main");
+      } catch (error) {
+        logger.error("Error navigating after error", { error });
+      }
+    }, 3000);
+  }
 }
 
 /**
@@ -698,13 +951,13 @@ async function executeSwapFromAmount(
       ctx.chat.id,
       msgId,
       `🔒 *Wallet Locked*\n\n` +
-      `To swap ${amount} ${inputToken} → ${outputToken}, please unlock your wallet first.\n\n` +
-      `Your session will be active for 15 minutes.`,
+      `Please unlock to swap ${amount} ${inputToken} → ${outputToken}.\n\n` +
+      `Session lasts 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [[
-            { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
+            { text: "🔓 Unlock", callback_data: "action:unlock" },
             { text: "« Cancel", callback_data: "nav:main" }
           ]]
         }
@@ -717,38 +970,169 @@ async function executeSwapFromAmount(
   await ctx.api.editMessageText(
     ctx.chat.id,
     msgId,
-    `⏳ *Executing Swap*\n\n` +
-    `📥 Input: ${amount} ${inputToken}\n` +
-    `📤 Output: ${outputToken}\n\n` +
-    `Processing transaction...`,
+    `⏳ *Processing...*\n\n` +
+    `${amount} ${inputToken} → ${outputToken}\n\n` +
+    `Please wait...`,
     { parse_mode: "Markdown" }
   );
 
-  // TODO: Implement actual swap execution
-  setTimeout(async () => {
-    try {
+  try {
+    // Get user from database
+    const telegramId = ctx.from?.id;
+    if (!telegramId) {
       await ctx.api.editMessageText(
-        ctx.chat!.id,
+        ctx.chat.id,
         msgId,
-        `✅ *Swap Executed* (Demo)\n\n` +
-        `📥 Sent: ${amount} ${inputToken}\n` +
-        `📤 Received: ~XXX ${outputToken}\n\n` +
-        `_This is a demo. Real execution coming soon._\n\n` +
+        `❌ Could not identify user`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(telegramId) },
+    });
+
+    if (!user) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ User not found. Please use /start first.`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    const userId = user.id;
+
+    // Resolve token mints
+    let inputMintStr: string;
+    let outputMintStr: string;
+    try {
+      inputMintStr = resolveTokenSymbol(inputToken);
+      outputMintStr = resolveTokenSymbol(outputToken);
+    } catch (error) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ Invalid token: ${error instanceof Error ? error.message : String(error)}`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    // Parse amount and convert to minimal units
+    const amountFloat = parseFloat(amount);
+    if (isNaN(amountFloat) || amountFloat <= 0) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ Invalid amount format`,
+        { parse_mode: "Markdown" }
+      );
+      return;
+    }
+
+    const decimals = getTokenDecimals(inputMintStr);
+    const minimalUnits = toMinimalUnits(amountFloat, decimals);
+
+    // Validate mints
+    const inputMint = asTokenMint(inputMintStr);
+    const outputMint = asTokenMint(outputMintStr);
+
+    // Execute trade
+    const executor = getTradingExecutor();
+    const tradeResult = await executor.executeTrade(
+      {
+        userId,
+        inputMint,
+        outputMint,
+        amount: minimalUnits,
+        slippageBps: 50, // 0.5% slippage
+      },
+      undefined,
+      asSessionToken(ctx.session.sessionToken!)
+    );
+
+    if (!tradeResult.success) {
+      const error = tradeResult.error as TradingError;
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ *Swap Failed*\n\n` +
+        `${getErrorMessage(error)}\n\n` +
         `Returning to dashboard...`,
         { parse_mode: "Markdown" }
       );
+
+      logger.error("Swap execution failed", { userId, inputToken, outputToken, error });
 
       setTimeout(async () => {
         try {
           await navigateToPage(ctx, "main");
         } catch (error) {
-          logger.error("Error navigating after swap", { error });
+          logger.error("Error navigating after failed swap", { error });
         }
-      }, 2000);
-    } catch (error) {
-      logger.error("Error showing swap result", { error });
+      }, 3000);
+      return;
     }
-  }, 1500);
+
+    const result = tradeResult.value;
+    const outputDecimals = getTokenDecimals(outputMintStr);
+
+    // Success!
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `✅ *Swap Successful!*\n\n` +
+      `${formatTokenAmount(result.inputAmount, decimals)} *${inputToken}*\n` +
+      `→ ${formatTokenAmount(result.outputAmount, outputDecimals)} *${outputToken}*\n\n` +
+      `*Transaction Details:*\n` +
+      `Signature: \`${result.signature.slice(0, 12)}...\`\n` +
+      `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
+      `Fee: $${result.commissionUsd.toFixed(4)}\n\n` +
+      `[View on Solscan](https://solscan.io/tx/${result.signature})`,
+      { parse_mode: "Markdown" }
+    );
+
+    logger.info("Swap completed successfully via UI", {
+      userId,
+      inputToken,
+      outputToken,
+      inputMint: inputMintStr,
+      outputMint: outputMintStr,
+      orderId: result.orderId,
+      signature: result.signature,
+      inputAmount: result.inputAmount.toString(),
+      outputAmount: result.outputAmount.toString(),
+      commissionUsd: result.commissionUsd,
+    });
+
+    setTimeout(async () => {
+      try {
+        await navigateToPage(ctx, "main");
+      } catch (error) {
+        logger.error("Error navigating after swap", { error });
+      }
+    }, 5000);
+
+  } catch (error) {
+    logger.error("Error executing swap", { inputToken, outputToken, error });
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `❌ An unexpected error occurred.\n\nReturning to dashboard...`,
+      { parse_mode: "Markdown" }
+    );
+
+    setTimeout(async () => {
+      try {
+        await navigateToPage(ctx, "main");
+      } catch (error) {
+        logger.error("Error navigating after error", { error });
+      }
+    }, 3000);
+  }
 }
 
 // Error handler
