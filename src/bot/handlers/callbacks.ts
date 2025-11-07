@@ -3,7 +3,7 @@
  * Handle all inline button clicks
  */
 
-import type { Context } from "../views/index.js";
+import type { Context, Page } from "../views/index.js";
 import { navigateToPage } from "../views/index.js";
 import { logger } from "../../utils/logger.js";
 import { prisma } from "../../utils/db.js";
@@ -14,15 +14,10 @@ import { handleUnlockPasswordInput, lockSession } from "../commands/session.js";
 // ============================================================================
 
 /**
- * Handle navigation callbacks (nav:page_name)
+ * LOW-1: Type guard for Page validation
  */
-export async function handleNavigationCallback(
-  ctx: Context,
-  page: string
-): Promise<void> {
-  await ctx.answerCallbackQuery();
-
-  const validPages = [
+function isValidPage(page: string): page is Page {
+  const validPages: readonly Page[] = [
     "create_wallet",
     "main",
     "buy",
@@ -34,15 +29,28 @@ export async function handleNavigationCallback(
     "unlock",
     "status",
     "help",
-  ];
+  ] as const;
 
-  if (!validPages.includes(page)) {
+  return validPages.includes(page as Page);
+}
+
+/**
+ * Handle navigation callbacks (nav:page_name)
+ */
+export async function handleNavigationCallback(
+  ctx: Context,
+  page: string
+): Promise<void> {
+  await ctx.answerCallbackQuery();
+
+  // LOW-1: Use type guard instead of 'as any'
+  if (!isValidPage(page)) {
     logger.warn("Invalid navigation page", { page, userId: ctx.from?.id });
     await ctx.answerCallbackQuery("❌ Invalid page");
     return;
   }
 
-  await navigateToPage(ctx, page as any);
+  await navigateToPage(ctx, page);
 }
 
 // ============================================================================

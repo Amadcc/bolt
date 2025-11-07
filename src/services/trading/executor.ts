@@ -9,8 +9,8 @@ import { unlockWallet, clearKeypair } from "../wallet/keyManager.js";
 // ✅ Redis Session Integration
 import { getKeypairForSigning } from "../wallet/session.js";
 import { getJupiter } from "./jupiter.js";
-import type { Result, SessionToken } from "../../types/common.js";
-import { Ok, Err } from "../../types/common.js";
+import type { Result, SessionToken, SolanaAddress, TokenMint } from "../../types/common.js";
+import { Ok, Err, asSolanaAddress, asTokenMint } from "../../types/common.js";
 import type { TradeParams, TradeResult, TradingError } from "../../types/trading.js";
 import type { JupiterError } from "../../types/jupiter.js";
 import type { WalletError } from "../../types/solana.js";
@@ -80,8 +80,9 @@ export class TradingExecutor {
     });
 
     try {
-      let keypair;
-      let publicKey;
+      // LOW-1: Declare proper types instead of implicit 'any'
+      let keypair: import("@solana/web3.js").Keypair;
+      let publicKey: SolanaAddress;
 
       // ✅ Step 1: Get keypair - prefer Redis session, fallback to unlockWallet
       // ✅ SECURITY (CRITICAL-2 Fix - Variant C+): No password required with session!
@@ -102,7 +103,8 @@ export class TradingExecutor {
         }
 
         keypair = keypairResult.value;
-        publicKey = keypair.publicKey.toBase58() as any;
+        // LOW-1: Use asSolanaAddress() instead of 'as any'
+        publicKey = asSolanaAddress(keypair.publicKey.toBase58());
 
         logger.info("Keypair retrieved from Redis session", { userId, publicKey });
       } else {
@@ -275,7 +277,8 @@ export class TradingExecutor {
       const jupiter = getJupiter();
 
       // Get token price in USD
-      const priceResult = await jupiter.getTokenPrice(tokenMint as any);
+      // LOW-1: Use asTokenMint() instead of 'as any'
+      const priceResult = await jupiter.getTokenPrice(asTokenMint(tokenMint));
 
       if (!priceResult.success) {
         return Err({

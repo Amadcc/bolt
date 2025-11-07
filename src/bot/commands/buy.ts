@@ -7,7 +7,7 @@ import type { Context as GrammyContext, SessionFlavor } from "grammy";
 import { logger } from "../../utils/logger.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
 import { getHoneypotDetector } from "../../services/honeypot/detector.js";
-import { asTokenMint, solToLamports } from "../../types/common.js";
+import { asTokenMint, solToLamports, asSessionToken } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
 import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, SOL_MINT, getNetworkName, isDevnetMode } from "../../config/tokens.js";
@@ -280,6 +280,7 @@ async function executeBuy(
 
     // Execute trade via Trading Executor
     // ✅ No password needed - session token is enough!
+    // LOW-1: sessionToken is already checked to be truthy, safe to cast
     const tradeResult = await executor.executeTrade(
       {
         userId,
@@ -289,7 +290,7 @@ async function executeBuy(
         slippageBps: 50, // 0.5% slippage
       },
       undefined, // No password needed with session
-      sessionToken as any
+      asSessionToken(sessionToken)
     );
 
     if (!tradeResult.success) {

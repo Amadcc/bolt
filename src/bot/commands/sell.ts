@@ -6,7 +6,7 @@
 import type { Context as GrammyContext, SessionFlavor } from "grammy";
 import { logger } from "../../utils/logger.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
-import { asTokenMint } from "../../types/common.js";
+import { asTokenMint, asSessionToken } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
 import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
@@ -206,8 +206,6 @@ async function executeSell(
 
     // ✅ Redis Session Integration: Get password and sessionToken from context
     // ✅ SECURITY (CRITICAL-2 Fix): Password NOT stored in session!
-    const sessionToken = ctx.session.sessionToken;
-
     if (!ctx.session.sessionToken) {
       await ctx.reply(
         `🔒 *Password Required*\n\n` +
@@ -220,6 +218,7 @@ async function executeSell(
     }
 
     // Execute trade via Trading Executor
+    // LOW-1: sessionToken is checked above to be truthy, safe to use with non-null assertion
     const tradeResult = await executor.executeTrade(
       {
         userId,
@@ -229,7 +228,7 @@ async function executeSell(
         slippageBps: 50, // 0.5% slippage
       },
       undefined, // No password needed with session
-      sessionToken as any
+      asSessionToken(ctx.session.sessionToken!)
     );
 
     if (!tradeResult.success) {

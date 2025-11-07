@@ -140,10 +140,6 @@ export function asUsdCents(value: number): UsdCents {
 // Conversion Utilities
 // ============================================================================
 
-export function lamportsToSol(lamports: Lamports): number {
-  return Number(lamports) / 1e9;
-}
-
 export function solToLamports(sol: number): Lamports {
   if (sol < 0 || !Number.isFinite(sol)) {
     throw new TypeError("SOL amount must be non-negative finite number");
@@ -158,53 +154,11 @@ export function solToLamports(sol: number): Lamports {
   return asLamports(BigInt(lamports.toString()));
 }
 
-export function formatLamports(lamports: Lamports, decimals = 9): string {
-  const sol = lamportsToSol(lamports);
-  return sol.toFixed(decimals);
-}
-
-export function truncateAddress(address: string, chars = 4): string {
-  if (address.length <= chars * 2) return address;
-  return `${address.slice(0, chars)}...${address.slice(-chars)}`;
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Retry function with exponential backoff
- */
-export async function retry<T>(
-  fn: () => Promise<T>,
-  options: {
-    maxRetries: number;
-    backoff: "linear" | "exponential";
-    baseDelay: number;
-  }
-): Promise<T> {
-  let lastError: Error | null = null;
-
-  for (let attempt = 0; attempt < options.maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error as Error;
-
-      if (attempt < options.maxRetries - 1) {
-        const delay =
-          options.backoff === "exponential"
-            ? options.baseDelay * Math.pow(2, attempt)
-            : options.baseDelay * (attempt + 1);
-
-        await sleep(delay);
-      }
-    }
-  }
-
-  throw lastError;
-}
+// LOW-2: Re-export helper functions from utils/helpers.ts to avoid duplication
+export {
+  lamportsToSol,
+  formatLamports,
+  truncateAddress,
+  sleep,
+  retry,
+} from "../utils/helpers.js";

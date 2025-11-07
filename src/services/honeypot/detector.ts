@@ -11,12 +11,17 @@
  */
 
 import { PublicKey } from "@solana/web3.js";
-import axios, { type AxiosInstance, type AxiosResponse, type AxiosError } from "axios";
+import axios, { type AxiosInstance, type AxiosResponse, type AxiosError, type AxiosRequestConfig } from "axios";
 import { logger } from "../../utils/logger.js";
 import { redis } from "../../utils/redis.js";
 import { getSolana } from "../blockchain/solana.js";
 import type { Result } from "../../types/common.js";
 import { Ok, Err } from "../../types/common.js";
+// LOW-1: Interface for Axios config with retry property
+interface AxiosConfigWithRetry extends AxiosRequestConfig {
+  retry?: number;
+}
+
 import type {
   HoneypotCheckResult,
   HoneypotError,
@@ -90,17 +95,20 @@ export class HoneypotDetector {
     this.apiClient.interceptors.response.use(
       (response: AxiosResponse) => response,
       async (error: AxiosError) => {
-        const config = error.config as any;
+        // LOW-1: Use proper type for config with retry property
+        const config = error.config as AxiosConfigWithRetry | undefined;
 
         if (!config || !config.retry) {
-          config.retry = 0;
+          if (config) {
+            config.retry = 0;
+          }
         }
 
-        if (config.retry >= 3) {
+        if (!config || (config.retry !== undefined && config.retry >= 3)) {
           return Promise.reject(error);
         }
 
-        config.retry += 1;
+        config.retry = (config.retry || 0) + 1;
 
         // Exponential backoff: 1s, 2s, 4s
         const delay = Math.pow(2, config.retry - 1) * 1000;

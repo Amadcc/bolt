@@ -15,6 +15,7 @@ import {
 } from "../../services/wallet/session.js";
 import { prisma } from "../../utils/db.js";
 import { navigateToPage, type Context } from "../views/index.js";
+import { asSessionToken } from "../../types/common.js";
 
 /**
  * Handle /unlock command
@@ -48,7 +49,8 @@ async function executeUnlock(
 ): Promise<void> {
   try {
     // Get UI message ID
-    const uiMessageId = (ctx as any).session?.ui?.messageId;
+    // LOW-1: Context has proper session type with ui field
+    const uiMessageId = ctx.session.ui?.messageId;
 
     // Update UI to show progress
     if (uiMessageId) {
@@ -150,7 +152,8 @@ async function executeUnlock(
   } catch (error) {
     logger.error("Error executing unlock", { userId, error });
 
-    const uiMessageId = (ctx as any).session?.ui?.messageId;
+    // LOW-1: Context has proper session type with ui field
+    const uiMessageId = ctx.session.ui?.messageId;
     const errorMsg = "❌ An unexpected error occurred.\n\nPlease try again with /start";
 
     if (uiMessageId) {
@@ -238,7 +241,8 @@ export async function handleLock(ctx: Context): Promise<void> {
 
     // ✅ Destroy Redis session if exists
     if (ctx.session.sessionToken) {
-      await destroySession(ctx.session.sessionToken as any);
+      // LOW-1: sessionToken is checked to be truthy, safe to cast
+      await destroySession(asSessionToken(ctx.session.sessionToken));
     }
 
     // Also clear Grammy session

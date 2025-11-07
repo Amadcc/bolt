@@ -11,7 +11,7 @@
  * 7. Bot deletes password message for security
  */
 
-import type { Context } from "grammy";
+import type { Context } from "../views/index.js";
 import { createWallet, hasWallet } from "../../services/wallet/keyManager.js";
 import { logger } from "../../utils/logger.js";
 import { prisma } from "../../utils/db.js";
@@ -104,7 +104,8 @@ export async function handlePasswordInput(
     }
 
     // Update UI message to show processing
-    const messageId = (ctx as any).session?.ui?.messageId;
+    // LOW-1: Context has proper session type with ui field
+    const messageId = ctx.session.ui?.messageId;
     if (messageId) {
       try {
         await ctx.api.editMessageText(
