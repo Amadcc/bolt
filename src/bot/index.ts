@@ -20,7 +20,10 @@ import {
   handleSellCallback,
   handleSwapCallback,
   handleSettingsCallback,
+  executeSwapFlow,
+  executeSellWithAbsoluteAmount,
 } from "./handlers/callbacks.js";
+import { executeBuyFlow } from "./flows/buy.js";
 
 interface SessionData {
   walletId?: string;
@@ -38,6 +41,11 @@ interface SessionData {
   // Conversation state
   awaitingPasswordForWallet?: boolean;
   awaitingPasswordForUnlock?: boolean;
+  returnToPageAfterUnlock?: Page; // Save page to return after unlock
+  pendingCommand?: {
+    type: "buy" | "sell" | "swap";
+    params: string[];
+  }; // Save command to execute after unlock
   awaitingInput?: {
     type: "token" | "amount" | "password";
     page: Page;
@@ -152,8 +160,42 @@ bot.command("buy", async (ctx) => {
     logger.warn("Failed to delete buy command message", { error });
   }
 
-  // Navigate to buy page (single-page UI only)
-  await navigateToPage(ctx, "buy");
+  // Check if command has parameters: /buy BONK 0.01
+  const params = ctx.message?.text?.split(" ").slice(1); // Remove /buy
+
+  if (params && params.length >= 2) {
+    // Execute buy directly with parameters
+    const token = params[0];
+    const amount = params[1];
+
+    logger.info("Buy command with parameters", { token, amount, userId: ctx.from?.id });
+
+    // Save pending command (in case wallet is locked)
+    ctx.session.pendingCommand = {
+      type: "buy",
+      params: [token, amount],
+    };
+
+    // Create UI message if needed
+    if (!ctx.session.ui.messageId) {
+      const msg = await ctx.reply("⏳ Processing buy...", {
+        parse_mode: "Markdown",
+      });
+      ctx.session.ui.messageId = msg.message_id;
+    }
+
+    // Execute buy flow directly
+    await executeBuyFlow(ctx, token, amount);
+
+    // Clear pending command after execution (only if wallet is unlocked)
+    // If wallet was locked, executeBuyFlow returned early and pending command should remain
+    if (ctx.session.sessionToken && ctx.session.password) {
+      ctx.session.pendingCommand = undefined;
+    }
+  } else {
+    // Navigate to buy page (single-page UI only)
+    await navigateToPage(ctx, "buy");
+  }
 });
 
 bot.command("sell", async (ctx) => {
@@ -164,8 +206,42 @@ bot.command("sell", async (ctx) => {
     logger.warn("Failed to delete sell command message", { error });
   }
 
-  // Navigate to sell page (single-page UI only)
-  await navigateToPage(ctx, "sell");
+  // Check if command has parameters: /sell BONK 1000000
+  const params = ctx.message?.text?.split(" ").slice(1); // Remove /sell
+
+  if (params && params.length >= 2) {
+    // Execute sell directly with parameters
+    const token = params[0];
+    const amount = params[1];
+
+    logger.info("Sell command with parameters", { token, amount, userId: ctx.from?.id });
+
+    // Save pending command (in case wallet is locked)
+    ctx.session.pendingCommand = {
+      type: "sell",
+      params: [token, amount],
+    };
+
+    // Create UI message if needed
+    if (!ctx.session.ui.messageId) {
+      const msg = await ctx.reply("⏳ Processing sell...", {
+        parse_mode: "Markdown",
+      });
+      ctx.session.ui.messageId = msg.message_id;
+    }
+
+    // Execute sell flow directly
+    await executeSellWithAbsoluteAmount(ctx, token, amount);
+
+    // Clear pending command after execution (only if wallet is unlocked)
+    // If wallet was locked, executeSellWithAbsoluteAmount returned early and pending command should remain
+    if (ctx.session.sessionToken && ctx.session.password) {
+      ctx.session.pendingCommand = undefined;
+    }
+  } else {
+    // Navigate to sell page (single-page UI only)
+    await navigateToPage(ctx, "sell");
+  }
 });
 
 bot.command("swap", async (ctx) => {
@@ -176,8 +252,43 @@ bot.command("swap", async (ctx) => {
     logger.warn("Failed to delete swap command message", { error });
   }
 
-  // Navigate to swap page (single-page UI only)
-  await navigateToPage(ctx, "swap");
+  // Check if command has parameters: /swap SOL USDC 1
+  const params = ctx.message?.text?.split(" ").slice(1); // Remove /swap
+
+  if (params && params.length >= 3) {
+    // Execute swap directly with parameters
+    const inputToken = params[0];
+    const outputToken = params[1];
+    const amount = params[2];
+
+    logger.info("Swap command with parameters", { inputToken, outputToken, amount, userId: ctx.from?.id });
+
+    // Save pending command (in case wallet is locked)
+    ctx.session.pendingCommand = {
+      type: "swap",
+      params: [inputToken, outputToken, amount],
+    };
+
+    // Create UI message if needed (but don't navigate to swap page UI)
+    if (!ctx.session.ui.messageId) {
+      const msg = await ctx.reply("⏳ Processing swap...", {
+        parse_mode: "Markdown",
+      });
+      ctx.session.ui.messageId = msg.message_id;
+    }
+
+    // Execute swap flow directly
+    await executeSwapFlow(ctx, inputToken, outputToken, amount);
+
+    // Clear pending command after execution (only if wallet is unlocked)
+    // If wallet was locked, executeSwapFlow returned early and pending command should remain
+    if (ctx.session.sessionToken && ctx.session.password) {
+      ctx.session.pendingCommand = undefined;
+    }
+  } else {
+    // Navigate to swap page (single-page UI only)
+    await navigateToPage(ctx, "swap");
+  }
 });
 
 bot.command("balance", async (ctx) => {
@@ -233,6 +344,13 @@ bot.on("callback_query:data", async (ctx) => {
     const action = parts[0];
     const params = parts.slice(1);
 
+    logger.debug("Callback query received", {
+      data,
+      action,
+      params,
+      userId: ctx.from?.id,
+    });
+
     switch (action) {
       case "nav":
         // Navigation: nav:page_name
@@ -246,16 +364,19 @@ bot.on("callback_query:data", async (ctx) => {
 
       case "buy":
         // Buy flow: buy:token:BONK or buy:amount:BONK:0.1
+        logger.info("Routing to buy handler", { params });
         await handleBuyCallback(ctx, params[0], params.slice(1));
         break;
 
       case "sell":
         // Sell flow: sell:token:BONK or sell:amount:BONK:50
+        logger.info("Routing to sell handler", { params });
         await handleSellCallback(ctx, params[0], params.slice(1));
         break;
 
       case "swap":
         // Swap flow: swap:input:SOL or swap:output:SOL:USDC or swap:amount:SOL:USDC:1
+        logger.info("Routing to swap handler", { params });
         await handleSwapCallback(ctx, params[0], params.slice(1));
         break;
 
@@ -337,12 +458,40 @@ bot.on("message:text", async (ctx, next) => {
     // Handle unlock password input (creates Redis session)
     await handleUnlockPasswordInput(ctx, password);
 
-    // Navigate back to main page after unlock (only if successful)
+    // Navigate back to page after unlock (only if successful)
     setTimeout(async () => {
       try {
         // Check if Redis session was successfully created
         if (ctx.session.sessionToken && ctx.session.password) {
-          await navigateToPage(ctx, "main");
+          // Return to saved page or default to main
+          const returnPage = ctx.session.returnToPageAfterUnlock || "main";
+          ctx.session.returnToPageAfterUnlock = undefined; // Clear saved page
+
+          // Check if there's a pending command to execute
+          const pendingCommand = ctx.session.pendingCommand;
+
+          if (pendingCommand) {
+            logger.info("Executing pending command after unlock", { command: pendingCommand });
+
+            // DON'T navigate - the execution functions will handle UI themselves
+            // Execute the pending command directly
+            if (pendingCommand.type === "buy" && pendingCommand.params.length >= 2) {
+              const [token, amount] = pendingCommand.params;
+              await executeBuyFlow(ctx, token, amount);
+            } else if (pendingCommand.type === "sell" && pendingCommand.params.length >= 2) {
+              const [token, amount] = pendingCommand.params;
+              await executeSellWithAbsoluteAmount(ctx, token, amount);
+            } else if (pendingCommand.type === "swap" && pendingCommand.params.length >= 3) {
+              const [inputToken, outputToken, amount] = pendingCommand.params;
+              await executeSwapFlow(ctx, inputToken, outputToken, amount);
+            }
+
+            // Clear pending command
+            ctx.session.pendingCommand = undefined;
+          } else {
+            // No pending command, just navigate
+            await navigateToPage(ctx, returnPage);
+          }
         }
       } catch (error) {
         logger.error("Error navigating after unlock", { error });
@@ -515,72 +664,8 @@ async function executeBuyFromAmount(
   token: string,
   solAmount: number
 ): Promise<void> {
-  const msgId = ctx.session.ui.messageId;
-
-  if (!msgId || !ctx.chat) {
-    await ctx.reply("❌ An error occurred. Please use /start");
-    return;
-  }
-
-  // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
-    // Wallet is locked - show unlock prompt
-    await ctx.api.editMessageText(
-      ctx.chat.id,
-      msgId,
-      `🔒 *Wallet Locked*\n\n` +
-      `To buy ${token} with ${solAmount} SOL, please unlock your wallet first.\n\n` +
-      `Your session will be active for 15 minutes.`,
-      {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [[
-            { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
-            { text: "« Cancel", callback_data: "nav:main" }
-          ]]
-        }
-      }
-    );
-    return;
-  }
-
-  // Wallet is unlocked - execute buy
-  await ctx.api.editMessageText(
-    ctx.chat.id,
-    msgId,
-    `⏳ *Executing Buy*\n\n` +
-    `Token: ${token}\n` +
-    `Amount: ${solAmount} SOL\n\n` +
-    `Processing transaction...`,
-    { parse_mode: "Markdown" }
-  );
-
-  // TODO: Implement actual buy execution
-  // For now just show success and return to main
-  setTimeout(async () => {
-    try {
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        msgId,
-        `✅ *Buy Executed* (Demo)\n\n` +
-        `Token: ${token}\n` +
-        `Amount: ${solAmount} SOL\n\n` +
-        `_This is a demo. Real execution coming soon._\n\n` +
-        `Returning to dashboard...`,
-        { parse_mode: "Markdown" }
-      );
-
-      setTimeout(async () => {
-        try {
-          await navigateToPage(ctx, "main");
-        } catch (error) {
-          logger.error("Error navigating after buy", { error });
-        }
-      }, 2000);
-    } catch (error) {
-      logger.error("Error showing buy result", { error });
-    }
-  }, 1500);
+  // Convert to string and call the real buy flow
+  await executeBuyFlow(ctx, token, solAmount.toString());
 }
 
 /**
@@ -591,71 +676,8 @@ async function executeSellFromAmount(
   token: string,
   amount: number
 ): Promise<void> {
-  const msgId = ctx.session.ui.messageId;
-
-  if (!msgId || !ctx.chat) {
-    await ctx.reply("❌ An error occurred. Please use /start");
-    return;
-  }
-
-  // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
-    // Wallet is locked - show unlock prompt
-    await ctx.api.editMessageText(
-      ctx.chat.id,
-      msgId,
-      `🔒 *Wallet Locked*\n\n` +
-      `To sell ${amount} ${token}, please unlock your wallet first.\n\n` +
-      `Your session will be active for 15 minutes.`,
-      {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [[
-            { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
-            { text: "« Cancel", callback_data: "nav:main" }
-          ]]
-        }
-      }
-    );
-    return;
-  }
-
-  // Wallet is unlocked - execute sell
-  await ctx.api.editMessageText(
-    ctx.chat.id,
-    msgId,
-    `⏳ *Executing Sell*\n\n` +
-    `Token: ${token}\n` +
-    `Amount: ${amount} tokens\n\n` +
-    `Processing transaction...`,
-    { parse_mode: "Markdown" }
-  );
-
-  // TODO: Implement actual sell execution
-  setTimeout(async () => {
-    try {
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        msgId,
-        `✅ *Sell Executed* (Demo)\n\n` +
-        `Token: ${token}\n` +
-        `Amount: ${amount} tokens\n\n` +
-        `_This is a demo. Real execution coming soon._\n\n` +
-        `Returning to dashboard...`,
-        { parse_mode: "Markdown" }
-      );
-
-      setTimeout(async () => {
-        try {
-          await navigateToPage(ctx, "main");
-        } catch (error) {
-          logger.error("Error navigating after sell", { error });
-        }
-      }, 2000);
-    } catch (error) {
-      logger.error("Error showing sell result", { error });
-    }
-  }, 1500);
+  // Use the real sell flow with absolute amount
+  await executeSellWithAbsoluteAmount(ctx, token, amount.toString());
 }
 
 /**
@@ -667,71 +689,8 @@ async function executeSwapFromAmount(
   outputToken: string,
   amount: string
 ): Promise<void> {
-  const msgId = ctx.session.ui.messageId;
-
-  if (!msgId || !ctx.chat) {
-    await ctx.reply("❌ An error occurred. Please use /start");
-    return;
-  }
-
-  // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
-    // Wallet is locked - show unlock prompt
-    await ctx.api.editMessageText(
-      ctx.chat.id,
-      msgId,
-      `🔒 *Wallet Locked*\n\n` +
-      `To swap ${amount} ${inputToken} → ${outputToken}, please unlock your wallet first.\n\n` +
-      `Your session will be active for 15 minutes.`,
-      {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [[
-            { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
-            { text: "« Cancel", callback_data: "nav:main" }
-          ]]
-        }
-      }
-    );
-    return;
-  }
-
-  // Wallet is unlocked - execute swap
-  await ctx.api.editMessageText(
-    ctx.chat.id,
-    msgId,
-    `⏳ *Executing Swap*\n\n` +
-    `📥 Input: ${amount} ${inputToken}\n` +
-    `📤 Output: ${outputToken}\n\n` +
-    `Processing transaction...`,
-    { parse_mode: "Markdown" }
-  );
-
-  // TODO: Implement actual swap execution
-  setTimeout(async () => {
-    try {
-      await ctx.api.editMessageText(
-        ctx.chat!.id,
-        msgId,
-        `✅ *Swap Executed* (Demo)\n\n` +
-        `📥 Sent: ${amount} ${inputToken}\n` +
-        `📤 Received: ~XXX ${outputToken}\n\n` +
-        `_This is a demo. Real execution coming soon._\n\n` +
-        `Returning to dashboard...`,
-        { parse_mode: "Markdown" }
-      );
-
-      setTimeout(async () => {
-        try {
-          await navigateToPage(ctx, "main");
-        } catch (error) {
-          logger.error("Error navigating after swap", { error });
-        }
-      }, 2000);
-    } catch (error) {
-      logger.error("Error showing swap result", { error });
-    }
-  }, 1500);
+  // Use the real swap flow from callbacks
+  await executeSwapFlow(ctx, inputToken, outputToken, amount);
 }
 
 // Error handler

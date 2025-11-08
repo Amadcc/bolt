@@ -7,7 +7,12 @@ import type { Context } from "../views/index.js";
 import { navigateToPage } from "../views/index.js";
 import { logger } from "../../utils/logger.js";
 import { prisma } from "../../utils/db.js";
-import { handleUnlockPasswordInput, lockSession } from "../commands/session.js";
+import { lockSession } from "../commands/session.js";
+import { getTradingExecutor } from "../../services/trading/executor.js";
+import { asTokenMint } from "../../types/common.js";
+import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
+import type { TradingError } from "../../types/trading.js";
+import { executeBuyFlow } from "../flows/buy.js";
 
 // ============================================================================
 // Navigation Callbacks
@@ -162,9 +167,9 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
     );
 
     // Build balance message
-    let message = `📊 *Your Balance*\n\n`;
-    message += `Wallet: \`${wallet.publicKey}\`\n\n`;
-    message += `💎 SOL: *${sol.toFixed(4)}* SOL\n`;
+    let message = `*Balance*\n\n`;
+    message += `\`${wallet.publicKey}\`\n\n`;
+    message += `SOL: *${sol.toFixed(4)}*\n`;
 
     // Add token balances
     const KNOWN_TOKENS: Record<string, string> = {
@@ -176,7 +181,7 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
     };
 
     if (tokenAccounts.value.length > 0) {
-      message += `\n📊 *Tokens:*\n`;
+      message += `\n*Tokens*\n`;
 
       for (const tokenAccount of tokenAccounts.value) {
         const accountData = tokenAccount.account.data.parsed.info;
@@ -185,11 +190,11 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
 
         if (amount > 0) {
           const symbol = KNOWN_TOKENS[mint] || truncateAddress(mint);
-          message += `• *${symbol}:* ${formatAmount(amount)}\n`;
+          message += `${symbol}: ${formatAmount(amount)}\n`;
         }
       }
     } else {
-      message += `\n_No token balances_`;
+      message += `\nNo tokens yet`;
     }
 
     // Update message with balance
@@ -207,9 +212,8 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
   } catch (error) {
     logger.error("Error fetching balance", { error });
     await ctx.editMessageText(
-      `📊 *Your Balance*\n\n` +
-      `❌ Failed to load balance.\n\n` +
-      `Please try again.`,
+      `*Balance*\n\n` +
+      `Failed to load. Please try again.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -264,6 +268,8 @@ export async function handleBuyCallback(
   action: string,
   params: string[]
 ): Promise<void> {
+  logger.info("Buy callback received", { action, params, userId: ctx.from?.id });
+
   switch (action) {
     case "token":
       await handleBuyTokenSelection(ctx, params[0]);
@@ -275,6 +281,7 @@ export async function handleBuyCallback(
 
     default:
       await ctx.answerCallbackQuery("❌ Unknown buy action");
+      logger.warn("Unknown buy action", { action, params, userId: ctx.from?.id });
   }
 }
 
@@ -326,6 +333,8 @@ async function handleBuyAmountSelection(
   token: string,
   amount: string
 ): Promise<void> {
+  logger.info("Buy amount selection", { token, amount, userId: ctx.from?.id });
+
   await ctx.answerCallbackQuery();
 
   if (amount === "custom") {
@@ -355,74 +364,11 @@ async function handleBuyAmountSelection(
     return;
   }
 
+  logger.info("Executing buy flow", { token, amount, userId: ctx.from?.id });
+
   // Execute buy
-  await executeBuyFlow(ctx, token, amount);
-}
-
-/**
- * Execute buy flow with confirmation
- */
-async function executeBuyFlow(
-  ctx: Context,
-  token: string,
-  amount: string
-): Promise<void> {
-  // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
-    await ctx.answerCallbackQuery();
-
-    // Show unlock prompt with buttons
-    await ctx.editMessageText(
-      `🔒 *Wallet Locked*\n\n` +
-        `To buy ${token} with ${amount} SOL, please unlock your wallet first.\n\n` +
-        `Your session will be active for 15 minutes.`,
-      {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [[
-            { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
-            { text: "« Cancel", callback_data: "nav:main" }
-          ]]
-        }
-      }
-    );
-    return;
-  }
-
   await ctx.answerCallbackQuery();
-
-  // Wallet is unlocked - show processing
-  await ctx.editMessageText(
-    `⏳ *Executing Buy*\n\n` +
-      `Token: ${token}\n` +
-      `Amount: ${amount} SOL\n\n` +
-      `Processing transaction...`,
-    { parse_mode: "Markdown" }
-  );
-
-  // TODO: Implement actual buy execution
-  setTimeout(async () => {
-    try {
-      await ctx.editMessageText(
-        `✅ *Buy Executed* (Demo)\n\n` +
-          `Token: ${token}\n` +
-          `Amount: ${amount} SOL\n\n` +
-          `_This is a demo. Real execution coming soon._\n\n` +
-          `Returning to dashboard...`,
-        { parse_mode: "Markdown" }
-      );
-
-      setTimeout(async () => {
-        try {
-          await navigateToPage(ctx, "main");
-        } catch (error) {
-          logger.error("Error navigating after buy", { error });
-        }
-      }, 2000);
-    } catch (error) {
-      logger.error("Error showing buy result", { error });
-    }
-  }, 1500);
+  await executeBuyFlow(ctx, token, amount);
 }
 
 // ============================================================================
@@ -531,7 +477,7 @@ async function handleSellAmountSelection(
 /**
  * Execute sell flow with confirmation
  */
-async function executeSellFlow(
+export async function executeSellFlow(
   ctx: Context,
   token: string,
   percentage: string
@@ -539,6 +485,13 @@ async function executeSellFlow(
   // ✅ Redis Session Integration: Check if wallet is unlocked
   if (!ctx.session.sessionToken || !ctx.session.password) {
     await ctx.answerCallbackQuery();
+
+    // DON'T set returnToPageAfterUnlock when there's a pending command
+    // The unlock handler will execute the pending command directly
+    // Only set it if there's no pending command (manual UI navigation)
+    if (!ctx.session.pendingCommand) {
+      ctx.session.returnToPageAfterUnlock = "sell";
+    }
 
     // Show unlock prompt with buttons
     await ctx.editMessageText(
@@ -560,38 +513,203 @@ async function executeSellFlow(
 
   await ctx.answerCallbackQuery();
 
-  // Wallet is unlocked - show processing
-  await ctx.editMessageText(
-    `⏳ *Executing Sell*\n\n` +
-      `Token: ${token}\n` +
-      `Amount: ${percentage}% of balance\n\n` +
-      `Processing transaction...`,
-    { parse_mode: "Markdown" }
-  );
+  try {
+    // Get user
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(ctx.from!.id) },
+      include: { wallets: { where: { isActive: true } } },
+    });
 
-  // TODO: Implement actual sell execution
-  setTimeout(async () => {
-    try {
-      await ctx.editMessageText(
-        `✅ *Sell Executed* (Demo)\n\n` +
-          `Token: ${token}\n` +
-          `Amount: ${percentage}% of balance\n\n` +
-          `_This is a demo. Real execution coming soon._\n\n` +
-          `Returning to dashboard...`,
-        { parse_mode: "Markdown" }
-      );
-
-      setTimeout(async () => {
-        try {
-          await navigateToPage(ctx, "main");
-        } catch (error) {
-          logger.error("Error navigating after sell", { error });
+    if (!user || !user.wallets.length) {
+      await ctx.editMessageText("❌ Wallet not found. Please create one first.", {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[{ text: "🏠 Home", callback_data: "nav:main" }]]
         }
-      }, 2000);
-    } catch (error) {
-      logger.error("Error showing sell result", { error });
+      });
+      return;
     }
-  }, 1500);
+
+    // Resolve token mint
+    let tokenMint: string;
+    try {
+      tokenMint = resolveTokenSymbol(token);
+    } catch (error) {
+      await ctx.editMessageText(
+        `❌ *Invalid Token*\n\n${error instanceof Error ? error.message : String(error)}`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
+          }
+        }
+      );
+      return;
+    }
+
+    // Progress: Step 1 - Checking balance
+    await updateSellProgress(ctx, {
+      step: 1,
+      total: 3,
+      message: `Token: ${token}\nAmount: ${percentage}%`,
+      status: "Checking balance...",
+    });
+
+    // Get balance from blockchain
+    const { getSolanaConnection } = await import("../../services/blockchain/solana.js");
+    const { PublicKey } = await import("@solana/web3.js");
+    const connection = getSolanaConnection();
+    const publicKey = new PublicKey(user.wallets[0].publicKey);
+
+    // Get token balance
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+      publicKey,
+      { mint: new PublicKey(tokenMint) }
+    );
+
+    if (tokenAccounts.value.length === 0) {
+      await ctx.editMessageText(
+        `❌ *No Balance*\n\nYou don't have any ${token} tokens.`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
+          }
+        }
+      );
+      return;
+    }
+
+    const tokenAccount = tokenAccounts.value[0];
+    const accountData = tokenAccount.account.data.parsed.info;
+    const balance = BigInt(accountData.tokenAmount.amount);
+    const decimals = accountData.tokenAmount.decimals;
+
+    // Calculate amount to sell based on percentage
+    const percentageNum = parseInt(percentage);
+    const amountToSell = (balance * BigInt(percentageNum)) / 100n;
+
+    if (amountToSell === 0n) {
+      await ctx.editMessageText(
+        `❌ *Insufficient Balance*\n\nAmount too small to sell.`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
+          }
+        }
+      );
+      return;
+    }
+
+    // Progress: Step 2 - Executing sell
+    await updateSellProgress(ctx, {
+      step: 2,
+      total: 3,
+      message: `Token: ${token}\nAmount: ${formatTokenAmount(amountToSell, decimals)} (${percentage}%)`,
+      status: "Executing sell...",
+    });
+
+    // Execute trade
+    const inputMint = asTokenMint(tokenMint);
+    const outputMint = asTokenMint(SOL_MINT);
+
+    const executor = getTradingExecutor();
+    const tradeResult = await executor.executeTrade(
+      {
+        userId: user.id,
+        inputMint,
+        outputMint,
+        amount: amountToSell.toString(),
+        slippageBps: 50, // 0.5% slippage
+      },
+      ctx.session.password!,
+      ctx.session.sessionToken as any
+    );
+
+    if (!tradeResult.success) {
+      const error = tradeResult.error as TradingError;
+
+      let errorMessage = "Trade execution failed";
+      if (error.type === "WALLET_NOT_FOUND") {
+        errorMessage = "Wallet not found";
+      } else if (error.type === "INVALID_PASSWORD") {
+        errorMessage = "Session expired. Please unlock again.";
+      } else if (error.type === "SWAP_FAILED") {
+        errorMessage = `Swap failed: ${error.reason}`;
+      }
+
+      await ctx.editMessageText(
+        `❌ *Sell Failed*\n\n${errorMessage}`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "🔄 Try Again", callback_data: `sell:amount:${token}:${percentage}` },
+              { text: "« Back", callback_data: "nav:sell" }
+            ]]
+          }
+        }
+      );
+      return;
+    }
+
+    const result = tradeResult.value;
+    const solReceived = Number(result.outputAmount) / 1e9;
+
+    // Progress: Step 3 - Completed
+    await updateSellProgress(ctx, {
+      step: 3,
+      total: 3,
+      message: `Token: ${token}\nAmount: ${formatTokenAmount(amountToSell, decimals)} (${percentage}%)`,
+      status: "Confirmed!",
+    });
+
+    // Show completion progress for a moment
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    // Success!
+    await ctx.editMessageText(
+      `✅ *Sell Successful!*\n\n` +
+      `Sold **${token}** for **${solReceived.toFixed(4)} SOL**\n\n` +
+      `Transaction: \`${result.signature}\`\n` +
+      `Slot: ${result.slot}\n\n` +
+      `Input: ${formatTokenAmount(result.inputAmount, decimals)} ${token}\n` +
+      `Output: ${solReceived.toFixed(4)} SOL\n` +
+      `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
+      `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
+      `[View on Solscan](https://solscan.io/tx/${result.signature})`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "🔄 Swap", callback_data: "nav:swap" },
+              { text: "🛒 Buy", callback_data: "nav:buy" },
+            ],
+            [
+              { text: "💸 Sell Again", callback_data: "nav:sell" },
+            ],
+            [
+              { text: "🏠 Dashboard", callback_data: "nav:main" },
+            ],
+          ],
+        },
+      }
+    );
+
+  } catch (error) {
+    logger.error("Error executing sell", { error, token, percentage });
+    await ctx.editMessageText(
+      `❌ *Unexpected Error*\n\nPlease try again or contact support.`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
+        }
+      }
+    );
+  }
 }
 
 // ============================================================================
@@ -814,7 +932,7 @@ async function handleSwapAmountSelection(
 /**
  * Execute swap with unlock check
  */
-async function executeSwapFlow(
+export async function executeSwapFlow(
   ctx: Context,
   inputToken: string,
   outputToken: string,
@@ -822,17 +940,26 @@ async function executeSwapFlow(
 ): Promise<void> {
   const msgId = ctx.session.ui.messageId;
 
-  if (!msgId) {
-    await ctx.answerCallbackQuery("❌ Error: No message ID");
+  if (!msgId || !ctx.chat) {
+    logger.warn("Cannot execute swap: no messageId or chat", { msgId, hasChat: !!ctx.chat });
     return;
   }
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
   if (!ctx.session.sessionToken || !ctx.session.password) {
-    await ctx.editMessageText(
-      `🔒 *Wallet Locked*\n\n` +
-        `To swap ${amount} ${inputToken} → ${outputToken}, please unlock your wallet first.\n\n` +
-        `Your session will be active for 15 minutes.`,
+    // DON'T set returnToPageAfterUnlock when there's a pending command
+    // The unlock handler will execute the pending command directly
+    // Only set it if there's no pending command (manual UI navigation)
+    if (!ctx.session.pendingCommand) {
+      ctx.session.returnToPageAfterUnlock = "swap";
+    }
+
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `*Wallet Locked*\n\n` +
+        `Unlock to swap ${amount} ${inputToken} → ${outputToken}.\n\n` +
+        `Session active for 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -848,29 +975,577 @@ async function executeSwapFlow(
     return;
   }
 
-  // Show processing
-  await ctx.api.editMessageText(
-    ctx.chat!.id,
-    msgId,
-    `⏳ *Executing Swap*\n\n` +
-      `📥 Input: ${amount} ${inputToken}\n` +
-      `📤 Output: ${outputToken}\n\n` +
-      `Please wait...`,
-    { parse_mode: "Markdown" }
-  );
+  try {
+    // Get user with wallet
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(ctx.from!.id) },
+      include: { wallets: { where: { isActive: true } } },
+    });
 
-  // Simulate execution (TODO: implement actual swap)
-  setTimeout(async () => {
+    if (!user || !user.wallets.length) {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        msgId,
+        "❌ Wallet not found. Please create one first.",
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "🏠 Home", callback_data: "nav:main" }]]
+          }
+        }
+      );
+      return;
+    }
+
+    // Resolve token mints
+    let inputMintAddr: string;
+    let outputMintAddr: string;
+
+    try {
+      inputMintAddr = resolveTokenSymbol(inputToken);
+      outputMintAddr = resolveTokenSymbol(outputToken);
+    } catch (error) {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        msgId,
+        `❌ *Invalid Token*\n\n${error instanceof Error ? error.message : String(error)}`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]]
+          }
+        }
+      );
+      return;
+    }
+
+    // Check if amount is percentage (e.g., "25%", "50%", "75%", "100%")
+    const isPercentage = amount.includes("%");
+    let minimalUnits: string;
+    let displayAmount: string;
+    let inputDecimals: number;
+
+    if (isPercentage) {
+      // Percentage-based swap - fetch balance and calculate
+      const percentageStr = amount.replace("%", "");
+      const percentage = parseInt(percentageStr);
+
+      // Progress: Step 1 - Balance check
+      await updateSwapProgress(ctx, {
+        step: 1,
+        total: 3,
+        message: `${inputToken} → ${outputToken}`,
+        status: `Checking balance...`,
+      });
+
+      // Get balance from blockchain
+      const { getSolanaConnection } = await import("../../services/blockchain/solana.js");
+      const { PublicKey } = await import("@solana/web3.js");
+      const connection = getSolanaConnection();
+      const publicKey = new PublicKey(user.wallets[0].publicKey);
+
+      // Get token balance
+      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
+        publicKey,
+        { mint: new PublicKey(inputMintAddr) }
+      );
+
+      if (tokenAccounts.value.length === 0) {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          msgId,
+          `❌ *No Balance*\n\nYou don't have any ${inputToken} tokens.`,
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]]
+            }
+          }
+        );
+        return;
+      }
+
+      const tokenAccount = tokenAccounts.value[0];
+      const accountData = tokenAccount.account.data.parsed.info;
+      const balance = BigInt(accountData.tokenAmount.amount);
+      const decimals = accountData.tokenAmount.decimals;
+
+      // Calculate amount to swap based on percentage
+      const amountToSwap = (balance * BigInt(percentage)) / 100n;
+
+      if (amountToSwap === 0n) {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          msgId,
+          `❌ *Insufficient Balance*\n\nAmount too small to swap.`,
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]]
+            }
+          }
+        );
+        return;
+      }
+
+      minimalUnits = amountToSwap.toString();
+      displayAmount = `${formatTokenAmount(amountToSwap, decimals)} ${inputToken} (${percentage}%)`;
+      inputDecimals = decimals;
+    } else {
+      // Fixed amount swap - parse directly
+      // Progress: Step 1 - Preparing swap
+      await updateSwapProgress(ctx, {
+        step: 1,
+        total: 3,
+        message: `${inputToken} → ${outputToken}`,
+        status: `Preparing swap...`,
+      });
+
+      const amountFloat = parseFloat(amount);
+      const decimals = getTokenDecimals(inputMintAddr);
+      minimalUnits = toMinimalUnits(amountFloat, decimals);
+      displayAmount = `${amount} ${inputToken}`;
+      inputDecimals = decimals;
+    }
+
+    // Progress: Step 2 - Executing swap
+    await updateSwapProgress(ctx, {
+      step: 2,
+      total: 3,
+      message: `Input: ${displayAmount}\nOutput: ${outputToken}`,
+      status: "Executing swap...",
+    });
+
+    // Execute trade
+    const inputMint = asTokenMint(inputMintAddr);
+    const outputMint = asTokenMint(outputMintAddr);
+
+    const executor = getTradingExecutor();
+    const tradeResult = await executor.executeTrade(
+      {
+        userId: user.id,
+        inputMint,
+        outputMint,
+        amount: minimalUnits,
+        slippageBps: 50, // 0.5% slippage
+      },
+      ctx.session.password!,
+      ctx.session.sessionToken as any
+    );
+
+    // Progress: Step 3 - Completed
+    if (tradeResult.success) {
+      await updateSwapProgress(ctx, {
+        step: 3,
+        total: 3,
+        message: `Input: ${displayAmount}\nOutput: ${outputToken}`,
+        status: "Confirmed!",
+      });
+    }
+
+    if (!tradeResult.success) {
+      const error = tradeResult.error as TradingError;
+
+      let errorMessage = "Trade execution failed";
+      if (error.type === "WALLET_NOT_FOUND") {
+        errorMessage = "Wallet not found";
+      } else if (error.type === "INVALID_PASSWORD") {
+        errorMessage = "Session expired. Please unlock again.";
+      } else if (error.type === "SWAP_FAILED") {
+        errorMessage = `Swap failed: ${error.reason}`;
+      }
+
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        msgId,
+        `❌ *Swap Failed*\n\n${errorMessage}`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "🔄 Try Again", callback_data: `swap:amount:${inputToken}:${outputToken}:${amount}` },
+              { text: "« Back", callback_data: "nav:swap" }
+            ]]
+          }
+        }
+      );
+      return;
+    }
+
+    const result = tradeResult.value;
+
+    // Show completion progress for a moment
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    // Success!
     await ctx.api.editMessageText(
       ctx.chat!.id,
       msgId,
-      `✅ *Swap Executed* (Demo)\n\n` +
-        `📥 Sent: ${amount} ${inputToken}\n` +
-        `📤 Received: ~XXX ${outputToken}\n\n` +
-        `_Returning to dashboard..._`,
-      { parse_mode: "Markdown" }
+      `✅ *Swap Successful!*\n\n` +
+      `Swapped **${displayAmount}** → **${outputToken}**\n\n` +
+      `Transaction: \`${result.signature}\`\n` +
+      `Slot: ${result.slot}\n\n` +
+      `📥 Input: ${formatTokenAmount(result.inputAmount, inputDecimals)} ${inputToken}\n` +
+      `📤 Output: ${formatTokenAmount(result.outputAmount, getTokenDecimals(outputMintAddr))} ${outputToken}\n` +
+      `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
+      `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
+      `[View on Solscan](https://solscan.io/tx/${result.signature})`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "🛒 Buy", callback_data: "nav:buy" },
+              { text: "💸 Sell", callback_data: "nav:sell" },
+            ],
+            [
+              { text: "🔄 Swap Again", callback_data: "nav:swap" },
+            ],
+            [
+              { text: "🏠 Dashboard", callback_data: "nav:main" },
+            ],
+          ],
+        },
+      }
     );
 
-    setTimeout(() => navigateToPage(ctx, "main"), 2000);
-  }, 1500);
+  } catch (error) {
+    logger.error("Error executing swap", { error, inputToken, outputToken, amount });
+    await ctx.api.editMessageText(
+      ctx.chat!.id,
+      msgId,
+      `❌ *Unexpected Error*\n\nPlease try again or contact support.`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]]
+        }
+      }
+    );
+  }
 }
+
+// ============================================================================
+// Custom Sell with Absolute Amount
+// ============================================================================
+
+/**
+ * Execute sell with absolute token amount (for custom input)
+ */
+export async function executeSellWithAbsoluteAmount(
+  ctx: Context,
+  token: string,
+  absoluteAmount: string
+): Promise<void> {
+  const msgId = ctx.session.ui.messageId;
+
+  if (!msgId || !ctx.chat) {
+    await ctx.reply("❌ Session expired. Please use /start");
+    return;
+  }
+
+  // Check if wallet is unlocked
+  if (!ctx.session.sessionToken || !ctx.session.password) {
+    // DON'T set returnToPageAfterUnlock when there's a pending command
+    // The unlock handler will execute the pending command directly
+    // Only set it if there's no pending command (manual UI navigation)
+    if (!ctx.session.pendingCommand) {
+      ctx.session.returnToPageAfterUnlock = "sell";
+    }
+
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `🔒 *Wallet Locked*\n\n` +
+      `To sell ${absoluteAmount} ${token}, please unlock your wallet first.\n\n` +
+      `Your session will be active for 15 minutes.`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[
+            { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
+            { text: "« Cancel", callback_data: "nav:main" }
+          ]]
+        }
+      }
+    );
+    return;
+  }
+
+  try {
+    // Get user
+    const user = await prisma.user.findUnique({
+      where: { telegramId: BigInt(ctx.from!.id) },
+      include: { wallets: { where: { isActive: true } } },
+    });
+
+    if (!user || !user.wallets.length) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        "❌ Wallet not found. Please create one first.",
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "🏠 Home", callback_data: "nav:main" }]]
+          }
+        }
+      );
+      return;
+    }
+
+    // Resolve token mint
+    let tokenMint: string;
+    try {
+      tokenMint = resolveTokenSymbol(token);
+    } catch (error) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ *Invalid Token*\n\n${error instanceof Error ? error.message : String(error)}`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
+          }
+        }
+      );
+      return;
+    }
+
+    // Progress: Step 1 - Preparing sell
+    await updateSellProgress(ctx, {
+      step: 1,
+      total: 3,
+      message: `Token: ${token}\nAmount: ${absoluteAmount}`,
+      status: "Preparing...",
+    });
+
+    // Parse amount and convert to minimal units
+    const amountFloat = parseFloat(absoluteAmount);
+    const decimals = getTokenDecimals(tokenMint);
+    const minimalUnits = toMinimalUnits(amountFloat, decimals);
+
+    // Progress: Step 2 - Executing transaction
+    await updateSellProgress(ctx, {
+      step: 2,
+      total: 3,
+      message: `Token: ${token}\nAmount: ${absoluteAmount}`,
+      status: "Executing sell...",
+    });
+
+    // Execute trade
+    const inputMint = asTokenMint(tokenMint);
+    const outputMint = asTokenMint(SOL_MINT);
+
+    const executor = getTradingExecutor();
+    const tradeResult = await executor.executeTrade(
+      {
+        userId: user.id,
+        inputMint,
+        outputMint,
+        amount: minimalUnits,
+        slippageBps: 50, // 0.5% slippage
+      },
+      ctx.session.password!,
+      ctx.session.sessionToken as any
+    );
+
+    if (!tradeResult.success) {
+      const error = tradeResult.error as TradingError;
+
+      let errorMessage = "Trade execution failed";
+      if (error.type === "WALLET_NOT_FOUND") {
+        errorMessage = "Wallet not found";
+      } else if (error.type === "INVALID_PASSWORD") {
+        errorMessage = "Session expired. Please unlock again.";
+      } else if (error.type === "SWAP_FAILED") {
+        errorMessage = `Sell failed: ${error.reason}`;
+      }
+
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `❌ *Sell Failed*\n\n${errorMessage}`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "🔄 Try Again", callback_data: `nav:sell` },
+              { text: "« Back", callback_data: "nav:sell" }
+            ]]
+          }
+        }
+      );
+      return;
+    }
+
+    const result = tradeResult.value;
+    const solReceived = Number(result.outputAmount) / 1e9;
+
+    // Progress: Step 3 - Completed
+    await updateSellProgress(ctx, {
+      step: 3,
+      total: 3,
+      message: `Token: ${token}\nAmount: ${absoluteAmount}`,
+      status: "Confirmed!",
+    });
+
+    // Show completion progress for a moment
+    await new Promise(resolve => setTimeout(resolve, 800));
+
+    // Success!
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `✅ *Sell Successful!*\n\n` +
+      `Sold **${absoluteAmount} ${token}** for **${solReceived.toFixed(4)} SOL**\n\n` +
+      `Transaction: \`${result.signature}\`\n` +
+      `Slot: ${result.slot}\n\n` +
+      `Input: ${absoluteAmount} ${token}\n` +
+      `Output: ${solReceived.toFixed(4)} SOL\n` +
+      `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
+      `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
+      `[View on Solscan](https://solscan.io/tx/${result.signature})`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "🔄 Swap", callback_data: "nav:swap" },
+              { text: "🛒 Buy", callback_data: "nav:buy" },
+            ],
+            [
+              { text: "💸 Sell Again", callback_data: "nav:sell" },
+            ],
+            [
+              { text: "🏠 Dashboard", callback_data: "nav:main" },
+            ],
+          ],
+        },
+      }
+    );
+
+  } catch (error) {
+    logger.error("Error executing custom sell", { error, token, absoluteAmount });
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `❌ *Unexpected Error*\n\nPlease try again or contact support.`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
+        }
+      }
+    );
+  }
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Format token amount from minimal units to human-readable
+ */
+function formatTokenAmount(amount: bigint, decimals: number): string {
+  const num = Number(amount) / Math.pow(10, decimals);
+  return num.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: Math.min(decimals, 6),
+  });
+}
+
+/**
+ * Update swap progress bar in message
+ */
+async function updateSwapProgress(
+  ctx: Context,
+  config: {
+    step: number;
+    total: number;
+    message: string;
+    status: string;
+  }
+): Promise<void> {
+  const { step, total, message, status } = config;
+
+  const msgId = ctx.session.ui.messageId;
+  if (!msgId || !ctx.chat) {
+    logger.warn("Cannot update swap progress: no messageId", { step });
+    return;
+  }
+
+  // Create progress bar
+  const percentage = Math.floor((step / total) * 100);
+  const filled = Math.floor((step / total) * 10);
+  const empty = 10 - filled;
+
+  const progressBar = "▓".repeat(filled) + "░".repeat(empty);
+
+  const text =
+    `*Processing Swap*\n\n` +
+    `${message}\n\n` +
+    `${progressBar} ${percentage}%\n` +
+    `${status}\n\n` +
+    `Step ${step}/${total}`;
+
+  try {
+    await ctx.api.editMessageText(ctx.chat.id, msgId, text, {
+      parse_mode: "Markdown",
+    });
+  } catch (error) {
+    // Ignore "message is not modified" errors
+    if (!String(error).includes("message is not modified")) {
+      logger.warn("Failed to update swap progress", { error, step });
+    }
+  }
+}
+
+/**
+ * Update sell progress bar in message
+ */
+async function updateSellProgress(
+  ctx: Context,
+  config: {
+    step: number;
+    total: number;
+    message: string;
+    status: string;
+  }
+): Promise<void> {
+  const { step, total, message, status } = config;
+
+  const msgId = ctx.session.ui.messageId;
+  if (!msgId || !ctx.chat) {
+    logger.warn("Cannot update sell progress: no messageId", { step });
+    return;
+  }
+
+  // Create progress bar
+  const percentage = Math.floor((step / total) * 100);
+  const filled = Math.floor((step / total) * 10);
+  const empty = 10 - filled;
+
+  const progressBar = "▓".repeat(filled) + "░".repeat(empty);
+
+  const text =
+    `*Processing Sell*\n\n` +
+    `${message}\n\n` +
+    `${progressBar} ${percentage}%\n` +
+    `${status}\n\n` +
+    `Step ${step}/${total}`;
+
+  try {
+    await ctx.api.editMessageText(ctx.chat.id, msgId, text, {
+      parse_mode: "Markdown",
+    });
+  } catch (error) {
+    // Ignore "message is not modified" errors
+    if (!String(error).includes("message is not modified")) {
+      logger.warn("Failed to update sell progress", { error, step });
+    }
+  }
+}
+

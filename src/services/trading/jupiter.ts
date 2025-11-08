@@ -519,7 +519,7 @@ export class JupiterService {
         signature,
         inputAmount: BigInt(execution.totalInputAmount),
         outputAmount: BigInt(execution.totalOutputAmount),
-        priceImpactPct: quote.priceImpact * 100,
+        priceImpactPct: quote.priceImpact, // Jupiter already returns percentage
         slot: Number(execution.slot),
       };
 
@@ -532,7 +532,7 @@ export class JupiterService {
         signature: asTransactionSignature(execution.signature),
         inputAmount: BigInt(execution.totalInputAmount),
         outputAmount: BigInt(execution.totalOutputAmount),
-        priceImpactPct: quote.priceImpact * 100,
+        priceImpactPct: quote.priceImpact, // Jupiter already returns percentage
         slot: Number(execution.slot),
       });
     }
