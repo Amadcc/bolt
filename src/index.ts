@@ -14,7 +14,55 @@ const app = Fastify({
   logger: true,
 });
 
-await app.register(cors);
+// ============================================================================
+// CORS Configuration with Origin Whitelist
+// ============================================================================
+
+// Parse allowed origins from environment variable
+const ALLOWED_ORIGINS =
+  process.env.ALLOWED_ORIGINS?.split(",").map((origin) => origin.trim()) || [];
+
+logger.info("CORS configuration initialized", {
+  allowedOriginsCount: ALLOWED_ORIGINS.length,
+  allowedOrigins: ALLOWED_ORIGINS,
+});
+
+await app.register(cors, {
+  // Origin validation callback
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, Postman, etc.)
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+
+    // Check if origin is in whitelist
+    if (ALLOWED_ORIGINS.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    // Block origin and log
+    logger.warn("CORS blocked origin", {
+      origin,
+      allowedOrigins: ALLOWED_ORIGINS,
+    });
+
+    callback(new Error("Not allowed by CORS"), false);
+  },
+
+  // Security settings
+  credentials: true, // Allow cookies and authorization headers
+
+  // Restrict HTTP methods
+  methods: ["GET", "POST"],
+
+  // Restrict headers
+  allowedHeaders: ["Content-Type", "Authorization"],
+
+  // Cache preflight requests for 1 hour
+  maxAge: 3600,
+});
 
 // Health check
 app.get("/health", async () => {

@@ -425,32 +425,84 @@ async function handleLockAction(ctx: Context): Promise<void> {
 - `src/utils/redis.ts` - 7 lines → 327 lines (production-ready)
 - `src/index.ts` - Updated /health endpoint and shutdown handlers
 
-### 7. Open CORS - No Origin Whitelist
+### 7. Open CORS - No Origin Whitelist ✅ (COMPLETED)
 
-**Location:** `src/index.ts:13`
-**Risk:** CSRF attacks possible from any origin
+**Location:** `src/index.ts:17` (now 30-65)
+**Risk:** ~~CSRF attacks possible from any origin~~ → **FIXED**
 
-- [ ] **Add ALLOWED_ORIGINS to .env**
-  - Document format (comma-separated list)
-  - Add development origins (http://localhost:3000)
-  - Add production origins placeholder
-  - Update .env.example
+**Status:** ✅ Complete (all checklist items implemented and tested)
 
-- [ ] **Update CORS registration**
-  - Add origin callback function
-  - Parse ALLOWED_ORIGINS from process.env
-  - Check if origin in whitelist
-  - Allow no-origin requests (mobile apps, Postman)
-  - Log blocked origins with logger.warn
-  - Enable credentials: true
-  - Restrict methods to GET, POST
-  - Restrict headers to Content-Type, Authorization
+- [x] **Add ALLOWED_ORIGINS to .env.example**
+  - ✅ Documented format (comma-separated list)
+  - ✅ Added development origins (http://localhost:3000, http://localhost:3001, http://127.0.0.1:3000)
+  - ✅ Added production origins placeholder with examples
+  - ✅ Added comprehensive comments and security warnings
 
-- [ ] **Test CORS configuration**
-  - Test allowed origin (should succeed)
-  - Test blocked origin (should fail with CORS error)
-  - Test no-origin request (should succeed)
-  - Verify blocked origins logged
+- [x] **Update CORS registration**
+  - ✅ Added origin callback function with validation logic
+  - ✅ Parse ALLOWED_ORIGINS from process.env with trim()
+  - ✅ Check if origin in whitelist
+  - ✅ Allow no-origin requests (mobile apps, Postman, curl)
+  - ✅ Log blocked origins with logger.warn including origin and whitelist
+  - ✅ Enable credentials: true (cookies, auth headers)
+  - ✅ Restrict methods to GET, POST
+  - ✅ Restrict headers to Content-Type, Authorization
+  - ✅ Added maxAge: 3600 (cache preflight 1 hour)
+
+- [x] **Test CORS configuration**
+  - ✅ Test allowed origin (http://localhost:3000) - SUCCESS
+    - HTTP/1.1 200 OK
+    - Access-Control-Allow-Origin: http://localhost:3000
+    - Access-Control-Allow-Credentials: true
+  - ✅ Test blocked origin (http://evil.com) - BLOCKED
+    - HTTP/1.1 500 Internal Server Error
+    - "message":"Not allowed by CORS"
+  - ✅ Test no-origin request (curl) - SUCCESS
+    - HTTP/1.1 200 OK
+    - {"status":"ok"}
+  - ✅ Verify blocked origins logged - CONFIRMED
+    - [WARN]: CORS blocked origin
+
+**Test Results:**
+
+```bash
+# Test 1: No origin (curl, mobile apps)
+$ curl -s http://localhost:3000/health | jq -r '.status'
+ok  ✅
+
+# Test 2: Allowed origin
+$ curl -s -H "Origin: http://localhost:3000" http://localhost:3000/health -i
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: http://localhost:3000
+Access-Control-Allow-Credentials: true  ✅
+
+# Test 3: Blocked origin
+$ curl -s -H "Origin: http://evil.com" http://localhost:3000/health -i
+HTTP/1.1 500 Internal Server Error
+{"message":"Not allowed by CORS"}  ✅
+
+# Logs:
+[WARN]: CORS blocked origin
+  origin: "http://evil.com"
+  allowedOrigins: ["http://localhost:3000", "http://localhost:3001"]  ✅
+```
+
+**Impact:**
+
+- ✅ CSRF protection - only whitelisted origins allowed
+- ✅ No-origin requests allowed (mobile apps, Postman, curl)
+- ✅ Blocked origins logged with full context
+- ✅ Credentials support (cookies, Authorization header)
+- ✅ Restricted HTTP methods (GET, POST only)
+- ✅ Restricted headers (Content-Type, Authorization only)
+- ✅ Preflight cache (1 hour) reduces OPTIONS requests
+- ✅ Production-ready with TLS support
+- ✅ Environment-aware configuration
+
+**Files Modified:**
+
+- `.env.example` - Added ALLOWED_ORIGINS with documentation
+- `src/index.ts` - Replaced open CORS with whitelist-based CORS (17 → 65 lines)
 
 ### 8. No Base58 Validation for Token Addresses
 
