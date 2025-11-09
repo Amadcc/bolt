@@ -9,6 +9,8 @@ import { unlockWallet, clearKeypair } from "../wallet/keyManager.js";
 // ✅ Redis Session Integration
 import { getKeypairForSigning } from "../wallet/session.js";
 import { getJupiter } from "./jupiter.js";
+import { getSolanaConnection } from "../blockchain/solana.js";
+import { PublicKey } from "@solana/web3.js";
 import type { Result, SessionToken } from "../../types/common.js";
 import { Ok, Err } from "../../types/common.js";
 import type { TradeParams, TradeResult, TradingError } from "../../types/trading.js";
@@ -35,11 +37,27 @@ const DEFAULT_CONFIG: TradingExecutorConfig = {
 };
 
 // ============================================================================
+// Token Decimals Cache
+// ============================================================================
+
+interface DecimalsCacheEntry {
+  decimals: number;
+  timestamp: number;
+  lastAccessed: number; // For LRU eviction
+}
+
+const DECIMALS_CACHE_TTL = 3600000; // 1 hour in milliseconds
+const DECIMALS_CACHE_MAX_SIZE = 1000; // Maximum number of tokens to cache
+const DECIMALS_CACHE_CLEANUP_INTERVAL = 300000; // Cleanup every 5 minutes
+
+// ============================================================================
 // Trading Executor Class
 // ============================================================================
 
 export class TradingExecutor {
   private config: TradingExecutorConfig;
+  private decimalsCache: Map<string, DecimalsCacheEntry> = new Map();
+  private cacheCleanupTimer: Timer | null = null;
 
   constructor(config: Partial<TradingExecutorConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -53,6 +71,85 @@ export class TradingExecutor {
       feeAccount: this.config.feeAccount,
       revenueEnabled: !!(this.config.platformFeeBps && this.config.feeAccount),
     });
+
+    // Start periodic cache cleanup
+    this.startCacheCleanup();
+  }
+
+  /**
+   * Start periodic cleanup of expired cache entries
+   */
+  private startCacheCleanup(): void {
+    this.cacheCleanupTimer = setInterval(() => {
+      this.cleanupExpiredEntries();
+    }, DECIMALS_CACHE_CLEANUP_INTERVAL);
+
+    // Ensure cleanup runs even if process is idle
+    if (this.cacheCleanupTimer.unref) {
+      this.cacheCleanupTimer.unref();
+    }
+
+    logger.debug("Decimals cache cleanup timer started", {
+      intervalMs: DECIMALS_CACHE_CLEANUP_INTERVAL,
+    });
+  }
+
+  /**
+   * Stop cache cleanup timer (for graceful shutdown)
+   */
+  public stopCacheCleanup(): void {
+    if (this.cacheCleanupTimer) {
+      clearInterval(this.cacheCleanupTimer);
+      this.cacheCleanupTimer = null;
+      logger.debug("Decimals cache cleanup timer stopped");
+    }
+  }
+
+  /**
+   * Clean up expired cache entries
+   * Removes entries older than TTL
+   */
+  private cleanupExpiredEntries(): void {
+    const now = Date.now();
+    let removedCount = 0;
+
+    for (const [tokenMint, entry] of this.decimalsCache.entries()) {
+      if (now - entry.timestamp > DECIMALS_CACHE_TTL) {
+        this.decimalsCache.delete(tokenMint);
+        removedCount++;
+      }
+    }
+
+    if (removedCount > 0) {
+      logger.debug("Cleaned up expired decimals cache entries", {
+        removedCount,
+        remainingSize: this.decimalsCache.size,
+      });
+    }
+  }
+
+  /**
+   * Evict least recently used entry to make room for new one
+   * Uses LRU (Least Recently Used) eviction policy
+   */
+  private evictLRU(): void {
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
+
+    for (const [tokenMint, entry] of this.decimalsCache.entries()) {
+      if (entry.lastAccessed < oldestTime) {
+        oldestTime = entry.lastAccessed;
+        oldestKey = tokenMint;
+      }
+    }
+
+    if (oldestKey) {
+      this.decimalsCache.delete(oldestKey);
+      logger.debug("Evicted LRU decimals cache entry", {
+        tokenMint: oldestKey,
+        cacheSize: this.decimalsCache.size,
+      });
+    }
   }
 
   /**
@@ -287,6 +384,87 @@ export class TradingExecutor {
   }
 
   /**
+   * Get token decimals from on-chain mint account
+   * Uses 1-hour cache with LRU eviction to minimize RPC calls
+   */
+  private async getTokenDecimals(
+    tokenMint: string
+  ): Promise<Result<number, TradingError>> {
+    try {
+      const now = Date.now();
+
+      // Check cache first
+      const cached = this.decimalsCache.get(tokenMint);
+
+      if (cached && now - cached.timestamp < DECIMALS_CACHE_TTL) {
+        // Update lastAccessed for LRU
+        cached.lastAccessed = now;
+
+        logger.debug("Token decimals cache hit", {
+          tokenMint,
+          decimals: cached.decimals,
+          age: Math.floor((now - cached.timestamp) / 1000) + "s",
+        });
+        return Ok(cached.decimals);
+      }
+
+      // Cache miss - fetch from on-chain
+      logger.debug("Token decimals cache miss, fetching from RPC", { tokenMint });
+
+      const connection = getSolanaConnection();
+      const mintPublicKey = new PublicKey(tokenMint);
+
+      // Get mint account info
+      const mintInfo = await connection.getParsedAccountInfo(mintPublicKey);
+
+      if (!mintInfo.value) {
+        return Err({
+          type: "INVALID_TOKEN",
+          message: `Token mint account not found: ${tokenMint}`,
+        });
+      }
+
+      // Extract decimals from parsed data
+      const data = mintInfo.value.data;
+      if (!("parsed" in data) || !data.parsed?.info?.decimals) {
+        return Err({
+          type: "INVALID_TOKEN",
+          message: `Invalid mint account data for ${tokenMint}`,
+        });
+      }
+
+      const decimals = data.parsed.info.decimals as number;
+
+      // Check if cache is full and evict LRU if needed
+      if (this.decimalsCache.size >= DECIMALS_CACHE_MAX_SIZE) {
+        this.evictLRU();
+      }
+
+      // Save to cache with current timestamp
+      this.decimalsCache.set(tokenMint, {
+        decimals,
+        timestamp: now,
+        lastAccessed: now,
+      });
+
+      logger.info("Token decimals fetched and cached", {
+        tokenMint,
+        decimals,
+        cacheSize: this.decimalsCache.size,
+        maxSize: DECIMALS_CACHE_MAX_SIZE,
+      });
+
+      return Ok(decimals);
+    } catch (error) {
+      logger.error("Error fetching token decimals", { tokenMint, error });
+      return Err({
+        type: "RPC_ERROR",
+        message: `Failed to fetch decimals: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }
+
+  /**
    * Calculate commission in USD (0.85% of output amount)
    */
   private async calculateCommission(
@@ -295,6 +473,21 @@ export class TradingExecutor {
   ): Promise<Result<number, TradingError>> {
     try {
       const jupiter = getJupiter();
+
+      // Get token decimals (cached)
+      const decimalsResult = await this.getTokenDecimals(tokenMint);
+
+      if (!decimalsResult.success) {
+        logger.warn("Failed to get token decimals, using default 9", {
+          tokenMint,
+          error: decimalsResult.error,
+        });
+        // Fallback to 9 decimals (SOL standard) if decimals fetch fails
+        // This prevents commission calculation from completely failing
+      }
+
+      const decimals = decimalsResult.success ? decimalsResult.value : 9;
+      const divisor = Math.pow(10, decimals);
 
       // Get token price in USD
       const priceResult = await jupiter.getTokenPrice(tokenMint as any);
@@ -308,8 +501,8 @@ export class TradingExecutor {
 
       const tokenPriceUsd = priceResult.value;
 
-      // Calculate output value in USD (assuming 9 decimals, adjust if needed)
-      const outputValueUsd = (Number(outputAmount) / 1e9) * tokenPriceUsd;
+      // Calculate output value in USD using correct decimals
+      const outputValueUsd = (Number(outputAmount) / divisor) * tokenPriceUsd;
 
       // Calculate commission (0.85%)
       const commission = (outputValueUsd * this.config.commissionBps) / 10000;
@@ -320,6 +513,8 @@ export class TradingExecutor {
       logger.info("Commission calculated", {
         tokenMint,
         outputAmount: outputAmount.toString(),
+        decimals,
+        divisor,
         tokenPriceUsd,
         outputValueUsd: outputValueUsd.toFixed(2),
         commission: commission.toFixed(4),

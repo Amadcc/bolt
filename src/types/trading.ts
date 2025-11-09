@@ -44,4 +44,6 @@ export type TradingError =
   | { type: "QUOTE_FAILED"; message: string }
   | { type: "DATABASE_ERROR"; message: string }
   | { type: "COMMISSION_CALCULATION_FAILED"; message: string }
+  | { type: "INVALID_TOKEN"; message: string }
+  | { type: "RPC_ERROR"; message: string }
   | { type: "UNKNOWN"; message: string };
