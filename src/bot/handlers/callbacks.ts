@@ -8,6 +8,7 @@ import { navigateToPage } from "../views/index.js";
 import { logger } from "../../utils/logger.js";
 import { prisma } from "../../utils/db.js";
 import { lockSession } from "../commands/session.js";
+import { destroySession } from "../../services/wallet/session.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
 import { asTokenMint } from "../../types/common.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
@@ -96,9 +97,17 @@ async function handleUnlockAction(ctx: Context): Promise<void> {
 
 /**
  * Lock wallet action
+ * ✅ CRITICAL-3 Fix: Destroy Redis session to prevent stolen token attacks
  */
 async function handleLockAction(ctx: Context): Promise<void> {
+  // 🔐 Destroy Redis session if exists (CRITICAL-3 fix)
+  if (ctx.session.sessionToken) {
+    await destroySession(ctx.session.sessionToken as any);
+  }
+
+  // Clear Grammy session
   lockSession(ctx);
+
   await ctx.answerCallbackQuery("🔒 Wallet locked");
   await navigateToPage(ctx, "main");
 }
