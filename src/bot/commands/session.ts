@@ -168,6 +168,21 @@ export async function handleUnlockPasswordInput(
   ctx: Context,
   password: string
 ): Promise<void> {
+  // 🔐 DELETE PASSWORD MESSAGE IMMEDIATELY (CRITICAL-2 fix)
+  const messageId = ctx.message?.message_id;
+  if (messageId) {
+    try {
+      await ctx.api.deleteMessage(ctx.chat!.id, messageId);
+      logger.info("Password message deleted", { userId: ctx.from?.id });
+    } catch (error) {
+      logger.warn("Failed to delete password message", { error });
+      // Fallback: warn user to delete manually
+      await ctx.reply(
+        "⚠️ Could not delete your password message. Please delete it manually for security."
+      );
+    }
+  }
+
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
 
