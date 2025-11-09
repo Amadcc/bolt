@@ -71,10 +71,15 @@
   - **Verified via:** `curl https://api.telegram.org/bot{OLD_TOKEN}/getMe` → 401
   - **New token works:** `curl https://api.telegram.org/bot{NEW_TOKEN}/getMe` → OK
 
-- [ ] **Change DATABASE_URL password** (Optional for dev environment)
-  - Current: `postgres:postgres@localhost:5433`
-  - Recommendation: Change in production deployment
-  - Status: SKIPPED for local dev (acceptable risk)
+- [x] **Change DATABASE_URL password** ✅ DONE (2025-11-09)
+  - [x] Generated secure 32-char password: `a6XeSeRdrbAPlgXNawCCuYkECwoMV3`
+  - [x] Updated PostgreSQL user password: `ALTER ROLE` successful
+  - [x] Updated docker-compose.yml with new POSTGRES_PASSWORD
+  - [x] Updated .env with new DATABASE_URL
+  - [x] Restarted application with new credentials
+  - [x] Verified database connection: Health check `database: true`
+  - [x] Verified Prisma queries working: `prisma:query SELECT 1`
+  - **Status:** Production-ready password deployed
 
 - [x] **Regenerate SESSION_MASTER_SECRET** ✅ DONE (2025-11-09)
   - [x] Generated new 64-byte random secret (base64 encoded)
