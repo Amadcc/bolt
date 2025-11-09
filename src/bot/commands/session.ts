@@ -163,26 +163,14 @@ async function executeUnlock(
 
 /**
  * Handle password input for unlock
+ *
+ * NOTE: Password message is already deleted in index.ts (line 451)
+ * before this function is called. No need to delete again here.
  */
 export async function handleUnlockPasswordInput(
   ctx: Context,
   password: string
 ): Promise<void> {
-  // 🔐 DELETE PASSWORD MESSAGE IMMEDIATELY (CRITICAL-2 fix)
-  const messageId = ctx.message?.message_id;
-  if (messageId) {
-    try {
-      await ctx.api.deleteMessage(ctx.chat!.id, messageId);
-      logger.info("Password message deleted", { userId: ctx.from?.id });
-    } catch (error) {
-      logger.warn("Failed to delete password message", { error });
-      // Fallback: warn user to delete manually
-      await ctx.reply(
-        "⚠️ Could not delete your password message. Please delete it manually for security."
-      );
-    }
-  }
-
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
 
