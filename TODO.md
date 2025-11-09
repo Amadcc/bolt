@@ -106,12 +106,16 @@
   - [x] Links to ARCHITECTURE.md, HONEYPOT.md, etc.
   - [x] Committed to git: `2f3764c`
 
-- [ ] **Add pre-commit hook** ⚠️ TODO
-  - Create `.git/hooks/pre-commit` script
-  - Check for .env files in staged changes
-  - Exit with error if .env detected
-  - Make script executable with chmod +x
-  - Test hook by attempting to commit .env
+- [x] **Add pre-commit hook** ✅ DONE (2025-11-09)
+  - [x] Created `.git/hooks/pre-commit` script with production-grade logic
+  - [x] Detects .env and other sensitive files in staged changes
+  - [x] Blocks commit with exit code 1 and helpful error message
+  - [x] Made script executable: `chmod +x`
+  - [x] Tested blocking .env: ✅ "COMMIT BLOCKED" with formatted output
+  - [x] Tested allowing normal files: ✅ "✓ No sensitive files detected"
+  - [x] Created comprehensive documentation: `docs/pre-commit-hook.md`
+  - **Blocked patterns:** .env, .env.*, *.private.key, *.pem
+  - **Features:** Color-coded output, helpful instructions, team onboarding guide
 
 - [ ] **Move to secrets manager (plan for Week 3)**
   - Research AWS Secrets Manager vs HashiCorp Vault
