@@ -108,14 +108,13 @@ export async function handleSell(ctx: Context): Promise<void> {
       return;
     }
 
-    // Resolve token mint
-    let tokenMint: string;
-    try {
-      tokenMint = resolveTokenSymbol(tokenArg);
-    } catch (error) {
-      await ctx.reply(`❌ Invalid token: ${error instanceof Error ? error.message : String(error)}`);
+    // Resolve token mint with validation
+    const tokenMintResult = resolveTokenSymbol(tokenArg);
+    if (!tokenMintResult.success) {
+      await ctx.reply(`❌ Invalid token: ${tokenMintResult.error}`);
       return;
     }
+    const tokenMint = tokenMintResult.value;
 
     // Parse amount (percentage or absolute)
     const amountInfo = parseAmount(amountArg);

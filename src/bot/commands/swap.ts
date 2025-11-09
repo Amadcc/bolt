@@ -100,17 +100,20 @@ export async function handleSwap(ctx: Context): Promise<void> {
       return;
     }
 
-    // Parse token mints (support common symbols)
-    let inputMint: string;
-    let outputMint: string;
-
-    try {
-      inputMint = resolveTokenSymbol(inputMintArg);
-      outputMint = resolveTokenSymbol(outputMintArg);
-    } catch (error) {
-      await ctx.reply(`❌ Invalid token: ${error instanceof Error ? error.message : String(error)}`);
+    // Parse token mints with validation (support common symbols)
+    const inputMintResult = resolveTokenSymbol(inputMintArg);
+    if (!inputMintResult.success) {
+      await ctx.reply(`❌ Invalid input token: ${inputMintResult.error}`);
       return;
     }
+    const inputMint = inputMintResult.value;
+
+    const outputMintResult = resolveTokenSymbol(outputMintArg);
+    if (!outputMintResult.success) {
+      await ctx.reply(`❌ Invalid output token: ${outputMintResult.error}`);
+      return;
+    }
+    const outputMint = outputMintResult.value;
 
     // Parse amount and convert to minimal units
     const amountFloat = parseFloat(amountArg);

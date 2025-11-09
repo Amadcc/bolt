@@ -99,15 +99,13 @@ export async function executeBuyFlow(
       return;
     }
 
-    // Resolve token mint
-    let tokenMint: string;
-    try {
-      tokenMint = resolveTokenSymbol(token);
-    } catch (error) {
+    // Resolve token mint with validation
+    const tokenMintResult = resolveTokenSymbol(token);
+    if (!tokenMintResult.success) {
       await ctx.api.editMessageText(
         ctx.chat.id,
         msgId,
-        `❌ *Invalid Token*\n\n${error instanceof Error ? error.message : String(error)}`,
+        `❌ *Invalid Token*\n\n${tokenMintResult.error}`,
         {
           parse_mode: "Markdown",
           reply_markup: {
@@ -117,6 +115,7 @@ export async function executeBuyFlow(
       );
       return;
     }
+    const tokenMint = tokenMintResult.value;
 
     // Progress: Step 1 - Honeypot check
     await updateProgress(ctx, {

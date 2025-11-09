@@ -4,6 +4,10 @@
  * Manages token mint addresses for different Solana networks
  */
 
+import { PublicKey } from "@solana/web3.js";
+import type { TokenMint } from "../types/common.js";
+import { Ok, Err, type Result } from "../types/common.js";
+
 // Determine current network from environment
 const SOLANA_NETWORK = process.env.SOLANA_NETWORK || "mainnet";
 const isDevnet = SOLANA_NETWORK === "devnet";
@@ -67,13 +71,46 @@ export const KNOWN_TOKENS = isDevnet ? DEVNET_TOKENS : MAINNET_TOKENS;
 export const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 /**
- * Resolve token symbol to mint address
+ * Validate Solana address (Base58 encoding + on-curve check)
+ *
+ * @param address - Potential Solana address
+ * @returns Result with TokenMint or error message
+ */
+function validateTokenAddress(address: string): Result<TokenMint, string> {
+  try {
+    // Attempt to create PublicKey (validates Base58 encoding)
+    const pubkey = new PublicKey(address);
+
+    // Check if the public key is on the ed25519 curve
+    // This prevents invalid addresses from being sent to RPC
+    if (!PublicKey.isOnCurve(pubkey.toBytes())) {
+      return Err(
+        `Invalid token address (not on curve): ${address.slice(0, 8)}...`
+      );
+    }
+
+    // Valid address
+    return Ok(address as TokenMint);
+  } catch (error) {
+    // Invalid Base58 encoding or other errors
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+
+    return Err(
+      `Invalid token address (bad Base58): ${address.slice(0, 8)}... - ${errorMessage}`
+    );
+  }
+}
+
+/**
+ * Resolve token symbol to mint address with validation
  *
  * @param symbol - Token symbol (e.g., "USDC", "SOL") or mint address
- * @returns Token mint address
- * @throws Error if symbol is unknown
+ * @returns Result with TokenMint or error message
  */
-export function resolveTokenSymbol(symbol: string): string {
+export function resolveTokenSymbol(
+  symbol: string
+): Result<TokenMint, string> {
   const upper = symbol.toUpperCase();
 
   // If it's a known symbol, return its mint
@@ -82,25 +119,27 @@ export function resolveTokenSymbol(symbol: string): string {
 
     // Check if token is available on current network
     if (mint.endsWith("_NOT_AVAILABLE")) {
-      throw new Error(
+      return Err(
         `${symbol} is not available on ${SOLANA_NETWORK}. ` +
-        (isDevnet
-          ? "Switch to mainnet or create your own test token."
-          : "This token is only available on mainnet.")
+          (isDevnet
+            ? "Switch to mainnet or create your own test token."
+            : "This token is only available on mainnet.")
       );
     }
 
-    return mint;
+    // Known symbols are already validated addresses
+    return Ok(mint as TokenMint);
   }
 
-  // Otherwise assume it's already a mint address
+  // Otherwise assume it's a mint address - validate it
   if (symbol.length >= 32) {
-    return symbol;
+    return validateTokenAddress(symbol);
   }
 
-  throw new Error(
+  // Too short to be an address, not a known symbol
+  return Err(
     `Unknown token symbol: ${symbol}. ` +
-    `Available tokens on ${SOLANA_NETWORK}: ${Object.keys(KNOWN_TOKENS).join(", ")}`
+      `Available tokens on ${SOLANA_NETWORK}: ${Object.keys(KNOWN_TOKENS).join(", ")}`
   );
 }
 

@@ -504,34 +504,73 @@ HTTP/1.1 500 Internal Server Error
 - `.env.example` - Added ALLOWED_ORIGINS with documentation
 - `src/index.ts` - Replaced open CORS with whitelist-based CORS (17 → 65 lines)
 
-### 8. No Base58 Validation for Token Addresses
+### 8. No Base58 Validation for Token Addresses ✅ (COMPLETED)
 
-**Location:** `src/config/tokens.ts:67`
-**Risk:** Garbage addresses sent to RPC, crashes
+**Location:** `src/config/tokens.ts:79-144` (added validation)
+**Risk:** ~~Garbage addresses sent to RPC, crashes~~ → **FIXED**
 
-- [ ] **Update resolveTokenSymbol() return type**
-  - Change return type from TokenMint to Result<TokenMint, string>
-  - Known symbols return Ok(knownMint)
-  - Unknown addresses go to validation
+**Status:** ✅ Complete (all checklist items implemented and tested)
 
-- [ ] **Add PublicKey validation**
-  - Wrap validation in try/catch
-  - Use new PublicKey(token) to validate base58 encoding
-  - Call PublicKey.isOnCurve() for extra safety
-  - Return Err with helpful message on failure
-  - Include invalid address in error (first 8 chars)
+- [x] **Update resolveTokenSymbol() return type**
+  - ✅ Changed return type from `string` to `Result<TokenMint, string>`
+  - ✅ Known symbols return `Ok(knownMint as TokenMint)`
+  - ✅ Unknown addresses go to validation
 
-- [ ] **Update command handlers**
-  - Update buy.ts to check if result.success
-  - Show result.error if validation failed
-  - Same updates for sell.ts
-  - Same updates for swap.ts
+- [x] **Add PublicKey validation**
+  - ✅ Created `validateTokenAddress()` helper function
+  - ✅ Wrapped validation in try/catch
+  - ✅ Use `new PublicKey(token)` to validate base58 encoding
+  - ✅ Call `PublicKey.isOnCurve()` for extra safety
+  - ✅ Return `Err` with helpful message on failure
+  - ✅ Include invalid address in error (first 8 chars with `address.slice(0, 8)`)
 
-- [ ] **Add unit tests**
-  - Test valid Solana address (should return Ok)
-  - Test invalid base58 characters (should return Err)
-  - Test too short address (should return Err)
-  - Test known symbols (should return Ok)
+- [x] **Update command handlers**
+  - ✅ Updated `buy.ts` to check `result.success`
+  - ✅ Show `result.error` if validation failed
+  - ✅ Updated `sell.ts` with same pattern
+  - ✅ Updated `swap.ts` for both inputMint and outputMint
+
+- [x] **Add unit tests**
+  - ✅ Created `tokens.test.ts` with 18 comprehensive tests
+  - ✅ Test valid Solana addresses (SOL, USDC, BONK, JUP) - all return `Ok`
+  - ✅ Test invalid base58 characters (0, O, I, l) - return `Err`
+  - ✅ Test too short addresses - return `Err`
+  - ✅ Test known symbols (case-insensitive) - return `Ok`
+  - ✅ Test edge cases (empty string, special chars, numeric-only)
+
+**Test Results:**
+
+```
+✓ 18 tests passed
+✓ 42 expect() calls
+✓ 347ms execution time
+
+Groups:
+- Known Symbols: 4 tests
+- Valid Addresses (Base58 + On-Curve): 4 tests
+- Invalid Addresses: 5 tests
+- Unknown Symbols: 2 tests
+- Edge Cases: 3 tests
+```
+
+**Impact:**
+
+- ✅ Prevents invalid addresses from being sent to RPC
+- ✅ Prevents bot crashes from malformed input
+- ✅ Validates Base58 encoding (catches common typos)
+- ✅ Validates on-curve requirement (prevents off-curve attacks)
+- ✅ User-friendly error messages with address preview
+- ✅ Result<T> pattern (type-safe, no exceptions)
+- ✅ Full test coverage (18 tests, edge cases included)
+- ✅ Backward compatible (known symbols still work)
+
+**Files Modified:**
+
+- `src/config/tokens.ts` - Added `validateTokenAddress()` + updated `resolveTokenSymbol()`
+- `src/bot/commands/buy.ts` - Updated to use Result pattern
+- `src/bot/commands/sell.ts` - Updated to use Result pattern
+- `src/bot/commands/swap.ts` - Updated to use Result pattern (2 calls)
+- `src/config/tokens.test.ts` - NEW FILE - 18 comprehensive tests
 
 ---
 

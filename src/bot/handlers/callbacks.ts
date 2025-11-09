@@ -698,13 +698,11 @@ export async function executeSellFlow(
       return;
     }
 
-    // Resolve token mint
-    let tokenMint: string;
-    try {
-      tokenMint = resolveTokenSymbol(token);
-    } catch (error) {
+    // Resolve token mint with validation
+    const tokenMintResult = resolveTokenSymbol(token);
+    if (!tokenMintResult.success) {
       await ctx.editMessageText(
-        `❌ *Invalid Token*\n\n${error instanceof Error ? error.message : String(error)}`,
+        `❌ *Invalid Token*\n\n${tokenMintResult.error}`,
         {
           parse_mode: "Markdown",
           reply_markup: {
@@ -714,6 +712,7 @@ export async function executeSellFlow(
       );
       return;
     }
+    const tokenMint = tokenMintResult.value;
 
     // Progress: Step 1 - Checking balance
     await updateSellProgress(ctx, {
@@ -1240,18 +1239,13 @@ export async function executeSwapFlow(
       return;
     }
 
-    // Resolve token mints
-    let inputMintAddr: string;
-    let outputMintAddr: string;
-
-    try {
-      inputMintAddr = resolveTokenSymbol(inputToken);
-      outputMintAddr = resolveTokenSymbol(outputToken);
-    } catch (error) {
+    // Resolve token mints with validation
+    const inputMintResult = resolveTokenSymbol(inputToken);
+    if (!inputMintResult.success) {
       await ctx.api.editMessageText(
         ctx.chat!.id,
         msgId,
-        `❌ *Invalid Token*\n\n${error instanceof Error ? error.message : String(error)}`,
+        `❌ *Invalid Input Token*\n\n${inputMintResult.error}`,
         {
           parse_mode: "Markdown",
           reply_markup: {
@@ -1261,6 +1255,24 @@ export async function executeSwapFlow(
       );
       return;
     }
+    const inputMintAddr = inputMintResult.value;
+
+    const outputMintResult = resolveTokenSymbol(outputToken);
+    if (!outputMintResult.success) {
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        msgId,
+        `❌ *Invalid Output Token*\n\n${outputMintResult.error}`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]]
+          }
+        }
+      );
+      return;
+    }
+    const outputMintAddr = outputMintResult.value;
 
     // Check if amount is percentage (e.g., "25%", "50%", "75%", "100%")
     const isPercentage = amount.includes("%");
@@ -1581,15 +1593,13 @@ export async function executeSellWithAbsoluteAmount(
       return;
     }
 
-    // Resolve token mint
-    let tokenMint: string;
-    try {
-      tokenMint = resolveTokenSymbol(token);
-    } catch (error) {
+    // Resolve token mint with validation
+    const tokenMintResult = resolveTokenSymbol(token);
+    if (!tokenMintResult.success) {
       await ctx.api.editMessageText(
         ctx.chat.id,
         msgId,
-        `❌ *Invalid Token*\n\n${error instanceof Error ? error.message : String(error)}`,
+        `❌ *Invalid Token*\n\n${tokenMintResult.error}`,
         {
           parse_mode: "Markdown",
           reply_markup: {
@@ -1599,6 +1609,7 @@ export async function executeSellWithAbsoluteAmount(
       );
       return;
     }
+    const tokenMint = tokenMintResult.value;
 
     // Progress: Step 1 - Preparing sell
     await updateSellProgress(ctx, {
