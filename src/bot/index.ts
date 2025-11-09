@@ -22,6 +22,7 @@ import {
   handleSettingsCallback,
   executeSwapFlow,
   executeSellWithAbsoluteAmount,
+  executeSellFlow,
 } from "./handlers/callbacks.js";
 import { executeBuyFlow } from "./flows/buy.js";
 
@@ -43,7 +44,7 @@ interface SessionData {
   awaitingPasswordForUnlock?: boolean;
   returnToPageAfterUnlock?: Page; // Save page to return after unlock
   pendingCommand?: {
-    type: "buy" | "sell" | "swap";
+    type: "buy" | "sell" | "sell_pct" | "swap";
     params: string[];
   }; // Save command to execute after unlock
   awaitingInput?: {
@@ -481,6 +482,9 @@ bot.on("message:text", async (ctx, next) => {
             } else if (pendingCommand.type === "sell" && pendingCommand.params.length >= 2) {
               const [token, amount] = pendingCommand.params;
               await executeSellWithAbsoluteAmount(ctx, token, amount);
+            } else if (pendingCommand.type === "sell_pct" && pendingCommand.params.length >= 2) {
+              const [token, percentage] = pendingCommand.params;
+              await executeSellFlow(ctx, token, percentage);
             } else if (pendingCommand.type === "swap" && pendingCommand.params.length >= 3) {
               const [inputToken, outputToken, amount] = pendingCommand.params;
               await executeSwapFlow(ctx, inputToken, outputToken, amount);

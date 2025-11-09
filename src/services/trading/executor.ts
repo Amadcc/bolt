@@ -56,6 +56,44 @@ export class TradingExecutor {
   }
 
   /**
+   * Get swap quote from Jupiter
+   * ✅ No authentication required - just price preview
+   */
+  async getQuote(params: {
+    inputMint: string;
+    outputMint: string;
+    amount: string;
+    slippageBps?: number;
+    userPublicKey: string;
+  }): Promise<Result<any, TradingError>> {
+    try {
+      const jupiter = getJupiter();
+      const quoteResult = await jupiter.getQuote({
+        inputMint: params.inputMint as any,
+        outputMint: params.outputMint as any,
+        amount: params.amount,
+        slippageBps: params.slippageBps || 50,
+        userPublicKey: params.userPublicKey as any,
+      });
+
+      if (!quoteResult.success) {
+        return Err({
+          type: "QUOTE_FAILED",
+          message: "Failed to get quote from Jupiter",
+        });
+      }
+
+      return Ok(quoteResult.value);
+    } catch (error) {
+      logger.error("Error getting quote", { error, params });
+      return Err({
+        type: "QUOTE_FAILED",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Execute a trade with commission calculation and database recording
    *
    * ✅ Redis Session Integration: Two modes

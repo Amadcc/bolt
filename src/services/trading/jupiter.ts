@@ -519,7 +519,7 @@ export class JupiterService {
         signature,
         inputAmount: BigInt(execution.totalInputAmount),
         outputAmount: BigInt(execution.totalOutputAmount),
-        priceImpactPct: quote.priceImpact, // Jupiter already returns percentage
+        priceImpactPct: quote.priceImpact * 100, // Convert from 0-1 range to percentage
         slot: Number(execution.slot),
       };
 
@@ -532,7 +532,7 @@ export class JupiterService {
         signature: asTransactionSignature(execution.signature),
         inputAmount: BigInt(execution.totalInputAmount),
         outputAmount: BigInt(execution.totalOutputAmount),
-        priceImpactPct: quote.priceImpact, // Jupiter already returns percentage
+        priceImpactPct: quote.priceImpact * 100, // Convert from 0-1 range to percentage
         slot: Number(execution.slot),
       });
     }
@@ -543,11 +543,11 @@ export class JupiterService {
   // ==========================================================================
 
   /**
-   * Get token price in USD from Jupiter
+   * Get token price in USD from DexScreener
    */
   async getTokenPrice(mint: TokenMint): Promise<Result<number, JupiterError>> {
     try {
-      const url = `${this.config.baseUrl}/price/v2?ids=${mint}`;
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${mint}`;
 
       const response = await fetch(url, {
         method: "GET",
@@ -563,13 +563,26 @@ export class JupiterService {
         });
       }
 
-      const data = (await response.json()) as { data?: Record<string, { price?: number }> };
-      const price = data.data?.[mint]?.price;
+      const data = (await response.json()) as {
+        pairs?: Array<{ priceUsd?: string }>
+      };
 
-      if (typeof price !== "number") {
+      // Get price from first pair (usually most liquid)
+      const priceUsd = data.pairs?.[0]?.priceUsd;
+
+      if (!priceUsd) {
         return Err({
           type: "UNKNOWN",
           message: "Price not found for token",
+        });
+      }
+
+      const price = parseFloat(priceUsd);
+
+      if (isNaN(price)) {
+        return Err({
+          type: "UNKNOWN",
+          message: "Invalid price format",
         });
       }
 

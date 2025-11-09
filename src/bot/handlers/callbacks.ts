@@ -141,6 +141,9 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
     const { prisma } = await import("../../utils/db.js");
     const { getSolanaConnection } = await import("../../services/blockchain/solana.js");
     const { LAMPORTS_PER_SOL, PublicKey } = await import("@solana/web3.js");
+    const { getJupiter } = await import("../../services/trading/jupiter.js");
+    const { asTokenMint } = await import("../../types/common.js");
+    const { SOL_MINT } = await import("../../config/tokens.js");
 
     const user = await prisma.user.findUnique({
       where: { telegramId: BigInt(ctx.from!.id) },
@@ -169,7 +172,18 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
     // Build balance message
     let message = `*Balance*\n\n`;
     message += `\`${wallet.publicKey}\`\n\n`;
-    message += `SOL: *${sol.toFixed(4)}*\n`;
+
+    // Get SOL price
+    const jupiter = getJupiter();
+    const solPriceResult = await jupiter.getTokenPrice(asTokenMint(SOL_MINT));
+    const solPrice = solPriceResult.success ? solPriceResult.value : null;
+    const solUsdValue = solPrice ? sol * solPrice : null;
+
+    message += `SOL: *${sol.toFixed(4)}*`;
+    if (solUsdValue !== null) {
+      message += ` ($${solUsdValue.toFixed(2)})`;
+    }
+    message += `\n`;
 
     // Add token balances
     const KNOWN_TOKENS: Record<string, string> = {
@@ -190,7 +204,17 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
 
         if (amount > 0) {
           const symbol = KNOWN_TOKENS[mint] || truncateAddress(mint);
-          message += `${symbol}: ${formatAmount(amount)}\n`;
+
+          // Get token price
+          const tokenPriceResult = await jupiter.getTokenPrice(asTokenMint(mint));
+          const tokenPrice = tokenPriceResult.success ? tokenPriceResult.value : null;
+          const tokenUsdValue = tokenPrice ? amount * tokenPrice : null;
+
+          message += `${symbol}: ${formatAmount(amount)}`;
+          if (tokenUsdValue !== null) {
+            message += ` ($${tokenUsdValue.toFixed(2)})`;
+          }
+          message += `\n`;
         }
       }
     } else {
@@ -277,6 +301,11 @@ export async function handleBuyCallback(
 
     case "amount":
       await handleBuyAmountSelection(ctx, params[0], params[1]);
+      break;
+
+    case "confirm":
+      // User confirmed buy - execute with skipConfirmation=true
+      await handleBuyConfirmation(ctx, params[0], params[1]);
       break;
 
     default:
@@ -371,6 +400,28 @@ async function handleBuyAmountSelection(
   await executeBuyFlow(ctx, token, amount);
 }
 
+/**
+ * Handle buy confirmation (after user clicks "Confirm Buy")
+ * ✅ Skips confirmation step since user already confirmed
+ */
+async function handleBuyConfirmation(
+  ctx: Context,
+  token: string,
+  amount: string
+): Promise<void> {
+  await ctx.answerCallbackQuery();
+
+  logger.info("Buy confirmation received", {
+    token,
+    amount,
+    userId: ctx.from?.id,
+    autoApprove: ctx.session.settings?.autoApprove,
+  });
+
+  // Execute buy with skipConfirmation=true
+  await executeBuyFlow(ctx, token, amount, true);
+}
+
 // ============================================================================
 // Sell Flow Callbacks
 // ============================================================================
@@ -392,9 +443,63 @@ export async function handleSellCallback(
       await handleSellAmountSelection(ctx, params[0], params[1]);
       break;
 
+    case "confirm":
+      // User confirmed sell (percentage-based) - execute with skipConfirmation=true
+      await handleSellConfirmation(ctx, params[0], params[1]);
+      break;
+
+    case "confirm_abs":
+      // User confirmed sell (absolute amount) - execute with skipConfirmation=true
+      await handleSellAbsoluteConfirmation(ctx, params[0], params[1]);
+      break;
+
     default:
       await ctx.answerCallbackQuery("❌ Unknown sell action");
   }
+}
+
+/**
+ * Handle sell confirmation (after user clicks "Confirm Sell")
+ * ✅ Skips confirmation step since user already confirmed
+ */
+async function handleSellConfirmation(
+  ctx: Context,
+  token: string,
+  percentage: string
+): Promise<void> {
+  await ctx.answerCallbackQuery();
+
+  logger.info("Sell confirmation received", {
+    token,
+    percentage,
+    userId: ctx.from?.id,
+    autoApprove: ctx.session.settings?.autoApprove,
+  });
+
+  // Execute sell with skipConfirmation=true
+  await executeSellFlow(ctx, token, percentage, true);
+}
+
+/**
+ * Handle sell confirmation for absolute amount (after user clicks "Confirm Sell")
+ * ✅ Skips confirmation step since user already confirmed
+ */
+async function handleSellAbsoluteConfirmation(
+  ctx: Context,
+  token: string,
+  absoluteAmount: string
+): Promise<void> {
+  await ctx.answerCallbackQuery();
+
+  logger.info("Sell absolute confirmation received", {
+    token,
+    absoluteAmount,
+    userId: ctx.from?.id,
+    autoApprove: ctx.session.settings?.autoApprove,
+  });
+
+  // Execute sell with skipConfirmation=true
+  await executeSellWithAbsoluteAmount(ctx, token, absoluteAmount, true);
 }
 
 /**
@@ -476,25 +581,39 @@ async function handleSellAmountSelection(
 
 /**
  * Execute sell flow with confirmation
+ * ✅ Auto-approve support: Skip confirmation when enabled
  */
 export async function executeSellFlow(
   ctx: Context,
   token: string,
-  percentage: string
+  percentage: string,
+  skipConfirmation = false
 ): Promise<void> {
   // ✅ Redis Session Integration: Check if wallet is unlocked
   if (!ctx.session.sessionToken || !ctx.session.password) {
-    await ctx.answerCallbackQuery();
+    // Only answer callback query if this is a callback context
+    if (ctx.callbackQuery) {
+      await ctx.answerCallbackQuery();
+    }
 
-    // DON'T set returnToPageAfterUnlock when there's a pending command
-    // The unlock handler will execute the pending command directly
-    // Only set it if there's no pending command (manual UI navigation)
-    if (!ctx.session.pendingCommand) {
-      ctx.session.returnToPageAfterUnlock = "sell";
+    // Save pending command so unlock handler can execute it
+    ctx.session.pendingCommand = {
+      type: "sell_pct", // Percentage-based sell
+      params: [token, percentage],
+    };
+
+    logger.info("Saved pending sell command", { token, percentage, userId: ctx.from?.id });
+
+    const msgId = ctx.session.ui.messageId;
+    if (!msgId || !ctx.chat) {
+      await ctx.reply("❌ Session expired. Please use /start");
+      return;
     }
 
     // Show unlock prompt with buttons
-    await ctx.editMessageText(
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
       `🔒 *Wallet Locked*\n\n` +
         `To sell ${percentage}% of ${token}, please unlock your wallet first.\n\n` +
         `Your session will be active for 15 minutes.`,
@@ -511,7 +630,47 @@ export async function executeSellFlow(
     return;
   }
 
-  await ctx.answerCallbackQuery();
+  // ✅ Auto-approve check: Show confirmation if disabled
+  const autoApprove = ctx.session.settings?.autoApprove ?? false;
+
+  if (!autoApprove && !skipConfirmation) {
+    // Show confirmation before selling
+    logger.info("Showing sell confirmation (auto-approve disabled)", {
+      token,
+      percentage,
+      userId: ctx.from?.id
+    });
+
+    const msgId = ctx.session.ui.messageId;
+    if (msgId && ctx.chat) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `💸 *Confirm Sell*\n\n` +
+        `Token: **${token}**\n` +
+        `Amount: **${percentage}%** of balance\n\n` +
+        `━━━\n\n` +
+        `⚠️ Confirm to execute this trade`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "✅ Confirm Sell", callback_data: `sell:confirm:${token}:${percentage}` },
+              ],
+              [
+                { text: "« Cancel", callback_data: "nav:sell" },
+              ],
+            ],
+          },
+        }
+      );
+    }
+    return;
+  }
+
+  // Auto-approve enabled or confirmation skipped - execute immediately
+  logger.info("Executing sell immediately (auto-approve enabled or confirmed)", { token, percentage });
 
   try {
     // Get user
@@ -788,6 +947,11 @@ export async function handleSwapCallback(
       await handleSwapAmountSelection(ctx, params[0], params[1], params[2]);
       break;
 
+    case "confirm":
+      // User confirmed swap - execute with skipConfirmation=true
+      await handleSwapConfirmation(ctx, params[0], params[1], params[2]);
+      break;
+
     case "back_to_output":
       // Go back to output token selection with saved input token
       await ctx.answerCallbackQuery();
@@ -801,6 +965,30 @@ export async function handleSwapCallback(
     default:
       await ctx.answerCallbackQuery("❌ Unknown swap action");
   }
+}
+
+/**
+ * Handle swap confirmation (after user clicks "Confirm Swap")
+ * ✅ Skips confirmation step since user already confirmed
+ */
+async function handleSwapConfirmation(
+  ctx: Context,
+  inputToken: string,
+  outputToken: string,
+  amount: string
+): Promise<void> {
+  await ctx.answerCallbackQuery();
+
+  logger.info("Swap confirmation received", {
+    inputToken,
+    outputToken,
+    amount,
+    userId: ctx.from?.id,
+    autoApprove: ctx.session.settings?.autoApprove,
+  });
+
+  // Execute swap with skipConfirmation=true
+  await executeSwapFlow(ctx, inputToken, outputToken, amount, true);
 }
 
 /**
@@ -931,12 +1119,14 @@ async function handleSwapAmountSelection(
 
 /**
  * Execute swap with unlock check
+ * ✅ Auto-approve support: Skip confirmation when enabled
  */
 export async function executeSwapFlow(
   ctx: Context,
   inputToken: string,
   outputToken: string,
-  amount: string
+  amount: string,
+  skipConfirmation = false
 ): Promise<void> {
   const msgId = ctx.session.ui.messageId;
 
@@ -947,11 +1137,14 @@ export async function executeSwapFlow(
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
   if (!ctx.session.sessionToken || !ctx.session.password) {
-    // DON'T set returnToPageAfterUnlock when there's a pending command
-    // The unlock handler will execute the pending command directly
-    // Only set it if there's no pending command (manual UI navigation)
+    // Save pending command so unlock handler can execute it (if not already set by text command)
     if (!ctx.session.pendingCommand) {
-      ctx.session.returnToPageAfterUnlock = "swap";
+      ctx.session.pendingCommand = {
+        type: "swap",
+        params: [inputToken, outputToken, amount],
+      };
+
+      logger.info("Saved pending swap command", { inputToken, outputToken, amount, userId: ctx.from?.id });
     }
 
     await ctx.api.editMessageText(
@@ -974,6 +1167,47 @@ export async function executeSwapFlow(
     );
     return;
   }
+
+  // ✅ Auto-approve check: Show confirmation if disabled
+  const autoApprove = ctx.session.settings?.autoApprove ?? false;
+
+  if (!autoApprove && !skipConfirmation) {
+    // Show confirmation before swapping
+    logger.info("Showing swap confirmation (auto-approve disabled)", {
+      inputToken,
+      outputToken,
+      amount,
+      userId: ctx.from?.id
+    });
+
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `🔄 *Confirm Swap*\n\n` +
+      `From: **${inputToken}**\n` +
+      `To: **${outputToken}**\n` +
+      `Amount: **${amount}**\n\n` +
+      `━━━\n\n` +
+      `⚠️ Confirm to execute this trade`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✅ Confirm Swap", callback_data: `swap:confirm:${inputToken}:${outputToken}:${amount}` },
+            ],
+            [
+              { text: "« Cancel", callback_data: "nav:swap" },
+            ],
+          ],
+        },
+      }
+    );
+    return;
+  }
+
+  // Auto-approve enabled or confirmation skipped - execute immediately
+  logger.info("Executing swap immediately (auto-approve enabled or confirmed)", { inputToken, outputToken, amount });
 
   try {
     // Get user with wallet
@@ -1231,11 +1465,13 @@ export async function executeSwapFlow(
 
 /**
  * Execute sell with absolute token amount (for custom input)
+ * ✅ Auto-approve support: Skip confirmation when enabled
  */
 export async function executeSellWithAbsoluteAmount(
   ctx: Context,
   token: string,
-  absoluteAmount: string
+  absoluteAmount: string,
+  skipConfirmation = false
 ): Promise<void> {
   const msgId = ctx.session.ui.messageId;
 
@@ -1246,11 +1482,14 @@ export async function executeSellWithAbsoluteAmount(
 
   // Check if wallet is unlocked
   if (!ctx.session.sessionToken || !ctx.session.password) {
-    // DON'T set returnToPageAfterUnlock when there's a pending command
-    // The unlock handler will execute the pending command directly
-    // Only set it if there's no pending command (manual UI navigation)
+    // Save pending command so unlock handler can execute it (if not already set by text command)
     if (!ctx.session.pendingCommand) {
-      ctx.session.returnToPageAfterUnlock = "sell";
+      ctx.session.pendingCommand = {
+        type: "sell",
+        params: [token, absoluteAmount],
+      };
+
+      logger.info("Saved pending sell command (absolute)", { token, absoluteAmount, userId: ctx.from?.id });
     }
 
     await ctx.api.editMessageText(
@@ -1271,6 +1510,45 @@ export async function executeSellWithAbsoluteAmount(
     );
     return;
   }
+
+  // ✅ Auto-approve check: Show confirmation if disabled
+  const autoApprove = ctx.session.settings?.autoApprove ?? false;
+
+  if (!autoApprove && !skipConfirmation) {
+    // Show confirmation before selling
+    logger.info("Showing sell confirmation (auto-approve disabled)", {
+      token,
+      absoluteAmount,
+      userId: ctx.from?.id
+    });
+
+    await ctx.api.editMessageText(
+      ctx.chat.id,
+      msgId,
+      `💸 *Confirm Sell*\n\n` +
+      `Token: **${token}**\n` +
+      `Amount: **${absoluteAmount}** tokens\n\n` +
+      `━━━\n\n` +
+      `⚠️ Confirm to execute this trade`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✅ Confirm Sell", callback_data: `sell:confirm_abs:${token}:${absoluteAmount}` },
+            ],
+            [
+              { text: "« Cancel", callback_data: "nav:sell" },
+            ],
+          ],
+        },
+      }
+    );
+    return;
+  }
+
+  // Auto-approve enabled or confirmation skipped - execute immediately
+  logger.info("Executing sell immediately (auto-approve enabled or confirmed)", { token, absoluteAmount });
 
   try {
     // Get user

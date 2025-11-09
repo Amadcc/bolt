@@ -14,11 +14,13 @@ import type { TradingError } from "../../types/trading.js";
 
 /**
  * Execute buy flow with honeypot check and real Jupiter execution
+ * ✅ Auto-approve support: Skip confirmation when enabled
  */
 export async function executeBuyFlow(
   ctx: Context,
   token: string,
-  amount: string
+  amount: string,
+  skipConfirmation = false
 ): Promise<void> {
   logger.info("executeBuyFlow started", {
     token,
@@ -26,6 +28,8 @@ export async function executeBuyFlow(
     userId: ctx.from?.id,
     hasSessionToken: !!ctx.session.sessionToken,
     hasPassword: !!ctx.session.password,
+    autoApprove: ctx.session.settings?.autoApprove,
+    skipConfirmation,
   });
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
@@ -38,12 +42,13 @@ export async function executeBuyFlow(
       return;
     }
 
-    // DON'T set returnToPageAfterUnlock when there's a pending command
-    // The unlock handler will execute the pending command directly
-    // Only set it if there's no pending command (manual UI navigation)
-    if (!ctx.session.pendingCommand) {
-      ctx.session.returnToPageAfterUnlock = "buy";
-    }
+    // Save pending command so unlock handler can execute it
+    ctx.session.pendingCommand = {
+      type: "buy",
+      params: [token, amount],
+    };
+
+    logger.info("Saved pending buy command", { token, amount, userId: ctx.from?.id });
 
     await ctx.api.editMessageText(
       ctx.chat.id,
@@ -116,7 +121,7 @@ export async function executeBuyFlow(
     // Progress: Step 1 - Honeypot check
     await updateProgress(ctx, {
       step: 1,
-      total: 3,
+      total: skipConfirmation ? 3 : 4,
       message: `Token: ${token}\nAmount: ${amount} SOL`,
       status: "Analyzing token safety...",
     });
@@ -150,10 +155,129 @@ export async function executeBuyFlow(
       }
     }
 
+    // ✅ Auto-approve check: Show confirmation if disabled
+    const autoApprove = ctx.session.settings?.autoApprove ?? false;
+
+    if (!autoApprove && !skipConfirmation) {
+      // Progress: Step 2 - Getting quote
+      await updateProgress(ctx, {
+        step: 2,
+        total: 4,
+        message: `Token: ${token}\nAmount: ${amount} SOL`,
+        status: "Getting quote...",
+      });
+
+      // Get quote from Jupiter
+      const solAmount = parseFloat(amount);
+      const lamports = Math.floor(solAmount * 1e9).toString();
+
+      const inputMint = asTokenMint(SOL_MINT);
+      const outputMint = asTokenMint(tokenMint);
+
+      // Ensure wallet exists before getting quote
+      if (!user.wallets || !user.wallets[0] || !user.wallets[0].publicKey) {
+        logger.error("Cannot get quote: wallet not found", { userId: user.id });
+        await ctx.api.editMessageText(
+          ctx.chat.id,
+          msgId,
+          `❌ *Wallet Error*\\n\\nNo active wallet found. Please create one first.`,
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [[{ text: "« Back", callback_data: "nav:buy" }]]
+            }
+          }
+        );
+        return;
+      }
+
+      logger.info("Getting quote for buy confirmation", {
+        token,
+        amount,
+        userPublicKey: user.wallets[0].publicKey
+      });
+
+      const executor = getTradingExecutor();
+      const quoteResult = await executor.getQuote({
+        inputMint,
+        outputMint,
+        amount: lamports,
+        slippageBps: 50,
+        userPublicKey: user.wallets[0].publicKey,
+      });
+
+      if (!quoteResult.success) {
+        await ctx.api.editMessageText(
+          ctx.chat.id,
+          msgId,
+          `❌ *Quote Failed*\n\nCouldn't get price quote. Please try again.`,
+          {
+            parse_mode: "Markdown",
+            reply_markup: {
+              inline_keyboard: [[
+                { text: "🔄 Try Again", callback_data: `buy:amount:${token}:${amount}` },
+                { text: "« Back", callback_data: "nav:buy" }
+              ]]
+            }
+          }
+        );
+        return;
+      }
+
+      const quote = quoteResult.value;
+      const outputDecimals = getTokenDecimals(tokenMint);
+      const estimatedOutput = Number(quote.outAmount) / Math.pow(10, outputDecimals);
+      // Use priceImpact (number, 0-1 range) instead of deprecated priceImpactPct (string)
+      const priceImpact = (quote.priceImpact || 0) * 100; // Convert to percentage
+
+      // Show confirmation with quote
+      logger.info("Showing confirmation (auto-approve disabled)", {
+        token,
+        amount,
+        estimatedOutput,
+        priceImpact
+      });
+
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `🛒 *Confirm Buy*\n\n` +
+        `Token: **${token}**\n` +
+        `Spending: **${amount} SOL**\n\n` +
+        `━━━\n\n` +
+        `📊 *Quote Preview*\n\n` +
+        `You'll receive: ~**${estimatedOutput.toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 6
+        })} ${token}**\n` +
+        `Price Impact: **${priceImpact.toFixed(2)}%**\n` +
+        `Slippage Tolerance: **0.5%**\n\n` +
+        `━━━\n\n` +
+        `⚠️ Confirm to execute this trade`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [
+                { text: "✅ Confirm Buy", callback_data: `buy:confirm:${token}:${amount}` },
+              ],
+              [
+                { text: "« Cancel", callback_data: "nav:buy" },
+              ],
+            ],
+          },
+        }
+      );
+      return;
+    }
+
+    // Auto-approve enabled or confirmation skipped - execute immediately
+    logger.info("Executing buy immediately (auto-approve enabled or confirmed)", { token, amount });
+
     // Progress: Step 2 - Executing trade
     await updateProgress(ctx, {
-      step: 2,
-      total: 3,
+      step: skipConfirmation ? 2 : 3,
+      total: skipConfirmation ? 3 : 4,
       message: `Token: ${token}\nAmount: ${amount} SOL`,
       status: "Executing swap...",
     });
@@ -181,8 +305,8 @@ export async function executeBuyFlow(
     // Progress: Step 3 - Completed
     if (tradeResult.success) {
       await updateProgress(ctx, {
-        step: 3,
-        total: 3,
+        step: skipConfirmation ? 3 : 4,
+        total: skipConfirmation ? 3 : 4,
         message: `Token: ${token}\nAmount: ${amount} SOL`,
         status: "Confirmed!",
       });

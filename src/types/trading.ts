@@ -41,6 +41,7 @@ export type TradingError =
   | { type: "WALLET_NOT_FOUND"; message: string }
   | { type: "INVALID_PASSWORD"; message: string }
   | { type: "SWAP_FAILED"; reason: string }
+  | { type: "QUOTE_FAILED"; message: string }
   | { type: "DATABASE_ERROR"; message: string }
   | { type: "COMMISSION_CALCULATION_FAILED"; message: string }
   | { type: "UNKNOWN"; message: string };

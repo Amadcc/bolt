@@ -61,7 +61,7 @@ interface SessionData {
   awaitingPasswordForUnlock?: boolean;
   returnToPageAfterUnlock?: Page; // Save page to return after unlock
   pendingCommand?: {
-    type: "buy" | "sell" | "swap";
+    type: "buy" | "sell" | "sell_pct" | "swap";
     params: string[];
   }; // Save command to execute after unlock
   awaitingInput?: {
