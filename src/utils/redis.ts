@@ -278,6 +278,73 @@ export async function checkRedisHealth(): Promise<RedisHealthStatus> {
 }
 
 // ============================================================================
+// Non-Blocking Key Scanning (Production-Safe Alternative to KEYS)
+// ============================================================================
+
+/**
+ * Scan keys matching pattern using non-blocking SCAN command
+ *
+ * ⚠️ NEVER use redis.keys() in production - it blocks Redis!
+ * Use this function instead - it uses cursor-based iteration.
+ *
+ * Performance:
+ * - redis.keys("*"): O(N) - BLOCKS Redis for entire duration
+ * - scanKeys("*"): O(N) - Returns in small batches, NO blocking
+ *
+ * @param pattern - Redis pattern (e.g., "session:*", "user:*:tokens")
+ * @param count - Hint for batch size (default 100). Redis may return more/fewer.
+ * @returns Array of all matching keys
+ *
+ * Example:
+ * ```typescript
+ * // BAD (blocks Redis):
+ * const keys = await redis.keys("session:*");
+ *
+ * // GOOD (non-blocking):
+ * const keys = await scanKeys("session:*");
+ * ```
+ */
+export async function scanKeys(
+  pattern: string,
+  count: number = 100
+): Promise<string[]> {
+  const allKeys: string[] = [];
+  let cursor = "0";
+
+  logger.debug("Starting non-blocking SCAN", { pattern, count });
+
+  do {
+    // SCAN returns [nextCursor, keys]
+    // cursor "0" means iteration complete
+    const result = await redis.scan(
+      cursor,
+      "MATCH",
+      pattern,
+      "COUNT",
+      count.toString()
+    );
+
+    const [nextCursor, keys] = result;
+
+    cursor = nextCursor;
+    allKeys.push(...keys);
+
+    logger.debug("SCAN iteration", {
+      cursor,
+      keysFound: keys.length,
+      totalSoFar: allKeys.length,
+    });
+  } while (cursor !== "0");
+
+  logger.debug("SCAN complete", {
+    pattern,
+    totalKeys: allKeys.length,
+  });
+
+  return allKeys;
+}
+
+// ============================================================================
 // Graceful Shutdown
 // ============================================================================
 

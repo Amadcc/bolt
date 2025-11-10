@@ -17,7 +17,7 @@
  */
 
 import { Keypair } from "@solana/web3.js";
-import { redis } from "../../utils/redis.js";
+import { redis, scanKeys } from "../../utils/redis.js";
 import { prisma } from "../../utils/db.js";
 import { unlockWallet, clearKeypair } from "./keyManager.js";
 import { decryptPrivateKey } from "./encryption.js";
@@ -248,9 +248,11 @@ export async function destroyAllUserSessions(
   userId: string
 ): Promise<Result<void, SessionError>> {
   try {
-    // Scan for all sessions (Redis pattern matching)
+    // ✅ PERFORMANCE FIX: Use non-blocking SCAN instead of blocking KEYS
+    // Old: redis.keys() - O(N), blocks Redis entire time
+    // New: scanKeys() - O(N), cursor-based iteration, no blocking
     const pattern = `${SESSION_PREFIX}*`;
-    const keys = await redis.keys(pattern);
+    const keys = await scanKeys(pattern);
 
     let deletedCount = 0;
 
@@ -417,8 +419,9 @@ export async function getSessionStats(): Promise<{
   activeUsers: Set<string>;
 }> {
   try {
+    // ✅ PERFORMANCE FIX: Use non-blocking SCAN instead of blocking KEYS
     const pattern = `${SESSION_PREFIX}*`;
-    const keys = await redis.keys(pattern);
+    const keys = await scanKeys(pattern);
 
     const activeUsers = new Set<string>();
 
