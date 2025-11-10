@@ -165,7 +165,7 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
     }
 
     const wallet = user.wallets[0];
-    const connection = getSolanaConnection();
+    const connection = await getSolanaConnection();
     const publicKey = new PublicKey(wallet.publicKey);
 
     // Get SOL balance
@@ -725,7 +725,7 @@ export async function executeSellFlow(
     // Get balance from blockchain
     const { getSolanaConnection } = await import("../../services/blockchain/solana.js");
     const { PublicKey } = await import("@solana/web3.js");
-    const connection = getSolanaConnection();
+    const connection = await getSolanaConnection();
     const publicKey = new PublicKey(user.wallets[0].publicKey);
 
     // Get token balance
@@ -1296,7 +1296,7 @@ export async function executeSwapFlow(
       // Get balance from blockchain
       const { getSolanaConnection } = await import("../../services/blockchain/solana.js");
       const { PublicKey } = await import("@solana/web3.js");
-      const connection = getSolanaConnection();
+      const connection = await getSolanaConnection();
       const publicKey = new PublicKey(user.wallets[0].publicKey);
 
       // Get token balance

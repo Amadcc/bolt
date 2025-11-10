@@ -411,7 +411,7 @@ export class TradingExecutor {
       // Cache miss - fetch from on-chain
       logger.debug("Token decimals cache miss, fetching from RPC", { tokenMint });
 
-      const connection = getSolanaConnection();
+      const connection = await getSolanaConnection();
       const mintPublicKey = new PublicKey(tokenMint);
 
       // Get mint account info

@@ -110,7 +110,8 @@ async function checkSolana(): Promise<boolean> {
   try {
     const { getSolana } = await import("./services/blockchain/solana.js");
     const solana = getSolana();
-    return await solana.checkHealth();
+    const health = await solana.checkHealth();
+    return health.healthy > 0;
   } catch {
     return false;
   }
@@ -137,7 +138,7 @@ const start = async () => {
 
     // Initialize Jupiter service
     logger.info("Initializing Jupiter service...");
-    const connection = solana.getConnection();
+    const connection = await solana.getConnection();
     initializeJupiter(connection, {
       baseUrl: process.env.JUPITER_API_URL || "https://lite-api.jup.ag",
       defaultSlippageBps: 50, // 0.5%

@@ -49,7 +49,7 @@ export async function handleBalance(ctx: Context): Promise<void> {
     }
 
     const wallet = user.wallets[0];
-    const connection = getSolanaConnection();
+    const connection = await getSolanaConnection();
     const publicKey = new PublicKey(wallet.publicKey);
 
     // Show processing message

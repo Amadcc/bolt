@@ -225,6 +225,12 @@ export class HoneypotDetector {
         return null;
       }
 
+      // Check if result object exists
+      if (!response.data.result) {
+        logger.warn("GoPlus API: no result data", { tokenMint });
+        return null;
+      }
+
       const tokenData = response.data.result[tokenMint];
       if (!tokenData) {
         logger.warn("GoPlus API: token not found", { tokenMint });
@@ -314,7 +320,7 @@ export class HoneypotDetector {
 
     try {
       const solana = getSolana();
-      const connection = solana.getConnection();
+      const connection = await solana.getConnection();
       const mintPublicKey = new PublicKey(tokenMint);
 
       // Get mint account info
@@ -377,7 +383,7 @@ export class HoneypotDetector {
   private async checkMetadata(mintPublicKey: PublicKey): Promise<boolean> {
     try {
       const solana = getSolana();
-      const connection = solana.getConnection();
+      const connection = await solana.getConnection();
 
       // Derive metadata PDA
       const METADATA_PROGRAM_ID = new PublicKey(
@@ -533,10 +539,13 @@ export class HoneypotDetector {
         expiresAt: now + this.config.cacheTTL * 1000,
       };
 
+      // Serialize with BigInt support (convert to string)
       await redis.setex(
         key,
         this.config.cacheTTL,
-        JSON.stringify(cached)
+        JSON.stringify(cached, (key, value) =>
+          typeof value === 'bigint' ? value.toString() : value
+        )
       );
     } catch (error) {
       logger.warn("Cache save failed", { error, tokenMint });
