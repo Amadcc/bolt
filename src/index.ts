@@ -8,6 +8,7 @@ import { initializeSolana } from "./services/blockchain/solana.js";
 import { initializeJupiter } from "./services/trading/jupiter.js";
 import { initializeTradingExecutor } from "./services/trading/executor.js";
 import { initializeHoneypotDetector } from "./services/honeypot/detector.js";
+import { initializeJitoService } from "./services/trading/jito.js";
 import { logger } from "./utils/logger.js";
 
 const app = Fastify({
@@ -165,6 +166,22 @@ const start = async () => {
     });
     logger.info("Honeypot Detector initialized");
 
+    // Initialize Jito MEV Protection
+    logger.info("Initializing Jito MEV Protection...");
+    // AUDIT FIX: Support multiple Block Engine URLs for failover
+    const jitoUrls = process.env.JITO_BLOCK_ENGINE_URL
+      ? process.env.JITO_BLOCK_ENGINE_URL.split(",").map((url) => url.trim())
+      : undefined; // Will use defaults if not specified
+
+    // AUDIT FIX: Pass SolanaService instead of Connection for RPCPool integration
+    initializeJitoService(solana, {
+      ...(jitoUrls && { blockEngineUrls: jitoUrls }),
+      tipLamports: BigInt(process.env.JITO_TIP_LAMPORTS || "100000"),
+      // AUDIT FIX: Enable by default, allow explicit disable
+      enabled: process.env.JITO_ENABLED !== "false",
+    });
+    logger.info("Jito MEV Protection initialized");
+
     // Start Fastify server
     await app.listen({
       port: Number(process.env.PORT) || 3000,
@@ -173,10 +190,12 @@ const start = async () => {
     console.log("✅ API server started on port", process.env.PORT || 3000);
 
     // Start Telegram bot
+    logger.info("Starting Telegram bot...");
     await bot.start();
-    console.log("✅ Telegram bot started");
 
-    logger.info("Application started successfully");
+    // Note: bot.start() is a long-running operation (long polling)
+    // so this line won't be reached until the bot stops
+    logger.info("Telegram bot stopped");
   } catch (err) {
     logger.error("Failed to start application", { error: err });
     app.log.error(err);

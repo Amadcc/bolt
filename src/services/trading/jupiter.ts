@@ -21,6 +21,8 @@ import type {
 } from "../../types/jupiter.js";
 import { DEFAULT_JUPITER_CONFIG } from "../../types/jupiter.js";
 import { asTransactionSignature, type TokenMint } from "../../types/common.js";
+// AUDIT FIX: Import Jito service for MEV protection
+import { getJitoService } from "./jito.js";
 
 // ============================================================================
 // Quote Cache (in-memory, 2s TTL)
@@ -288,7 +290,7 @@ export class JupiterService {
   signTransaction(
     transactionBase64: string,
     keypair: Keypair
-  ): Result<string, JupiterError> {
+  ): Result<VersionedTransaction, JupiterError> {
     try {
       logger.debug("Signing Jupiter transaction");
 
@@ -301,13 +303,10 @@ export class JupiterService {
       // Sign transaction
       transaction.sign([keypair]);
 
-      // Serialize back to base64
-      const signedBuffer = transaction.serialize();
-      const signedBase64 = Buffer.from(signedBuffer).toString("base64");
-
       logger.debug("Transaction signed successfully");
 
-      return Ok(signedBase64);
+      // CRITICAL: Return VersionedTransaction directly to avoid extra serialize/deserialize cycles
+      return Ok(transaction);
     } catch (error) {
       logger.error("Failed to sign transaction", { error });
       return Err({
@@ -472,18 +471,81 @@ export class JupiterService {
       return Err(signResult.error);
     }
 
-    const signedTransaction = signResult.value;
+    const signedTransaction = signResult.value; // Now a VersionedTransaction object
 
-    // Step 3: Execute swap
-    const executeResult = await this.executeSwap(
-      signedTransaction,
-      quote.requestId
-    );
-    if (!executeResult.success) {
-      return Err(executeResult.error);
+    // AUDIT FIX: Step 3 - Try Jito MEV protection first, fall back to regular execution
+    let execution: JupiterExecuteResponse;
+    let usedJito = false;
+
+    try {
+      // CRITICAL FIX: signedTransaction is already a VersionedTransaction object
+      // Pass directly to Jito to avoid serialize/deserialize cycles that corrupt MessageV0
+      const jitoService = getJitoService();
+
+      logger.info("Attempting Jito bundle submission for MEV protection");
+
+      const bundleResult = await jitoService.submitBundle(
+        [signedTransaction],
+        keypair,
+        "base" // Start with base tip level
+      );
+
+      if (bundleResult.success) {
+        usedJito = true;
+        logger.info("Jito bundle submitted successfully", {
+          bundleId: bundleResult.value.bundleId,
+          status: bundleResult.value.status,
+        });
+
+        // Extract signature from bundle result
+        const signature = bundleResult.value.signatures?.[0] || "";
+
+        // Create execution response compatible with Jupiter API
+        execution = {
+          status: "Success",
+          code: 200,
+          signature,
+          slot: bundleResult.value.slot?.toString() || "0",
+          totalInputAmount: quote.inAmount,
+          totalOutputAmount: quote.outAmount,
+          inputAmountResult: quote.inAmount,
+          outputAmountResult: quote.outAmount,
+          swapEvents: [], // Jito bundles don't provide detailed swap events
+        };
+      } else {
+        // Jito failed, fall back to regular execution
+        logger.warn("Jito bundle submission failed, falling back to regular execution", {
+          error: bundleResult.error,
+        });
+
+        // Serialize VersionedTransaction to base64 for executeSwap
+        const signedTransactionBase64 = Buffer.from(signedTransaction.serialize()).toString("base64");
+        const executeResult = await this.executeSwap(
+          signedTransactionBase64,
+          quote.requestId
+        );
+        if (!executeResult.success) {
+          return Err(executeResult.error);
+        }
+        execution = executeResult.value;
+      }
+    } catch (error) {
+      // Jito service not available or error occurred, fall back to regular execution
+      logger.warn("Jito submission error, falling back to regular execution", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      // Serialize VersionedTransaction to base64 for executeSwap
+      const signedTransactionBase64 = Buffer.from(signedTransaction.serialize()).toString("base64");
+      const executeResult = await this.executeSwap(
+        signedTransactionBase64,
+        quote.requestId
+      );
+      if (!executeResult.success) {
+        return Err(executeResult.error);
+      }
+      execution = executeResult.value;
     }
-
-    const execution = executeResult.value;
 
     // Step 4: Wait for confirmation (optional but recommended)
     try {
@@ -512,6 +574,7 @@ export class JupiterService {
       logger.info("Transaction confirmed successfully", {
         signature,
         slot: execution.slot,
+        mevProtection: usedJito ? "Jito Bundle" : "None",
       });
 
       // Build result

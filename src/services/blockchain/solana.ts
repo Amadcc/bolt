@@ -52,7 +52,7 @@ const DEFAULT_CONFIG: Partial<SolanaConfig> = {
 // Solana Service with RPC Pool
 // ============================================================================
 
-class SolanaService {
+export class SolanaService {
   private rpcPool: RPCPool | null = null;
   private config: SolanaConfig;
 
