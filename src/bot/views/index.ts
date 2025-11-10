@@ -7,6 +7,7 @@ import { InlineKeyboard } from "grammy";
 import type { Context as GrammyContext, SessionFlavor } from "grammy";
 import { prisma } from "../../utils/db.js";
 import { logger } from "../../utils/logger.js";
+import { hasActivePassword } from "../utils/passwordState.js";
 
 // ============================================================================
 // Types
@@ -54,8 +55,8 @@ interface SessionData {
   };
   // ✅ Redis Session Integration (CRITICAL-1 + CRITICAL-2 fix)
   sessionToken?: string; // Redis session token (15 min TTL)
-  password?: string; // For getKeypairForSigning() - stored in Grammy memory only
   sessionExpiresAt?: number; // Timestamp for UI display
+  passwordExpiresAt?: number; // Timestamp for password TTL indicator
   ui: UIState;
   awaitingPasswordForWallet?: boolean;
   awaitingPasswordForUnlock?: boolean;
@@ -146,8 +147,9 @@ export async function renderMainPage(ctx: Context): Promise<{
   }
 
   const wallet = user.wallets[0];
-  // ✅ Redis Session Integration: Check Redis session instead of in-memory encryptedKey
-  const isLocked = !ctx.session.sessionToken || !ctx.session.password;
+  // ✅ Redis Session Integration: Check Redis session + password TTL
+  const isLocked =
+    !ctx.session.sessionToken || !hasActivePassword(ctx.session);
 
   const text =
     `*Dashboard*\n\n` +

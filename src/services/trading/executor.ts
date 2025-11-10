@@ -8,6 +8,7 @@ import { prisma } from "../../utils/db.js";
 import { unlockWallet, clearKeypair } from "../wallet/keyManager.js";
 // ✅ Redis Session Integration
 import { getKeypairForSigning } from "../wallet/session.js";
+import { getPasswordTemporary } from "../wallet/passwordVault.js";
 import { getJupiter } from "./jupiter.js";
 import { getSolanaConnection } from "../blockchain/solana.js";
 import { PublicKey } from "@solana/web3.js";
@@ -199,7 +200,7 @@ export class TradingExecutor {
    */
   async executeTrade(
     params: TradeParams,
-    password: string,
+    password?: string,
     sessionToken?: SessionToken // ✅ Optional Redis session token
   ): Promise<Result<TradeResult, TradingError>> {
     const { userId, inputMint, outputMint, amount, slippageBps } = params;
@@ -210,20 +211,52 @@ export class TradingExecutor {
       outputMint,
       amount,
       slippageBps,
-      hasPassword: !!password,
+      passwordProvided: !!password,
       hasSession: !!sessionToken,
     });
 
     try {
       let keypair;
       let publicKey;
+      let effectivePassword = password;
+
+      // Prefer Redis session password if session token is provided
+      if (sessionToken) {
+        const passwordResult = await getPasswordTemporary(sessionToken);
+
+        if (!passwordResult.success) {
+          logger.error("Failed to load password from Redis", {
+            userId,
+            sessionToken: sessionToken.slice(0, 8) + "...",
+          });
+
+          return Err({
+            type: "INVALID_PASSWORD",
+            message: "Unable to access secure password cache. Please /unlock again."
+          });
+        }
+
+        if (!passwordResult.value) {
+          logger.warn("Session password expired before trade", {
+            userId,
+            sessionToken: sessionToken.slice(0, 8) + "...",
+          });
+
+          return Err({
+            type: "INVALID_PASSWORD",
+            message: "Session expired. Please /unlock again before trading."
+          });
+        }
+
+        effectivePassword = passwordResult.value;
+      }
 
       // ✅ Step 1: Get keypair - prefer Redis session, fallback to unlockWallet
-      if (sessionToken && password) {
+      if (sessionToken && effectivePassword) {
         // Use Redis session + getKeypairForSigning
         logger.info("Using Redis session for trade", { userId, sessionToken: sessionToken.substring(0, 10) + "..." });
 
-        const keypairResult = await getKeypairForSigning(sessionToken, password);
+        const keypairResult = await getKeypairForSigning(sessionToken, effectivePassword);
 
         if (!keypairResult.success) {
           return Err({
@@ -238,7 +271,7 @@ export class TradingExecutor {
         logger.info("Keypair retrieved from Redis session", { userId, publicKey });
       } else {
         // Fallback: unlock wallet directly
-        if (!password) {
+        if (!effectivePassword) {
           return Err({
             type: "INVALID_PASSWORD",
             message: "Password is required for trading"
@@ -247,7 +280,7 @@ export class TradingExecutor {
 
         logger.info("No session - unlocking wallet directly", { userId });
 
-        const unlockResult = await unlockWallet({ userId, password });
+        const unlockResult = await unlockWallet({ userId, password: effectivePassword });
 
         if (!unlockResult.success) {
           const error = unlockResult.error as WalletError;

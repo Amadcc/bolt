@@ -11,6 +11,7 @@ import { getHoneypotDetector } from "../../services/honeypot/detector.js";
 import { asTokenMint } from "../../types/common.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals } from "../../config/tokens.js";
 import type { TradingError } from "../../types/trading.js";
+import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
 
 /**
  * Execute buy flow with honeypot check and real Jupiter execution
@@ -27,13 +28,13 @@ export async function executeBuyFlow(
     amount,
     userId: ctx.from?.id,
     hasSessionToken: !!ctx.session.sessionToken,
-    hasPassword: !!ctx.session.password,
+    hasPassword: hasActivePassword(ctx.session),
     autoApprove: ctx.session.settings?.autoApprove,
     skipConfirmation,
   });
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
+  if (!ctx.session.sessionToken || !hasActivePassword(ctx.session)) {
     logger.warn("Wallet locked, cannot execute buy", { token, amount, userId: ctx.from?.id });
 
     const msgId = ctx.session.ui.messageId;
@@ -297,9 +298,10 @@ export async function executeBuyFlow(
         amount: lamports,
         slippageBps: 50, // 0.5% slippage
       },
-      ctx.session.password!,
+      undefined,
       ctx.session.sessionToken as any
     );
+    clearPasswordState(ctx.session);
 
     // Progress: Step 3 - Completed
     if (tradeResult.success) {
@@ -473,4 +475,3 @@ async function updateProgress(
     }
   }
 }
-

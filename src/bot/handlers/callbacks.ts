@@ -14,6 +14,7 @@ import { asTokenMint } from "../../types/common.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
 import type { TradingError } from "../../types/trading.js";
 import { executeBuyFlow } from "../flows/buy.js";
+import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
 
 // ============================================================================
 // Navigation Callbacks
@@ -106,7 +107,7 @@ async function handleLockAction(ctx: Context): Promise<void> {
   }
 
   // Clear Grammy session
-  lockSession(ctx);
+  await lockSession(ctx);
 
   await ctx.answerCallbackQuery("🔒 Wallet locked");
   await navigateToPage(ctx, "main");
@@ -599,7 +600,7 @@ export async function executeSellFlow(
   skipConfirmation = false
 ): Promise<void> {
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
+  if (!ctx.session.sessionToken || !hasActivePassword(ctx.session)) {
     // Only answer callback query if this is a callback context
     if (ctx.callbackQuery) {
       await ctx.answerCallbackQuery();
@@ -790,9 +791,10 @@ export async function executeSellFlow(
         amount: amountToSell.toString(),
         slippageBps: 50, // 0.5% slippage
       },
-      ctx.session.password!,
+      undefined,
       ctx.session.sessionToken as any
     );
+    clearPasswordState(ctx.session);
 
     if (!tradeResult.success) {
       const error = tradeResult.error as TradingError;
@@ -1144,7 +1146,7 @@ export async function executeSwapFlow(
   }
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
+  if (!ctx.session.sessionToken || !hasActivePassword(ctx.session)) {
     // Save pending command so unlock handler can execute it (if not already set by text command)
     if (!ctx.session.pendingCommand) {
       ctx.session.pendingCommand = {
@@ -1384,9 +1386,10 @@ export async function executeSwapFlow(
         amount: minimalUnits,
         slippageBps: 50, // 0.5% slippage
       },
-      ctx.session.password!,
+      undefined,
       ctx.session.sessionToken as any
     );
+    clearPasswordState(ctx.session);
 
     // Progress: Step 3 - Completed
     if (tradeResult.success) {
@@ -1502,7 +1505,7 @@ export async function executeSellWithAbsoluteAmount(
   }
 
   // Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !ctx.session.password) {
+  if (!ctx.session.sessionToken || !hasActivePassword(ctx.session)) {
     // Save pending command so unlock handler can execute it (if not already set by text command)
     if (!ctx.session.pendingCommand) {
       ctx.session.pendingCommand = {
@@ -1645,9 +1648,10 @@ export async function executeSellWithAbsoluteAmount(
         amount: minimalUnits,
         slippageBps: 50, // 0.5% slippage
       },
-      ctx.session.password!,
+      undefined,
       ctx.session.sessionToken as any
     );
+    clearPasswordState(ctx.session);
 
     if (!tradeResult.success) {
       const error = tradeResult.error as TradingError;
@@ -1846,4 +1850,3 @@ async function updateSellProgress(
     }
   }
 }
-

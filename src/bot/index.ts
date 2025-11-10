@@ -25,6 +25,7 @@ import {
   executeSellFlow,
 } from "./handlers/callbacks.js";
 import { executeBuyFlow } from "./flows/buy.js";
+import { hasActivePassword } from "./utils/passwordState.js";
 
 interface SessionData {
   walletId?: string;
@@ -35,8 +36,8 @@ interface SessionData {
   };
   // ✅ Redis Session Integration (CRITICAL-1 + CRITICAL-2 fix)
   sessionToken?: string; // Redis session token (15 min TTL)
-  password?: string; // For getKeypairForSigning() - stored in Grammy memory only
   sessionExpiresAt?: number; // Timestamp for UI display
+  passwordExpiresAt?: number; // Timestamp for temporary password TTL (2 minutes)
   // UI State
   ui: UIState;
   // Conversation state
@@ -190,7 +191,7 @@ bot.command("buy", async (ctx) => {
 
     // Clear pending command after execution (only if wallet is unlocked)
     // If wallet was locked, executeBuyFlow returned early and pending command should remain
-    if (ctx.session.sessionToken && ctx.session.password) {
+    if (ctx.session.sessionToken && hasActivePassword(ctx.session)) {
       ctx.session.pendingCommand = undefined;
     }
   } else {
@@ -236,7 +237,7 @@ bot.command("sell", async (ctx) => {
 
     // Clear pending command after execution (only if wallet is unlocked)
     // If wallet was locked, executeSellWithAbsoluteAmount returned early and pending command should remain
-    if (ctx.session.sessionToken && ctx.session.password) {
+    if (ctx.session.sessionToken && hasActivePassword(ctx.session)) {
       ctx.session.pendingCommand = undefined;
     }
   } else {
@@ -283,7 +284,7 @@ bot.command("swap", async (ctx) => {
 
     // Clear pending command after execution (only if wallet is unlocked)
     // If wallet was locked, executeSwapFlow returned early and pending command should remain
-    if (ctx.session.sessionToken && ctx.session.password) {
+    if (ctx.session.sessionToken && hasActivePassword(ctx.session)) {
       ctx.session.pendingCommand = undefined;
     }
   } else {
@@ -463,7 +464,7 @@ bot.on("message:text", async (ctx, next) => {
     setTimeout(async () => {
       try {
         // Check if Redis session was successfully created
-        if (ctx.session.sessionToken && ctx.session.password) {
+        if (ctx.session.sessionToken && hasActivePassword(ctx.session)) {
           // Return to saved page or default to main
           const returnPage = ctx.session.returnToPageAfterUnlock || "main";
           ctx.session.returnToPageAfterUnlock = undefined; // Clear saved page

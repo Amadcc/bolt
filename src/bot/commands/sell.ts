@@ -10,6 +10,7 @@ import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
 import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
+import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
 
 // Define session data structure (should match bot/index.ts)
 interface SessionData {
@@ -21,8 +22,8 @@ interface SessionData {
   };
   // ✅ Redis Session Integration
   sessionToken?: string;
-  password?: string;
   sessionExpiresAt?: number;
+  passwordExpiresAt?: number;
   awaitingPasswordForWallet?: boolean;
   awaitingPasswordForSwap?: {
     inputMint: string;
@@ -203,11 +204,12 @@ async function executeSell(
       return;
     }
 
-    // ✅ Redis Session Integration: Get password and sessionToken from context
-    const sessionPassword = ctx.session.password || password;
     const sessionToken = ctx.session.sessionToken;
+    const canUseSession = Boolean(
+      sessionToken && hasActivePassword(ctx.session)
+    );
 
-    if (!sessionPassword) {
+    if (!canUseSession && !password) {
       await ctx.reply(
         `🔒 *Password Required*\n\n` +
         `No active session. Please either:\n\n` +
@@ -227,9 +229,12 @@ async function executeSell(
         amount: tokenAmount,
         slippageBps: 50, // 0.5% slippage
       },
-      sessionPassword,
-      sessionToken as any
+      canUseSession ? undefined : password,
+      canUseSession ? (sessionToken as any) : undefined
     );
+    if (canUseSession) {
+      clearPasswordState(ctx.session);
+    }
 
     if (!tradeResult.success) {
       const error = tradeResult.error as TradingError;
@@ -240,13 +245,20 @@ async function executeSell(
       }
 
       if (error.type === "INVALID_PASSWORD") {
-        // ✅ SECURITY (CRITICAL-2 Fix): Password now required for every trade
-        await ctx.reply(
-          `🔒 *Password Required*\n\n` +
-          `For security, password is required for every trade.\n\n` +
-          `Usage: \`/sell ${tokenSymbol} ${tokenAmount} yourpassword\``,
-          { parse_mode: "Markdown" }
-        );
+        if (canUseSession) {
+          await ctx.reply(
+            `🔒 *Session Expired*\n\n` +
+            `Password cache expired or was consumed. Please /unlock again.`,
+            { parse_mode: "Markdown" }
+          );
+        } else {
+          await ctx.reply(
+            `🔒 *Password Required*\n\n` +
+            `Include the password when using /sell:\n\n` +
+            `\`/sell ${tokenSymbol} ${tokenAmount} yourpassword\``,
+            { parse_mode: "Markdown" }
+          );
+        }
         return;
       }
 

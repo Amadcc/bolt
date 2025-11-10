@@ -10,6 +10,7 @@ import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
 import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
+import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
 
 // Define session data structure (should match bot/index.ts)
 interface SessionData {
@@ -21,8 +22,8 @@ interface SessionData {
   };
   // ✅ Redis Session Integration
   sessionToken?: string;
-  password?: string;
   sessionExpiresAt?: number;
+  passwordExpiresAt?: number;
   awaitingPasswordForWallet?: boolean;
   awaitingPasswordForSwap?: {
     inputMint: string;
@@ -198,11 +199,12 @@ async function executeSwap(
       return;
     }
 
-    // ✅ Redis Session Integration: Get password and sessionToken from context
-    const sessionPassword = ctx.session.password || password;
     const sessionToken = ctx.session.sessionToken;
+    const canUseSession = Boolean(
+      sessionToken && hasActivePassword(ctx.session)
+    );
 
-    if (!sessionPassword) {
+    if (!canUseSession && !password) {
       await ctx.reply(
         `🔒 *Password Required*\n\n` +
         `No active session. Please either:\n\n` +
@@ -222,9 +224,12 @@ async function executeSwap(
         amount,
         slippageBps: 50, // 0.5% slippage
       },
-      sessionPassword,
-      sessionToken as any
+      canUseSession ? undefined : password,
+      canUseSession ? (sessionToken as any) : undefined
     );
+    if (canUseSession) {
+      clearPasswordState(ctx.session);
+    }
 
     if (!tradeResult.success) {
       const error = tradeResult.error as TradingError;
@@ -235,13 +240,20 @@ async function executeSwap(
       }
 
       if (error.type === "INVALID_PASSWORD") {
-        // ✅ SECURITY (CRITICAL-2 Fix): Password now required for every trade
-        await ctx.reply(
-          `🔒 *Password Required*\n\n` +
-          `For security, password is required for every trade.\n\n` +
-          `Usage: \`/swap <from> <to> <amount> yourpassword\``,
-          { parse_mode: "Markdown" }
-        );
+        if (canUseSession) {
+          await ctx.reply(
+            `🔒 *Session Expired*\n\n` +
+            `Password cache expired or already used. Please /unlock again.`,
+            { parse_mode: "Markdown" }
+          );
+        } else {
+          await ctx.reply(
+            `🔒 *Password Required*\n\n` +
+            `Include the password in your /swap command:\n\n` +
+            `\`/swap <from> <to> <amount> yourpassword\``,
+            { parse_mode: "Markdown" }
+          );
+        }
         return;
       }
 

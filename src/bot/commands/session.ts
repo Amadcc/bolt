@@ -13,6 +13,11 @@ import {
   destroySession,
   getSession
 } from "../../services/wallet/session.js";
+import {
+  storePasswordTemporary,
+  deletePasswordTemporary,
+  PASSWORD_TTL_MS,
+} from "../../services/wallet/passwordVault.js";
 import { prisma } from "../../utils/db.js";
 import { navigateToPage, type Context } from "../views/index.js";
 
@@ -113,11 +118,49 @@ async function executeUnlock(
 
     const { sessionToken, expiresAt } = sessionResult.value;
 
-    // ✅ Store sessionToken and password in Grammy session (in-memory)
-    // This allows trading without password each time
+    const passwordStoreResult = await storePasswordTemporary(
+      sessionToken,
+      password
+    );
+
+    if (!passwordStoreResult.success) {
+      await destroySession(sessionToken);
+
+      const secureError =
+        "❌ *Failed to Secure Session*\n\n" +
+        "We couldn't store your password safely. Please try unlocking again.";
+
+      const keyboard = {
+        inline_keyboard: [
+          [
+            { text: "🔄 Try Again", callback_data: "action:unlock" },
+            { text: "« Back", callback_data: "nav:main" }
+          ]
+        ]
+      };
+
+      if (uiMessageId) {
+        await ctx.api.editMessageText(ctx.chat!.id, uiMessageId, secureError, {
+          parse_mode: "Markdown",
+          reply_markup: keyboard,
+        });
+      } else {
+        await ctx.reply(secureError, {
+          parse_mode: "Markdown",
+          reply_markup: keyboard,
+        });
+      }
+
+      logger.error("Failed to store password in Redis, unlock aborted", {
+        userId,
+      });
+      return;
+    }
+
+    // ✅ Store session metadata only (no password)
     ctx.session.sessionToken = sessionToken;
-    ctx.session.password = password;
     ctx.session.sessionExpiresAt = expiresAt.getTime();
+    ctx.session.passwordExpiresAt = Date.now() + PASSWORD_TTL_MS;
 
     // Get wallet publicKey from database
     const wallet = await prisma.wallet.findFirst({
@@ -199,11 +242,24 @@ export async function handleUnlockPasswordInput(
  * Lock session (without sending message)
  * Used by UI system
  */
-export function lockSession(ctx: Context): void {
-  // ✅ Clear Redis session data from Grammy session
+export async function lockSession(ctx: Context): Promise<void> {
+  // Attempt to wipe temporary password from Redis
+  if (ctx.session.sessionToken) {
+    const deleteResult = await deletePasswordTemporary(
+      ctx.session.sessionToken as any
+    );
+
+    if (!deleteResult.success) {
+      logger.warn("Failed to delete temporary password during lock", {
+        error: deleteResult.error?.message,
+      });
+    }
+  }
+
+  // ✅ Clear Redis session metadata from Grammy session
   ctx.session.sessionToken = undefined;
-  ctx.session.password = undefined;
   ctx.session.sessionExpiresAt = undefined;
+  ctx.session.passwordExpiresAt = undefined;
   // Legacy fields (may still be used in some places)
   ctx.session.encryptedKey = undefined;
   ctx.session.walletId = undefined;
@@ -245,7 +301,7 @@ export async function handleLock(ctx: Context): Promise<void> {
     }
 
     // Also clear Grammy session
-    lockSession(ctx);
+    await lockSession(ctx);
 
     logger.info("Wallet locked - Redis session destroyed", { userId: user.id, telegramId });
 

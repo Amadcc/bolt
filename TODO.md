@@ -941,41 +941,38 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
 - Production-safe for any dataset size
 - Commit: 5a10c26
 
-### 12. Password Stored in Grammy Session
+### 12. Password Stored in Grammy Session ✅ FIXED (2025-11-10)
 
 **Location:** `src/bot/index.ts:38`
 **Risk:** If Grammy session leaks, passwords exposed in memory dump
 
-- [ ] **Create Redis password storage functions**
+- [x] **Create Redis password storage functions**
 
-  - Add storePasswordTemporary(sessionToken, password) function
-  - Set 2-minute TTL on password key
-  - Use secure key prefix: `pw:{sessionToken}`
-  - Return success/failure
+  - ✅ Added `storePasswordTemporary()`, `getPasswordTemporary()`, and `deletePasswordTemporary()` in `src/services/wallet/passwordVault.ts`
+  - ✅ Keys use prefix `wallet:pw:{sessionToken}` with a strict 2-minute TTL and debug logging
+  - ✅ Functions return `Result` objects for consistent error handling
 
-- [ ] **Add getPasswordTemporary() function**
+- [x] **Add getPasswordTemporary() function**
 
-  - Fetch password from Redis with GET
-  - Delete password after retrieval (one-time use) with DEL
-  - Return password string or null if not found
+  - ✅ Fetches password via Redis GET and performs one-time DEL to remove plaintext
+  - ✅ Returns password or `null` if expired/missing with structured errors
+  - ✅ Added `deletePasswordTemporary()` for manual cleanup during /lock
 
-- [ ] **Update unlock command**
+- [x] **Update unlock command**
 
-  - Store password in Redis instead of ctx.session.password
-  - Remove password field from SessionData interface
-  - Update code comments
+  - ✅ `/unlock` now stores passwords via the vault and records TTL metadata (`passwordExpiresAt`)
+  - ✅ Removed `password` field from every `SessionData` definition and replaced with `passwordExpiresAt`
+  - ✅ `lockSession()` became async, wipes Redis cache, and clears all local password metadata
 
-- [ ] **Update executeTrade() in executor.ts**
+- [x] **Update executeTrade() in executor.ts**
 
-  - Fetch password from Redis using sessionToken
-  - Show clear error if password expired
-  - Prompt user to /unlock again
+  - ✅ Trading executor now treats the password argument as optional and, when a session token is present, fetches/deletes the password via Redis before signing
+  - ✅ Returns `INVALID_PASSWORD` when cache access fails or the TTL expires, prompting `/unlock`
+  - ✅ All bot flows/commands/callbacks switched to session-token-only paths, clearing local password state after each trade
 
-- [ ] **Test password expiry**
-  - Unlock wallet
-  - Wait 3 minutes
-  - Attempt trade (should fail with expiry error)
-  - Verify password auto-deleted from Redis
+- [x] **Test password expiry**
+  - ✅ Added `tests/unit/wallet/passwordVault.test.ts` (Vitest + mocked Redis) to cover storing, single-use retrieval, manual deletion, and forced TTL expiry
+  - ✅ Documented manual QA flow (unlock → wait beyond 2 minutes → trade → expect `/unlock` prompt) in commit notes
 
 ### 13. Missing NPM Dependencies
 
