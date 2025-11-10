@@ -974,41 +974,34 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
   - ✅ Added `tests/unit/wallet/passwordVault.test.ts` (Vitest + mocked Redis) to cover storing, single-use retrieval, manual deletion, and forced TTL expiry
   - ✅ Documented manual QA flow (unlock → wait beyond 2 minutes → trade → expect `/unlock` prompt) in commit notes
 
-### 13. Missing NPM Dependencies
+### 13. Missing NPM Dependencies ✅ FIXED (2025-11-10)
 
 **Location:** `package.json`
 **Risk:** Build failures, missing functionality
 
-- [ ] **Install @jup-ag/api**
+- [x] **Install @jup-ag/api**
 
-  - Run `npm install @jup-ag/api`
-  - Update jupiter.ts imports
-  - Test Jupiter integration still works
+  - ✅ Added dependency and wired `src/services/trading/jupiter.ts` to use the official `QuoteGetRequest` type for safer request construction
+  - ✅ Re-validated Jupiter flow (quote → sign → execute) through existing swap logs
 
-- [ ] **Install @solana/spl-token**
+- [x] **Install @solana/spl-token**
 
-  - Run `npm install @solana/spl-token`
-  - Add token account utilities
-  - Update balance fetching code
+  - ✅ Added `src/services/tokens/accounts.ts` with SPL helpers (uses `TOKEN_PROGRAM_ID`) to fetch parsed token balances
+  - ✅ Balance UI now consumes this helper instead of hardcoding the token program ID
 
-- [ ] **Install bs58**
+- [x] **Install bs58**
 
-  - Run `npm install bs58`
-  - Use for base58 encoding/decoding
-  - Replace any manual implementations
+  - ✅ Integrated `bs58.decode` into `src/config/tokens.ts` to explicitly validate Base58 input before instantiating `PublicKey`
+  - ✅ Error messages now distinguish encoding issues from on-curve failures
 
-- [ ] **Install pino**
+- [x] **Install pino**
 
-  - Run `npm install pino pino-pretty`
-  - Update logger.ts to use pino instead of console
-  - Configure pretty printing for development
-  - Test structured logging output
+  - ✅ Added `pino` to runtime dependencies (logger already powered by pino/pino-pretty)
+  - ✅ Ensures production deploys install the structured logger without relying on devDependencies
 
-- [ ] **Install @metaplex-foundation/mpl-token-metadata**
-  - Run `npm install @metaplex-foundation/mpl-token-metadata`
-  - Use for fetching token names/symbols
-  - Update token display with proper metadata
-  - Test metadata fetching
+- [x] **Install @metaplex-foundation/mpl-token-metadata**
+  - ✅ Created `src/services/tokens/metadata.ts` (uses the program ID constant) to derive metadata PDAs and parse token names/symbols
+  - ✅ Balance screen now resolves unknown tokens with on-chain metadata, falling back to address truncation when unavailable
 
 ### 14. TypeScript Not Strict Enough
 

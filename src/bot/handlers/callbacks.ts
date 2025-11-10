@@ -154,6 +154,8 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
     const { getJupiter } = await import("../../services/trading/jupiter.js");
     const { asTokenMint } = await import("../../types/common.js");
     const { SOL_MINT } = await import("../../config/tokens.js");
+    const { getTokenAccountsForOwner } = await import("../../services/tokens/accounts.js");
+    const { fetchTokenMetadata } = await import("../../services/tokens/metadata.js");
 
     const user = await prisma.user.findUnique({
       where: { telegramId: BigInt(ctx.from!.id) },
@@ -173,11 +175,8 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
     const lamports = await connection.getBalance(publicKey);
     const sol = lamports / LAMPORTS_PER_SOL;
 
-    // Get token accounts
-    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
-      publicKey,
-      { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") }
-    );
+    // Get token accounts via SPL Token helper
+    const tokenAccounts = await getTokenAccountsForOwner(publicKey, connection);
 
     // Build balance message
     let message = `*Balance*\n\n`;
@@ -204,28 +203,49 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
       "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": "JUP",
     };
 
-    if (tokenAccounts.value.length > 0) {
+    if (tokenAccounts.length > 0) {
       message += `\n*Tokens*\n`;
 
-      for (const tokenAccount of tokenAccounts.value) {
-        const accountData = tokenAccount.account.data.parsed.info;
-        const mint = accountData.mint;
-        const amount = parseFloat(accountData.tokenAmount.uiAmountString);
-
-        if (amount > 0) {
-          const symbol = KNOWN_TOKENS[mint] || truncateAddress(mint);
-
-          // Get token price
-          const tokenPriceResult = await jupiter.getTokenPrice(asTokenMint(mint));
-          const tokenPrice = tokenPriceResult.success ? tokenPriceResult.value : null;
-          const tokenUsdValue = tokenPrice ? amount * tokenPrice : null;
-
-          message += `${symbol}: ${formatAmount(amount)}`;
-          if (tokenUsdValue !== null) {
-            message += ` ($${tokenUsdValue.toFixed(2)})`;
-          }
-          message += `\n`;
+      for (const tokenAccount of tokenAccounts) {
+        if (tokenAccount.amount <= 0) {
+          continue;
         }
+
+        const mint = tokenAccount.mint;
+        let symbol = KNOWN_TOKENS[mint];
+        let displayLabel: string | undefined;
+
+        if (!symbol) {
+          const metadata = await fetchTokenMetadata(mint);
+          const sanitizedSymbol = metadata?.symbol?.trim();
+          const sanitizedName = metadata?.name?.trim();
+
+          if (sanitizedSymbol) {
+            symbol = sanitizedSymbol;
+          }
+
+          if (sanitizedName && sanitizedName !== symbol) {
+            displayLabel = `${sanitizedName} (${symbol ?? truncateAddress(mint)})`;
+          } else if (sanitizedName) {
+            displayLabel = sanitizedName;
+          }
+        }
+
+        const label =
+          displayLabel ??
+          symbol ??
+          truncateAddress(mint);
+
+        // Get token price
+        const tokenPriceResult = await jupiter.getTokenPrice(asTokenMint(mint));
+        const tokenPrice = tokenPriceResult.success ? tokenPriceResult.value : null;
+        const tokenUsdValue = tokenPrice ? tokenAccount.amount * tokenPrice : null;
+
+        message += `${label}: ${formatAmount(tokenAccount.amount)}`;
+        if (tokenUsdValue !== null) {
+          message += ` ($${tokenUsdValue.toFixed(2)})`;
+        }
+        message += `\n`;
       }
     } else {
       message += `\nNo tokens yet`;

@@ -4,12 +4,12 @@
  */
 
 import { VersionedTransaction, Connection, Keypair } from "@solana/web3.js";
+import type { QuoteGetRequest } from "@jup-ag/api";
 import { logger } from "../../utils/logger.js";
 import { retry } from "../../types/common.js";
 import type { Result } from "../../types/common.js";
 import { Ok, Err } from "../../types/common.js";
 import type {
-  JupiterQuoteRequest,
   JupiterQuoteResponse,
   JupiterExecuteRequest,
   JupiterExecuteResponse,
@@ -140,13 +140,39 @@ export class JupiterService {
     });
 
     try {
-      const queryParams = new URLSearchParams({
+      const slippageBps =
+        params.slippageBps ?? this.config.defaultSlippageBps;
+      const parsedAmount = Number(params.amount);
+
+      if (!Number.isFinite(parsedAmount)) {
+        return Err({
+          type: "UNKNOWN",
+          message: `Invalid amount provided for quote: ${params.amount}`,
+        });
+      }
+
+      const quoteRequest: QuoteGetRequest = {
         inputMint: params.inputMint,
         outputMint: params.outputMint,
+        amount: parsedAmount,
+        slippageBps,
+        platformFeeBps: params.platformFeeBps,
+      };
+
+      const queryParams = new URLSearchParams({
+        inputMint: quoteRequest.inputMint,
+        outputMint: quoteRequest.outputMint,
         amount: params.amount,
         taker: params.userPublicKey,
-        slippageBps: String(params.slippageBps ?? this.config.defaultSlippageBps),
+        slippageBps: String(slippageBps),
       });
+
+      if (quoteRequest.platformFeeBps) {
+        queryParams.append(
+          "platformFeeBps",
+          String(quoteRequest.platformFeeBps)
+        );
+      }
 
       // NOTE: Jupiter Lite API does not support referralFee parameter
       // Platform fees would need to be collected manually or via paid Jupiter API

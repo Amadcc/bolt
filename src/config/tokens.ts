@@ -4,6 +4,7 @@
  * Manages token mint addresses for different Solana networks
  */
 
+import bs58 from "bs58";
 import { PublicKey } from "@solana/web3.js";
 import type { TokenMint } from "../types/common.js";
 import { Ok, Err, type Result } from "../types/common.js";
@@ -77,8 +78,20 @@ export const SOL_MINT = "So11111111111111111111111111111111111111112";
  * @returns Result with TokenMint or error message
  */
 function validateTokenAddress(address: string): Result<TokenMint, string> {
+  // Step 1: Explicit Base58 decoding for clearer error messages
   try {
-    // Attempt to create PublicKey (validates Base58 encoding)
+    bs58.decode(address);
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+
+    return Err(
+      `Invalid token address (bad Base58): ${address.slice(0, 8)}... - ${errorMessage}`
+    );
+  }
+
+  try {
+    // Attempt to create PublicKey (confirms length & curve)
     const pubkey = new PublicKey(address);
 
     // Check if the public key is on the ed25519 curve
@@ -97,7 +110,7 @@ function validateTokenAddress(address: string): Result<TokenMint, string> {
       error instanceof Error ? error.message : String(error);
 
     return Err(
-      `Invalid token address (bad Base58): ${address.slice(0, 8)}... - ${errorMessage}`
+      `Invalid token address: ${address.slice(0, 8)}... - ${errorMessage}`
     );
   }
 }
