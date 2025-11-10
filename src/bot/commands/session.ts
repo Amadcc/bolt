@@ -10,8 +10,7 @@ import { logger } from "../../utils/logger.js";
 // ✅ Redis Session Integration
 import {
   createSession,
-  destroySession,
-  getSession
+  destroySession
 } from "../../services/wallet/session.js";
 import {
   storePasswordTemporary,

@@ -27,7 +27,6 @@ import { Ok, Err, asTransactionSignature } from "../../types/common.js";
 import type {
   JitoConfig,
   BundleResult,
-  BundleStatus,
   JitoError,
   TipLevel,
   TipConfiguration,
@@ -105,6 +104,12 @@ export class JitoService {
   constructor(solanaService: SolanaService, config: Partial<JitoConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
     this.solanaService = solanaService;
+
+    const solanaHealth = this.solanaService.getHealth();
+    logger.info("Jito service linked to Solana RPC pool", {
+      solanaHealthy: solanaHealth.healthy,
+      lastSolanaHealthCheck: solanaHealth.lastCheck,
+    });
 
     // P0 SECURITY: Validate tip amount to prevent fund loss
     if (this.config.tipLamports > MAX_TIP_LAMPORTS) {

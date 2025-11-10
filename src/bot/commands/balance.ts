@@ -85,7 +85,6 @@ export async function handleBalance(ctx: Context): Promise<void> {
         const accountData = tokenAccount.account.data.parsed.info;
         const mint = accountData.mint;
         const amount = accountData.tokenAmount.uiAmountString;
-        const decimals = accountData.tokenAmount.decimals;
 
         // Get token symbol
         const tokenInfo = KNOWN_TOKENS[mint];

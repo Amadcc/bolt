@@ -5,7 +5,6 @@
  * Bundles provide atomic execution and protection against sandwich attacks.
  */
 
-import type { VersionedTransaction } from "@solana/web3.js";
 import type { TransactionSignature } from "./common.js";
 
 // ============================================================================

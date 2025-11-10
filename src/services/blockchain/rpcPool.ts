@@ -16,8 +16,6 @@
 
 import { Connection, type Commitment } from "@solana/web3.js";
 import { logger } from "../../utils/logger.js";
-import type { Result } from "../../types/common.js";
-import { Ok, Err } from "../../types/common.js";
 
 // ============================================================================
 // Types and Interfaces

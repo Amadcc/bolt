@@ -31,7 +31,6 @@ import {
   type EncryptedPrivateKey,
 } from "../../types/common.js";
 import type { WalletError } from "../../types/solana.js";
-import { WalletError as WalletErrorClass } from "../../utils/errors.js";
 import { logger } from "../../utils/logger.js";
 
 // ============================================================================

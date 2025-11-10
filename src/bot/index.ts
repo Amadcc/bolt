@@ -1,9 +1,6 @@
 import { Bot, Context, session, SessionFlavor } from "grammy";
 import { prisma } from "../utils/db.js";
-import {
-  handleCreateWallet,
-  handlePasswordInput,
-} from "./commands/createWallet.js";
+import { handlePasswordInput } from "./commands/createWallet.js";
 // ✅ Redis Session Integration: Now using secure Redis sessions instead of in-memory
 import {
   handleUnlock,

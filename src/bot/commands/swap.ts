@@ -89,7 +89,7 @@ export async function handleSwap(ctx: Context): Promise<void> {
 
     // Check if user wants conversation mode (just /swap with no args)
     if (parts.length === 1) {
-      await startSwapConversation(ctx, userId);
+      await startSwapConversation(ctx);
       return;
     }
 
@@ -148,7 +148,7 @@ export async function handleSwap(ctx: Context): Promise<void> {
 /**
  * Start conversation mode for swap
  */
-async function startSwapConversation(ctx: Context, userId: string): Promise<void> {
+async function startSwapConversation(ctx: Context): Promise<void> {
   ctx.session.swapConversationStep = "inputMint";
 
   await ctx.reply(

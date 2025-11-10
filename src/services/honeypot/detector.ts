@@ -543,7 +543,7 @@ export class HoneypotDetector {
       await redis.setex(
         key,
         this.config.cacheTTL,
-        JSON.stringify(cached, (key, value) =>
+        JSON.stringify(cached, (_, value) =>
           typeof value === 'bigint' ? value.toString() : value
         )
       );

@@ -3,7 +3,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { bot } from "./bot/index.js";
 import { prisma } from "./utils/db.js";
-import { redis, checkRedisHealth, closeRedis } from "./utils/redis.js";
+import { checkRedisHealth, closeRedis } from "./utils/redis.js";
 import { initializeSolana } from "./services/blockchain/solana.js";
 import { initializeJupiter } from "./services/trading/jupiter.js";
 import { initializeTradingExecutor } from "./services/trading/executor.js";
