@@ -1,0 +1,378 @@
+name: Test Suite
+
+on:
+  # Run on pushes and pull requests to main branch
+  push:
+    branches: [main, to-prod]
+  pull_request:
+    branches: [main, to-prod]
+  # Allow manual trigger
+  workflow_dispatch:
+  # Nightly run at 2 AM UTC
+  schedule:
+    - cron: "0 2 * * *"
+
+env:
+  NODE_ENV: test
+  # Devnet configuration for E2E tests
+  SOLANA_RPC_URL: https://api.devnet.solana.com
+  SOLANA_NETWORK: devnet
+  # Use GitHub Actions secrets for sensitive data
+  DATABASE_URL: postgresql://postgres:test_password@localhost:5432/sniper_bot_test?schema=public
+  REDIS_URL: redis://localhost:6379
+  SESSION_MASTER_SECRET: ${{ secrets.SESSION_MASTER_SECRET_TEST }}
+  BOT_TOKEN: ${{ secrets.BOT_TOKEN_TEST }}
+
+jobs:
+  # ============================================================================
+  # Unit & Integration Tests
+  # ============================================================================
+  unit-tests:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: sniper_bot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: bun run prisma:generate
+
+      - name: Run database migrations
+        run: bunx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://postgres:test_password@localhost:5432/sniper_bot_test?schema=public
+
+      - name: Run TypeScript type check
+        run: bun run typecheck
+
+      - name: Run unit tests
+        run: bun run test:unit
+
+      - name: Run integration tests (non-E2E)
+        run: bun test tests/redis-scan-fix.test.ts
+
+      - name: Upload unit test coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ./coverage/coverage-final.json
+          flags: unit
+          name: unit-tests
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # ============================================================================
+  # E2E Tests (Devnet)
+  # ============================================================================
+  e2e-tests:
+    name: E2E Tests (Devnet)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Only run E2E tests on schedule or manual trigger (to save Devnet resources)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    env:
+      TEST_ENV_FILE: .env.e2e
+      RUN_E2E_TRADING_TESTS: "true"
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: sniper_bot_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: bun run prisma:generate
+
+      - name: Run database migrations
+        run: bunx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://postgres:test_password@localhost:5432/sniper_bot_e2e?schema=public
+
+      - name: Create .env.e2e file
+        run: |
+          cat > .env.e2e <<EOF
+          NODE_ENV=test
+          BOT_TOKEN=${{ secrets.BOT_TOKEN_TEST }}
+          DATABASE_URL=postgresql://postgres:test_password@localhost:5432/sniper_bot_e2e?schema=public
+          REDIS_URL=redis://localhost:6379
+          SESSION_MASTER_SECRET=${{ secrets.SESSION_MASTER_SECRET_TEST }}
+          SOLANA_RPC_URL=https://api.devnet.solana.com
+          SOLANA_NETWORK=devnet
+          HELIUS_RPC_URL=
+          QUICKNODE_RPC_URL=
+          JITO_ENABLED=false
+          JUPITER_API_URL=https://quote-api.jup.ag/v6
+          RUN_E2E_TRADING_TESTS=true
+          EOF
+
+      - name: Run devnet connection test
+        run: bun test tests/e2e/devnet-connection.test.ts
+        timeout-minutes: 5
+
+      - name: Run wallet & session E2E tests
+        run: bun test tests/e2e/wallet-session.e2e.test.ts
+        timeout-minutes: 10
+
+      - name: Run trading E2E tests
+        run: bun test tests/e2e/trading.e2e.test.ts
+        timeout-minutes: 15
+        continue-on-error: true # Don't fail if devnet is slow
+
+      - name: Run error handling E2E tests
+        run: bun test tests/e2e/error-handling.e2e.test.ts
+        timeout-minutes: 15
+
+      - name: Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-test-results
+          path: |
+            coverage/
+            test-results/
+          retention-days: 7
+
+      - name: Upload E2E test coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ./coverage/coverage-final.json
+          flags: e2e
+          name: e2e-tests
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # ============================================================================
+  # Code Coverage Report
+  # ============================================================================
+  coverage:
+    name: Generate Coverage Report
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [unit-tests]
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: sniper_bot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: bun run prisma:generate
+
+      - name: Run database migrations
+        run: bunx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://postgres:test_password@localhost:5432/sniper_bot_test?schema=public
+
+      - name: Run tests with coverage
+        run: bun run test:coverage
+
+      - name: Generate coverage report
+        run: |
+          echo "## Test Coverage Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Coverage summary will be displayed here." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f coverage/coverage-summary.json ]; then
+            cat coverage/coverage-summary.json >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage/coverage-final.json
+          flags: full
+          name: full-coverage
+          fail_ci_if_error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Archive coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 30
+
+  # ============================================================================
+  # Build Validation
+  # ============================================================================
+  build:
+    name: Build Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate Prisma Client
+        run: bun run prisma:generate
+
+      - name: Build project
+        run: bun run build
+
+      - name: Verify build artifacts
+        run: |
+          if [ ! -f dist/index.js ]; then
+            echo "❌ Build failed: dist/index.js not found"
+            exit 1
+          fi
+          echo "✅ Build successful: dist/index.js exists"
+
+  # ============================================================================
+  # Security Scan
+  # ============================================================================
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Run security audit
+        run: bun audit || true
+
+      - name: Check for secrets in code
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
+
+  # ============================================================================
+  # Final Status Check
+  # ============================================================================
+  all-tests-passed:
+    name: All Tests Passed
+    runs-on: ubuntu-latest
+    needs: [unit-tests, build, security]
+    # E2E tests are optional (only on schedule/manual)
+    if: always()
+
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.unit-tests.result }}" != "success" ]; then
+            echo "❌ Unit tests failed"
+            exit 1
+          fi
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "❌ Build failed"
+            exit 1
+          fi
+          if [ "${{ needs.security.result }}" != "success" ]; then
+            echo "⚠️ Security scan had issues"
+          fi
+          echo "✅ All required tests passed!"

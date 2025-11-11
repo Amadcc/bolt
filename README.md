@@ -123,6 +123,11 @@ bun test src/services/wallet/__tests__/encryption.test.ts
 
 # Run with coverage
 bun test --coverage
+
+# Devnet E2E smoke tests (requires .env.e2e + funded devnet wallets)
+cp .env.e2e.example .env.e2e
+bun run test:e2e
+# Set RUN_E2E_TRADING_TESTS=true in .env.e2e once SOL→USDC devnet liquidity (and error suite deps) are ready
 ```
 
 ## 📖 Documentation

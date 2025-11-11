@@ -3,14 +3,31 @@
  * Runs before all tests
  */
 
-import { beforeAll, afterAll, vi } from 'vitest';
-import dotenv from 'dotenv';
+import { beforeAll, afterAll, vi } from "vitest";
+import dotenv from "dotenv";
+import fs from "node:fs";
+import path from "node:path";
 
 // Load test environment variables
-dotenv.config({ path: '.env.test' });
+const defaultEnvPath = path.resolve(process.cwd(), ".env");
+if (fs.existsSync(defaultEnvPath)) {
+  dotenv.config({ path: defaultEnvPath });
+}
+
+const envFile = process.env.TEST_ENV_FILE ?? ".env.test";
+const envPath = path.resolve(process.cwd(), envFile);
+
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath, override: true });
+} else if (envFile !== ".env") {
+  console.warn(
+    `[tests] Environment file "${envFile}" not found. Falling back to base .env values.`
+  );
+  dotenv.config();
+}
 
 // Set test environment
-process.env.NODE_ENV = 'test';
+process.env.NODE_ENV = "test";
 
 // Mock console methods to reduce noise during tests
 const originalConsole = {

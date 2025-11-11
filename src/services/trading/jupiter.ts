@@ -38,15 +38,19 @@ interface CachedQuote {
 // Jupiter Service Class
 // ============================================================================
 
+const FRIENDLY_NETWORK_ERROR_MESSAGE = "Network connection failed. Please try again.";
+
 export class JupiterService {
   private config: JupiterConfig;
   private connection: Connection;
   private quoteCache: Map<string, CachedQuote> = new Map();
   private readonly QUOTE_CACHE_TTL = 2000; // 2 seconds
+  private readonly clusterQueryParams: Record<string, string>;
 
   constructor(connection: Connection, config: Partial<JupiterConfig> = {}) {
     this.config = { ...DEFAULT_JUPITER_CONFIG, ...config };
     this.connection = connection;
+    this.clusterQueryParams = this.buildClusterQueryParams();
 
     logger.info("Jupiter service initialized", {
       baseUrl: this.config.baseUrl,
@@ -120,6 +124,56 @@ export class JupiterService {
       5000,
       "jupiter-quote-cache"
     );
+  }
+
+  /**
+   * Build cluster/environment query params for Jupiter requests
+   */
+  private buildClusterQueryParams(): Record<string, string> {
+    const network = (process.env.SOLANA_NETWORK || "mainnet-beta").toLowerCase();
+
+    if (network === "devnet") {
+      return { cluster: "devnet", environment: "devnet" };
+    }
+
+    if (network === "testnet") {
+      return { cluster: "testnet", environment: "testnet" };
+    }
+
+    if (network === "mainnet") {
+      return { cluster: "mainnet-beta", environment: "mainnet-beta" };
+    }
+
+    // Default to mainnet-beta which Jupiter expects explicitly
+    return { cluster: "mainnet-beta", environment: "mainnet-beta" };
+  }
+
+  /**
+   * Build full endpoint URL with cluster params applied
+   */
+  private buildEndpointUrl(
+    path: string,
+    params?: URLSearchParams
+  ): string {
+    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    const base = this.config.baseUrl.endsWith("/")
+      ? this.config.baseUrl
+      : `${this.config.baseUrl}/`;
+    const url = new URL(normalizedPath, base);
+
+    Object.entries(this.clusterQueryParams).forEach(([key, value]) => {
+      if (value) {
+        url.searchParams.set(key, value);
+      }
+    });
+
+    if (params) {
+      params.forEach((value, key) => {
+        url.searchParams.append(key, value);
+      });
+    }
+
+    return url.toString();
   }
 
   // ==========================================================================
@@ -197,7 +251,7 @@ export class JupiterService {
         });
       }
 
-      const url = `${this.config.baseUrl}/ultra/v1/order?${queryParams.toString()}`;
+      const url = this.buildEndpointUrl("/ultra/v1/order", queryParams);
 
       logger.debug("Jupiter quote URL", { url });
 
@@ -301,7 +355,7 @@ export class JupiterService {
           });
           return Err({
             type: "NETWORK_ERROR",
-            message: error.message,
+            message: FRIENDLY_NETWORK_ERROR_MESSAGE,
           });
         }
       }
@@ -366,7 +420,7 @@ export class JupiterService {
     logger.info("Executing Jupiter swap", { requestId });
 
     try {
-      const url = `${this.config.baseUrl}/ultra/v1/execute`;
+      const url = this.buildEndpointUrl("/ultra/v1/execute");
 
       const body: JupiterExecuteRequest = {
         signedTransaction,
@@ -458,7 +512,7 @@ export class JupiterService {
           });
           return Err({
             type: "NETWORK_ERROR",
-            message: error.message,
+            message: FRIENDLY_NETWORK_ERROR_MESSAGE,
           });
         }
       }
@@ -688,7 +742,7 @@ export class JupiterService {
       logger.error("Error fetching token price", { mint, error });
       return Err({
         type: "NETWORK_ERROR",
-        message: error instanceof Error ? error.message : String(error),
+        message: FRIENDLY_NETWORK_ERROR_MESSAGE,
       });
     }
   }

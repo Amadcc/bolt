@@ -235,30 +235,23 @@ describe("Jupiter Integration", () => {
 });
 ```
 
-### E2E Tests (Telegram Bot)
+### E2E Tests (Devnet)
 
-```typescript
-// tests/e2e/bot.test.ts
+1. `cp .env.e2e.example .env.e2e` and populate **isolated** Postgres/Redis URLs plus `SOLANA_RPC_URL=https://api.devnet.solana.com`.
+2. Start dependencies (`bun run docker:up`) so Redis/Postgres are reachable.
+3. Fund your devnet wallets (or rely on the built-in airdrop helper) and ensure `SOLANA_NETWORK=devnet`.
+4. Run the suite:  
+   ```bash
+   bun run test:e2e
+   ```
 
-import { describe, it, expect } from "bun:test";
-import { Bot } from "grammy";
+Current coverage:
 
-describe("Telegram Bot E2E", () => {
-  it("should respond to /start command", async () => {
-    // Use Bot API test environment
-    const bot = new Bot(process.env.BOT_TOKEN_TEST!);
+- `tests/e2e/devnet-connection.test.ts` – RPC smoke tests + devnet faucet (ensures airdrop helper works before trades run).
+- `tests/e2e/wallet-session.e2e.test.ts` – Full wallet creation + session lifecycle using the real Postgres/Redis stack.
+- `tests/e2e/trading.e2e.test.ts` – Gated by `RUN_E2E_TRADING_TESTS`; executes a SOL→USDC swap via Jupiter/Jito stack, confirms the signature on devnet, and asserts token balances moved.
 
-    // Send test message
-    const response = await bot.api.sendMessage(
-      process.env.TEST_CHAT_ID!,
-      "/start"
-    );
-
-    expect(response.text).toContain("Token Sniper Bot");
-    expect(response.text).toContain("/wallet");
-  });
-});
-```
+Set `RUN_E2E_TRADING_TESTS=true` in `.env.e2e` once the devnet trading wallets and token fixtures are ready; trading/error-flow specs will automatically un-skip at that point.
 
 ## MONITORING SETUP
 

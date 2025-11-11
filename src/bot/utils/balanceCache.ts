@@ -113,32 +113,38 @@ async function fetchBalanceData(
     { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") }
   );
 
-  const tokens: BalanceTokenEntry[] = [];
-
-  for (const account of tokenAccounts.value) {
+  // Filter out zero balance tokens first
+  const nonZeroAccounts = tokenAccounts.value.filter((account) => {
     const parsedInfo = account.account.data.parsed.info;
-    const mint = parsedInfo.mint;
     const amount = parseFloat(parsedInfo.tokenAmount.uiAmountString || "0");
+    return amount > 0;
+  });
 
-    // Skip zero balance tokens
-    if (amount === 0) continue;
+  // ✅ OPTIMIZATION: Parallel processing of all tokens
+  const tokens: BalanceTokenEntry[] = await Promise.all(
+    nonZeroAccounts.map(async (account) => {
+      const parsedInfo = account.account.data.parsed.info;
+      const mint = parsedInfo.mint;
+      const amount = parseFloat(parsedInfo.tokenAmount.uiAmountString || "0");
 
-    // Get token metadata (symbol/name) - would be cached per mint
-    const label = await getTokenLabel(mint);
+      // Fetch metadata and price in parallel
+      const [label, tokenPriceResult] = await Promise.all([
+        getTokenLabel(mint),
+        jupiter.getTokenPrice(asTokenMint(mint)),
+      ]);
 
-    // Get token price in USD
-    const tokenPriceResult = await jupiter.getTokenPrice(asTokenMint(mint));
-    const tokenPrice = tokenPriceResult.success ? tokenPriceResult.value : null;
-    const usdValue = tokenPrice ? amount * tokenPrice : undefined;
+      const tokenPrice = tokenPriceResult.success ? tokenPriceResult.value : null;
+      const usdValue = tokenPrice ? amount * tokenPrice : undefined;
 
-    tokens.push({
-      mint,
-      label,
-      amount,
-      amountDisplay: formatTokenAmount(amount),
-      usdValue,
-    });
-  }
+      return {
+        mint,
+        label,
+        amount,
+        amountDisplay: formatTokenAmount(amount),
+        usdValue,
+      };
+    })
+  );
 
   // Sort tokens by amount (descending)
   tokens.sort((a, b) => b.amount - a.amount);
