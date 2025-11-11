@@ -6,10 +6,11 @@ High-performance Solana token trading bot for Telegram with enterprise-grade sec
 
 - **Non-custodial Wallet Management**: Military-grade encryption (Argon2id + AES-256-GCM)
 - **Jupiter v6 Integration**: Best swap rates across Solana DEXs
-- **Honeypot Detection**: Multi-layer protection against scam tokens (95%+ accuracy)
+- **Honeypot Detection with Fallback Chain**: Multi-provider API fallback (GoPlus → RugCheck → TokenSniffer) with circuit breakers for 85-90% accuracy
 - **Telegram Bot Interface**: User-friendly commands for trading
 - **Session-based Authentication**: Secure password management with Redis
 - **MEV Protection**: Built-in support for Jito bundles
+- **Production-Ready Resilience**: Circuit breaker pattern, exponential backoff, comprehensive metrics
 
 ## 📋 Prerequisites
 

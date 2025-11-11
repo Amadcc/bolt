@@ -109,6 +109,42 @@ const redisCommandDuration = new client.Histogram({
   registers: [register],
 });
 
+const honeypotApiRequests = new client.Counter({
+  name: "honeypot_api_requests_total",
+  help: "Total honeypot API requests by provider",
+  labelNames: ["provider", "status"],
+  registers: [register],
+});
+
+const honeypotApiDuration = new client.Histogram({
+  name: "honeypot_api_duration_ms",
+  help: "Duration of honeypot API requests",
+  labelNames: ["provider"],
+  buckets: [100, 250, 500, 1000, 2000, 5000, 10000],
+  registers: [register],
+});
+
+const circuitBreakerState = new client.Gauge({
+  name: "circuit_breaker_state",
+  help: "Circuit breaker state (0=CLOSED, 1=HALF_OPEN, 2=OPEN)",
+  labelNames: ["provider"],
+  registers: [register],
+});
+
+const circuitBreakerTransitions = new client.Counter({
+  name: "circuit_breaker_transitions_total",
+  help: "Circuit breaker state transitions",
+  labelNames: ["provider", "from", "to"],
+  registers: [register],
+});
+
+const honeypotFallbackChain = new client.Counter({
+  name: "honeypot_fallback_chain_total",
+  help: "Fallback chain executions",
+  labelNames: ["successful_provider", "attempts"],
+  registers: [register],
+});
+
 // ---------------------------------------------------------------------------
 // Helper Functions
 // ---------------------------------------------------------------------------
@@ -188,6 +224,40 @@ export function setRedisConnectionStatus(connected: boolean): void {
 
 export function trackRedisCommand(command: string, durationMs: number): void {
   redisCommandDuration.labels(command).observe(durationMs);
+}
+
+export function recordHoneypotApiRequest(
+  provider: string,
+  status: "success" | "failure" | "timeout" | "circuit_open",
+  durationMs: number
+): void {
+  honeypotApiRequests.labels(provider, status).inc();
+  if (status === "success" || status === "failure") {
+    honeypotApiDuration.labels(provider).observe(durationMs);
+  }
+}
+
+export function setCircuitBreakerState(
+  provider: string,
+  state: "CLOSED" | "HALF_OPEN" | "OPEN"
+): void {
+  const stateValue = state === "CLOSED" ? 0 : state === "HALF_OPEN" ? 1 : 2;
+  circuitBreakerState.labels(provider).set(stateValue);
+}
+
+export function recordCircuitBreakerTransition(
+  provider: string,
+  from: string,
+  to: string
+): void {
+  circuitBreakerTransitions.labels(provider, from, to).inc();
+}
+
+export function recordHoneypotFallbackChain(
+  successfulProvider: string | "none",
+  attempts: number
+): void {
+  honeypotFallbackChain.labels(successfulProvider, attempts.toString()).inc();
 }
 
 export async function getMetrics(): Promise<string> {

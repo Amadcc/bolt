@@ -163,11 +163,32 @@ const start = async () => {
     // Initialize Honeypot Detector
     logger.info("Initializing Honeypot Detector...");
     initializeHoneypotDetector({
-      goPlusTimeout: 5000,
+      providers: {
+        goplus: {
+          enabled: true,
+          priority: 1,
+          timeout: 5000,
+        },
+        rugcheck: {
+          enabled: true,
+          priority: 2,
+          timeout: 5000,
+        },
+        tokensniffer: {
+          enabled: false, // Disabled by default (requires API key)
+          priority: 3,
+          timeout: 5000,
+        },
+      },
+      fallbackChain: {
+        enabled: true,
+        stopOnFirstSuccess: true,
+        maxProviders: 3,
+      },
       highRiskThreshold: 70,
+      mediumRiskThreshold: 30,
       cacheTTL: 3600, // 1 hour
       cacheEnabled: true,
-      enableGoPlusAPI: true,
       enableOnChainChecks: true,
     });
     logger.info("Honeypot Detector initialized");

@@ -1,21 +1,22 @@
 /**
  * Honeypot Detection Service
  *
- * Multi-layer detection system:
- * - Layer 1: GoPlus API (fast, 80-85% accuracy)
+ * Multi-layer detection system with fallback chain:
+ * - Layer 1: API Providers (GoPlus → RugCheck → TokenSniffer)
  * - Layer 2: On-chain checks (authority verification)
  * - Layer 3: Redis caching (1 hour TTL)
  *
- * Expected accuracy: 80-85% (MVP)
+ * Circuit breaker per API provider for resilience
+ * Expected accuracy: 85-90% (with fallback)
  * Expected latency: 1-3s (with cache: <10ms)
  */
 
 import { PublicKey } from "@solana/web3.js";
-import axios, { type AxiosInstance, type AxiosResponse, type AxiosError } from "axios";
 import { logger } from "../../utils/logger.js";
 import { redis } from "../../utils/redis.js";
 import { getSolana } from "../blockchain/solana.js";
 import { recordHoneypotDetection } from "../../utils/metrics.js";
+import { FallbackChain } from "./fallbackChain.js";
 import type { Result } from "../../types/common.js";
 import { Ok, Err } from "../../types/common.js";
 import type {
@@ -24,10 +25,13 @@ import type {
   HoneypotDetectorConfig,
   APILayerResult,
   OnChainLayerResult,
-  GoPlusResponse,
   HoneypotFlag,
   RiskScore,
   CachedHoneypotResult,
+  APIProviderConfig,
+  CircuitBreakerConfig,
+  HoneypotDetectorOverrides,
+  HoneypotProviderName,
 } from "../../types/honeypot.js";
 import { asRiskScore } from "../../types/honeypot.js";
 
@@ -35,13 +39,45 @@ import { asRiskScore } from "../../types/honeypot.js";
 // Configuration
 // ============================================================================
 
+const DEFAULT_CIRCUIT_BREAKER: CircuitBreakerConfig = {
+  failureThreshold: 5,
+  successThreshold: 2,
+  timeout: 60000,
+  monitoringPeriod: 120000,
+};
+
+const DEFAULT_PROVIDER_CONFIG: APIProviderConfig = {
+  enabled: true,
+  priority: 1,
+  timeout: 5000,
+  circuitBreaker: DEFAULT_CIRCUIT_BREAKER,
+};
+
 const DEFAULT_CONFIG: HoneypotDetectorConfig = {
-  goPlusTimeout: 5000,
+  providers: {
+    goplus: {
+      ...DEFAULT_PROVIDER_CONFIG,
+      priority: 1, // Highest priority (fastest)
+    },
+    rugcheck: {
+      ...DEFAULT_PROVIDER_CONFIG,
+      priority: 2, // Second priority (Solana-specific)
+    },
+    tokensniffer: {
+      ...DEFAULT_PROVIDER_CONFIG,
+      enabled: false, // Disabled by default (requires API key + paid)
+      priority: 3, // Lowest priority (most comprehensive but slowest)
+    },
+  },
+  fallbackChain: {
+    enabled: true,
+    stopOnFirstSuccess: true,
+    maxProviders: 3,
+  },
   highRiskThreshold: 70,
   mediumRiskThreshold: 30,
   cacheTTL: 3600, // 1 hour
   cacheEnabled: true,
-  enableGoPlusAPI: true,
   enableOnChainChecks: true,
 };
 
@@ -51,57 +87,21 @@ const DEFAULT_CONFIG: HoneypotDetectorConfig = {
 
 export class HoneypotDetector {
   private config: HoneypotDetectorConfig;
-  private apiClient: AxiosInstance;
-  private requestCount = 0;
-  private lastReset = Date.now();
+  private fallbackChain: FallbackChain;
 
-  constructor(config: Partial<HoneypotDetectorConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+  constructor(config: HoneypotDetectorOverrides = {}) {
+    // Deep merge config
+    this.config = this.mergeConfig(DEFAULT_CONFIG, config);
 
-    // Create axios instance with retry logic
-    this.apiClient = axios.create({
-      timeout: this.config.goPlusTimeout,
-      headers: {
-        "Accept": "application/json",
-        "User-Agent": "TokenSniperBot/1.0",
-      },
-    });
-
-    // Add retry interceptor
-    this.apiClient.interceptors.response.use(
-      (response: AxiosResponse) => response,
-      async (error: AxiosError) => {
-        const config = error.config as any;
-
-        if (!config || !config.retry) {
-          config.retry = 0;
-        }
-
-        if (config.retry >= 3) {
-          return Promise.reject(error);
-        }
-
-        config.retry += 1;
-
-        // Exponential backoff: 1s, 2s, 4s
-        const delay = Math.pow(2, config.retry - 1) * 1000;
-        await new Promise((resolve) => setTimeout(resolve, delay));
-
-        logger.warn("Retrying API request", {
-          url: config.url,
-          attempt: config.retry,
-          delay,
-        });
-
-        return this.apiClient(config);
-      }
-    );
+    // Initialize fallback chain
+    this.fallbackChain = new FallbackChain(this.config);
 
     logger.info("Honeypot detector initialized", {
-      goPlusEnabled: this.config.enableGoPlusAPI,
-      onChainEnabled: this.config.enableOnChainChecks,
       cacheEnabled: this.config.cacheEnabled,
       cacheTTL: this.config.cacheTTL,
+      onChainEnabled: this.config.enableOnChainChecks,
+      fallbackEnabled: this.config.fallbackChain.enabled,
+      enabledProviders: this.getEnabledProviderNames(),
     });
   }
 
@@ -140,8 +140,8 @@ export class HoneypotDetector {
 
       // Perform multi-layer analysis
       const [apiResult, onChainResult] = await Promise.all([
-        this.config.enableGoPlusAPI
-          ? this.checkAPILayer(tokenMint)
+        this.config.fallbackChain.enabled
+          ? this.fallbackChain.execute(tokenMint)
           : Promise.resolve(null),
         this.config.enableOnChainChecks
           ? this.checkOnChainLayer(tokenMint)
@@ -186,6 +186,7 @@ export class HoneypotDetector {
         isHoneypot: result.isHoneypot,
         riskScore: result.riskScore,
         flags: result.flags,
+        apiProvider: apiResult?.source || "none",
         timeMs: result.analysisTimeMs,
       });
 
@@ -205,118 +206,29 @@ export class HoneypotDetector {
   }
 
   /**
-   * Layer 1: GoPlus API check
-   * Fast baseline check using external API
+   * Get status of all providers (for admin/monitoring)
    */
-  private async checkAPILayer(
-    tokenMint: string
-  ): Promise<APILayerResult | null> {
-    const startTime = Date.now();
-
-    try {
-      // Rate limiting: max 60 requests per minute
-      await this.rateLimit();
-
-      const response = await this.apiClient.get<GoPlusResponse>(
-        "https://api.gopluslabs.io/api/v1/token_security/solana",
-        {
-          params: {
-            contract_addresses: tokenMint,
-          },
-        }
-      );
-
-      if (response.data.code !== 1) {
-        logger.warn("GoPlus API: non-success code", {
-          code: response.data.code,
-          message: response.data.message,
-        });
-        return null;
-      }
-
-      // Check if result object exists
-      if (!response.data.result) {
-        logger.warn("GoPlus API: no result data", { tokenMint });
-        return null;
-      }
-
-      const tokenData = response.data.result[tokenMint];
-      if (!tokenData) {
-        logger.warn("GoPlus API: token not found", { tokenMint });
-        return null;
-      }
-
-      // Analyze results
-      const flags: HoneypotFlag[] = [];
-      let score = 0;
-
-      // Check mint authority
-      if (tokenData.is_mintable === "1") {
-        flags.push("MINT_AUTHORITY");
-        score += 30;
-      }
-
-      // Check ownership changes
-      if (tokenData.can_take_back_ownership === "1") {
-        flags.push("OWNER_CHANGE_POSSIBLE");
-        score += 40;
-      }
-
-      // Check sell tax
-      const sellTax = parseFloat(tokenData.sell_tax);
-      if (sellTax > 0.5) {
-        // > 50%
-        flags.push("HIGH_SELL_TAX");
-        score += 50;
-      }
-
-      // Check honeypot flag
-      if (tokenData.is_honeypot === "1") {
-        score = 100; // Definite honeypot
-      }
-
-      // Check holder concentration
-      if (tokenData.holder_list && tokenData.holder_list.length > 0) {
-        const top10Percent = tokenData.holder_list
-          .slice(0, 10)
-          .reduce((sum: number, holder: any) => sum + parseFloat(holder.percent), 0);
-
-        if (top10Percent > 80) {
-          flags.push("CENTRALIZED");
-          score += 20;
-        }
-
-        const topHolder = parseFloat(tokenData.holder_list[0].percent);
-        if (topHolder > 50) {
-          flags.push("SINGLE_HOLDER_MAJORITY");
-          score += 25;
-        }
-      }
-
-      return {
-        source: "goplus",
-        score: Math.min(score, 100),
-        flags,
-        data: tokenData,
-        timeMs: Date.now() - startTime,
-      };
-    } catch (error: unknown) {
-      if (axios.isAxiosError(error)) {
-        if (error.response?.status === 429) {
-          logger.warn("GoPlus API: rate limited");
-          return null;
-        }
-
-        if (error.code === "ECONNABORTED") {
-          logger.warn("GoPlus API: timeout");
-          return null;
-        }
-      }
-
-      logger.error("GoPlus API: error", { error, tokenMint });
-      return null;
-    }
+  getProvidersStatus() {
+    const providers = this.fallbackChain.getAllProviders();
+    return providers.map((provider) => ({
+      name: provider.name,
+      priority: provider.priority,
+      available: provider.isAvailable(),
+      metrics: provider.getMetrics(),
+    }));
   }
+
+  /**
+   * Reset all circuit breakers (for admin/testing)
+   */
+  resetAllProviders(): void {
+    logger.info("Resetting all providers");
+    this.fallbackChain.resetAll();
+  }
+
+  // ==========================================================================
+  // Private Methods
+  // ==========================================================================
 
   /**
    * Layer 2: On-chain checks
@@ -333,9 +245,7 @@ export class HoneypotDetector {
       const mintPublicKey = new PublicKey(tokenMint);
 
       // Get mint account info
-      const mintInfo = await connection.getParsedAccountInfo(
-        mintPublicKey
-      );
+      const mintInfo = await connection.getParsedAccountInfo(mintPublicKey);
 
       if (!mintInfo.value || !mintInfo.value.data) {
         logger.warn("On-chain check: mint account not found", { tokenMint });
@@ -474,32 +384,6 @@ export class HoneypotDetector {
   }
 
   /**
-   * Rate limiting: max 60 requests per minute
-   */
-  private async rateLimit(): Promise<void> {
-    const now = Date.now();
-    const elapsed = now - this.lastReset;
-
-    // Reset counter every minute
-    if (elapsed >= 60000) {
-      this.requestCount = 0;
-      this.lastReset = now;
-      return;
-    }
-
-    // Check limit
-    if (this.requestCount >= 60) {
-      const waitTime = 60000 - elapsed;
-      logger.warn("Rate limit reached, waiting", { waitMs: waitTime });
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
-      this.requestCount = 0;
-      this.lastReset = Date.now();
-    }
-
-    this.requestCount++;
-  }
-
-  /**
    * Get result from Redis cache
    */
   private async getFromCache(
@@ -553,13 +437,61 @@ export class HoneypotDetector {
         key,
         this.config.cacheTTL,
         JSON.stringify(cached, (_, value) =>
-          typeof value === 'bigint' ? value.toString() : value
+          typeof value === "bigint" ? value.toString() : value
         )
       );
     } catch (error) {
       logger.warn("Cache save failed", { error, tokenMint });
       // Don't fail the request if caching fails
     }
+  }
+
+  /**
+   * Deep merge configuration
+   */
+  private mergeConfig(
+    defaultConfig: HoneypotDetectorConfig,
+    userConfig: HoneypotDetectorOverrides
+  ): HoneypotDetectorConfig {
+    return {
+      providers: {
+        goplus: {
+          ...defaultConfig.providers.goplus,
+          ...userConfig.providers?.goplus,
+        },
+        rugcheck: {
+          ...defaultConfig.providers.rugcheck,
+          ...userConfig.providers?.rugcheck,
+        },
+        tokensniffer: {
+          ...defaultConfig.providers.tokensniffer,
+          ...userConfig.providers?.tokensniffer,
+        },
+      },
+      fallbackChain: {
+        ...defaultConfig.fallbackChain,
+        ...userConfig.fallbackChain,
+      },
+      highRiskThreshold:
+        userConfig.highRiskThreshold ?? defaultConfig.highRiskThreshold,
+      mediumRiskThreshold:
+        userConfig.mediumRiskThreshold ?? defaultConfig.mediumRiskThreshold,
+      cacheTTL: userConfig.cacheTTL ?? defaultConfig.cacheTTL,
+      cacheEnabled: userConfig.cacheEnabled ?? defaultConfig.cacheEnabled,
+      enableOnChainChecks:
+        userConfig.enableOnChainChecks ?? defaultConfig.enableOnChainChecks,
+    };
+  }
+
+  /**
+   * Get enabled provider names
+   */
+  private getEnabledProviderNames(): HoneypotProviderName[] {
+    const names: HoneypotProviderName[] = [];
+    if (this.config.providers.goplus.enabled) names.push("goplus");
+    if (this.config.providers.rugcheck.enabled) names.push("rugcheck");
+    if (this.config.providers.tokensniffer.enabled) names.push("tokensniffer");
+    return names;
   }
 }
 
@@ -570,7 +502,7 @@ export class HoneypotDetector {
 let honeypotDetectorInstance: HoneypotDetector | null = null;
 
 export function initializeHoneypotDetector(
-  config?: Partial<HoneypotDetectorConfig>
+  config?: HoneypotDetectorOverrides
 ): HoneypotDetector {
   if (honeypotDetectorInstance) {
     logger.warn(

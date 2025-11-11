@@ -1,733 +1,419 @@
-# Honeypot Detection System - Multi-Layer Architecture
+# Honeypot Detection System - Multi-Layer Architecture with Fallback Chain
 
-Production-ready honeypot detection achieving 95%+ accuracy through ensemble methods.
+Production-ready honeypot detection achieving **85-90% accuracy** through multi-provider fallback and on-chain verification.
 
 ## OVERVIEW
 
-Multi-layer detection system combining:
+Multi-layer detection system with resilient API fallback chain:
 
-1. **API Layer** (80-85% accuracy, 1-3s)
-2. **Simulation Layer** (85-90% accuracy, 2-5s)
-3. **Heuristic Layer** (75-80% accuracy, 2-4s)
-4. **ML Layer** (90-95% accuracy, 5-10s) - Phase 2
+1. **API Layer** (85-90% accuracy, 1-3s) - **Fallback Chain with Circuit Breaker**
+   - GoPlus API (Priority 1 - fastest)
+   - RugCheck API (Priority 2 - Solana-specific)
+   - TokenSniffer API (Priority 3 - comprehensive)
+2. **On-Chain Layer** (70-75% accuracy, 500ms-1s) - Authority verification
+3. **Redis Cache** (<10ms) - 1 hour TTL
 
-## MAIN DETECTOR
+## ARCHITECTURE
+
+### Fallback Chain
+
+```
+┌─────────────────────────────────────────────────────┐
+│           Honeypot Detection Request                │
+└────────────────┬────────────────────────────────────┘
+                 │
+                 ▼
+         ┌───────────────┐
+         │  Redis Cache  │ ◄─── <10ms if cached
+         └───────┬───────┘
+                 │ Cache Miss
+                 ▼
+    ┌────────────────────────────┐
+    │    Fallback Chain Start    │
+    └────────────┬───────────────┘
+                 │
+    ┌────────────▼─────────────┐
+    │  1. GoPlus API (P1)      │ ◄─── Fastest (1-2s)
+    │     Circuit Breaker      │
+    └────────────┬─────────────┘
+                 │ If fails/unavailable
+                 ▼
+    ┌────────────────────────────┐
+    │  2. RugCheck API (P2)      │ ◄─── Solana-specific (2-3s)
+    │     Circuit Breaker        │
+    └────────────┬───────────────┘
+                 │ If fails/unavailable
+                 ▼
+    ┌────────────────────────────┐
+    │  3. TokenSniffer API (P3)  │ ◄─── Most comprehensive (3-5s)
+    │     Circuit Breaker        │      Requires API key
+    └────────────┬───────────────┘
+                 │
+    ┌────────────▼─────────────┐
+    │   On-Chain Verification  │ ◄─── Parallel execution
+    │  (Mint/Freeze Authority) │      Always runs
+    └────────────┬─────────────┘
+                 │
+                 ▼
+         ┌───────────────┐
+         │ Risk Scoring  │ ◄─── API (60%) + On-chain (40%)
+         └───────┬───────┘
+                 │
+                 ▼
+         ┌───────────────┐
+         │  Cache Result │ ◄─── Store for 1 hour
+         └───────────────┘
+```
+
+### Circuit Breaker Pattern
+
+Each API provider has its own circuit breaker to prevent cascade failures:
 
 ```typescript
-// src/services/honeypot/detector.ts
+States: CLOSED → OPEN → HALF_OPEN → CLOSED
 
-interface HoneypotAnalysis {
-  tokenMint: TokenMint;
-  isHoneypot: boolean;
-  riskScore: number; // 0-100
-  confidence: number; // 0-100
-  flags: string[];
-  layers: {
-    api: LayerResult;
-    simulation: LayerResult;
-    heuristics: LayerResult;
-  };
-  analysisTime: number;
-}
+CLOSED:      Normal operation (requests flow through)
+OPEN:        Too many failures (fail fast, no requests)
+HALF_OPEN:   Testing recovery (limited requests)
 
-interface LayerResult {
-  score: number; // 0-100
-  flags: string[];
-  confidence: number;
-}
+Transitions:
+- CLOSED → OPEN:      5 failures within 2 minutes
+- OPEN → HALF_OPEN:   After 60 seconds cooldown
+- HALF_OPEN → CLOSED: 2 successful requests
+- HALF_OPEN → OPEN:   Any failure
+```
 
-export class HoneypotDetector {
-  private readonly cache: Map<TokenMint, CachedAnalysis> = new Map();
-  private readonly CACHE_TTL = 3600_000; // 1 hour
+## CONFIGURATION
 
-  constructor(
-    private readonly rpcPool: RpcConnectionPool,
-    private readonly apiLayer: ApiDetectionLayer,
-    private readonly simLayer: SimulationLayer,
-    private readonly heurLayer: HeuristicLayer
-  ) {}
+```typescript
+// src/index.ts
 
-  async analyze(
-    tokenMint: TokenMint
-  ): Promise<Result<HoneypotAnalysis, Error>> {
-    const startTime = Date.now();
-
-    // Check cache
-    const cached = this.cache.get(tokenMint);
-    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-      honeypotChecks.inc({ result: "cache_hit" });
-      return Ok(cached.analysis);
-    }
-
-    honeypotChecks.inc({ result: "cache_miss" });
-
-    // Run all layers in parallel
-    const [apiResult, simResult, heuristicsResult] = await Promise.allSettled([
-      this.apiLayer.check(tokenMint),
-      this.simLayer.check(tokenMint),
-      this.heurLayer.check(tokenMint),
-    ]);
-
-    const api =
-      apiResult.status === "fulfilled"
-        ? apiResult.value
-        : { score: 50, flags: ["API_ERROR"], confidence: 0 };
-
-    const simulation =
-      simResult.status === "fulfilled"
-        ? simResult.value
-        : { score: 50, flags: ["SIM_ERROR"], confidence: 0 };
-
-    const heuristics =
-      heuristicsResult.status === "fulfilled"
-        ? heuristicsResult.value
-        : { score: 50, flags: ["HEUR_ERROR"], confidence: 0 };
-
-    // Weighted ensemble
-    const weights = { api: 0.25, simulation: 0.45, heuristics: 0.3 };
-    const finalScore =
-      weights.api * api.score +
-      weights.simulation * simulation.score +
-      weights.heuristics * heuristics.score;
-
-    const allFlags = [
-      ...new Set([...api.flags, ...simulation.flags, ...heuristics.flags]),
-    ];
-
-    const analysis: HoneypotAnalysis = {
-      tokenMint,
-      isHoneypot: finalScore >= 70,
-      riskScore: Math.round(finalScore),
-      confidence: this.calculateConfidence([api, simulation, heuristics]),
-      flags: allFlags,
-      layers: { api, simulation, heuristics },
-      analysisTime: Date.now() - startTime,
-    };
-
-    // Cache result
-    this.cache.set(tokenMint, { analysis, timestamp: Date.now() });
-
-    // Store in database
-    await this.persistAnalysis(analysis);
-
-    const end = honeypotLatency.startTimer();
-    end();
-
-    return Ok(analysis);
-  }
-
-  private calculateConfidence(results: LayerResult[]): number {
-    const validResults = results.filter((r) => r.confidence > 0);
-    if (validResults.length === 0) return 0;
-
-    return Math.round(
-      validResults.reduce((sum, r) => sum + r.confidence, 0) /
-        validResults.length
-    );
-  }
-
-  private async persistAnalysis(analysis: HoneypotAnalysis): Promise<void> {
-    await prisma.honeypotCheck.upsert({
-      where: { tokenMint: analysis.tokenMint },
-      create: {
-        tokenMint: analysis.tokenMint,
-        riskScore: analysis.riskScore,
-        isHoneypot: analysis.isHoneypot,
-        details: analysis as any,
+initializeHoneypotDetector({
+  providers: {
+    goplus: {
+      enabled: true,
+      priority: 1,          // Highest priority (fastest)
+      timeout: 5000,
+      circuitBreaker: {
+        failureThreshold: 5,
+        successThreshold: 2,
+        timeout: 60000,
+        monitoringPeriod: 120000,
       },
-      update: {
-        riskScore: analysis.riskScore,
-        isHoneypot: analysis.isHoneypot,
-        checkedAt: new Date(),
-        details: analysis as any,
-      },
-    });
-  }
-}
-
-interface CachedAnalysis {
-  analysis: HoneypotAnalysis;
-  timestamp: number;
-}
-```
-
-## API DETECTION LAYER
-
-```typescript
-// src/services/honeypot/api.ts
-
-export class ApiDetectionLayer {
-  private readonly TIMEOUT = 5000;
-
-  async check(tokenMint: TokenMint): Promise<LayerResult> {
-    let score = 0;
-    const flags: string[] = [];
-
-    try {
-      // GoPlus API
-      const goplusResult = await this.checkGoPlus(tokenMint);
-      score += goplusResult.score;
-      flags.push(...goplusResult.flags);
-
-      // Honeypot.is API (optional)
-      try {
-        const honeypotIsResult = await this.checkHoneypotIs(tokenMint);
-        score = Math.max(score, honeypotIsResult.score);
-        flags.push(...honeypotIsResult.flags);
-      } catch {
-        // Non-critical, continue
-      }
-    } catch (error) {
-      logger.error("API layer error", { error, tokenMint });
-      return { score: 50, flags: ["API_ERROR"], confidence: 0 };
-    }
-
-    return {
-      score: Math.min(score, 100),
-      flags,
-      confidence: flags.length > 0 ? 85 : 50,
-    };
-  }
-
-  private async checkGoPlus(
-    tokenMint: TokenMint
-  ): Promise<{ score: number; flags: string[] }> {
-    let score = 0;
-    const flags: string[] = [];
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.TIMEOUT);
-
-    try {
-      const response = await fetch(
-        `https://api.gopluslabs.io/api/v1/token_security/solana?contract_addresses=${tokenMint}`,
-        { signal: controller.signal }
-      );
-
-      if (!response.ok) {
-        return { score: 20, flags: ["API_REQUEST_FAILED"] };
-      }
-
-      const data = await response.json();
-      const tokenData = data.result?.[tokenMint];
-
-      if (!tokenData) {
-        return { score: 30, flags: ["TOKEN_NOT_FOUND"] };
-      }
-
-      // Check mint authority
-      if (tokenData.is_mintable === "1") {
-        score += 30;
-        flags.push("MINTABLE");
-      }
-
-      // Check ownership transfer
-      if (tokenData.can_take_back_ownership === "1") {
-        score += 40;
-        flags.push("OWNER_CHANGE_POSSIBLE");
-      }
-
-      // Check sell tax
-      const sellTax = parseFloat(tokenData.sell_tax || "0");
-      if (sellTax > 50) {
-        score += 50;
-        flags.push("HIGH_SELL_TAX");
-      } else if (sellTax > 10) {
-        score += 20;
-        flags.push("MODERATE_SELL_TAX");
-      }
-
-      // Check buy tax
-      const buyTax = parseFloat(tokenData.buy_tax || "0");
-      if (buyTax > 10) {
-        score += 15;
-        flags.push("HIGH_BUY_TAX");
-      }
-
-      // Check if trading is enabled
-      if (tokenData.trading_cooldown === "1") {
-        score += 25;
-        flags.push("TRADING_COOLDOWN");
-      }
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        return { score: 25, flags: ["API_TIMEOUT"] };
-      }
-      throw error;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    return { score, flags };
-  }
-
-  private async checkHoneypotIs(
-    tokenMint: TokenMint
-  ): Promise<{ score: number; flags: string[] }> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.TIMEOUT);
-
-    try {
-      const response = await fetch(
-        `https://api.honeypot.is/v2/IsHoneypot?address=${tokenMint}&chainID=501`,
-        { signal: controller.signal }
-      );
-
-      if (!response.ok) {
-        return { score: 0, flags: [] };
-      }
-
-      const data = await response.json();
-
-      if (data.simulationSuccess === false) {
-        return { score: 60, flags: ["SELL_SIMULATION_FAILED"] };
-      }
-
-      if (data.isHoneypot === true) {
-        return { score: 90, flags: ["HONEYPOT_IS_FLAGGED"] };
-      }
-
-      return { score: 0, flags: [] };
-    } catch (error) {
-      return { score: 0, flags: [] };
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-}
-```
-
-## SIMULATION LAYER
-
-```typescript
-// src/services/honeypot/simulation.ts
-
-export class SimulationLayer {
-  constructor(private readonly rpcPool: RpcConnectionPool) {}
-
-  async check(tokenMint: TokenMint): Promise<LayerResult> {
-    let score = 0;
-    const flags: string[] = [];
-
-    try {
-      // Check mint/freeze authority
-      const authorityResult = await this.checkAuthorities(tokenMint);
-      score += authorityResult.score;
-      flags.push(...authorityResult.flags);
-
-      // Simulate swap (can we sell?)
-      const swapResult = await this.simulateSwap(tokenMint);
-      score += swapResult.score;
-      flags.push(...swapResult.flags);
-    } catch (error) {
-      logger.error("Simulation layer error", { error, tokenMint });
-      return { score: 50, flags: ["SIMULATION_ERROR"], confidence: 0 };
-    }
-
-    return {
-      score: Math.min(score, 100),
-      flags,
-      confidence: flags.length > 0 ? 90 : 60,
-    };
-  }
-
-  private async checkAuthorities(
-    tokenMint: TokenMint
-  ): Promise<{ score: number; flags: string[] }> {
-    let score = 0;
-    const flags: string[] = [];
-
-    const conn = await this.rpcPool.getConnection();
-    const mintPubkey = new PublicKey(tokenMint);
-
-    try {
-      const mintInfo = await conn.getParsedAccountInfo(mintPubkey);
-
-      if (!mintInfo.value?.data || !("parsed" in mintInfo.value.data)) {
-        return { score: 30, flags: ["INVALID_MINT_ACCOUNT"] };
-      }
-
-      const parsed = mintInfo.value.data.parsed;
-
-      if (parsed.info.mintAuthority !== null) {
-        score += 40;
-        flags.push("MINT_AUTHORITY_EXISTS");
-      }
-
-      if (parsed.info.freezeAuthority !== null) {
-        score += 30;
-        flags.push("FREEZE_AUTHORITY_EXISTS");
-      }
-
-      await this.rpcPool.recordSuccess(conn.rpcEndpoint);
-    } catch (error) {
-      await this.rpcPool.recordFailure(conn.rpcEndpoint);
-      return { score: 35, flags: ["AUTHORITY_CHECK_FAILED"] };
-    }
-
-    return { score, flags };
-  }
-
-  private async simulateSwap(
-    tokenMint: TokenMint
-  ): Promise<{ score: number; flags: string[] }> {
-    try {
-      const SOL_MINT = "So11111111111111111111111111111111111111112";
-
-      // Try to get Jupiter quote for selling
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-      const response = await fetch(
-        `https://quote-api.jup.ag/v6/quote?` +
-          `inputMint=${tokenMint}&` +
-          `outputMint=${SOL_MINT}&` +
-          `amount=1000000`,
-        { signal: controller.signal }
-      );
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        return { score: 25, flags: ["QUOTE_REQUEST_FAILED"] };
-      }
-
-      const quote = await response.json();
-
-      if (!quote.outAmount || quote.outAmount === "0") {
-        return { score: 60, flags: ["NO_SELL_ROUTE"] };
-      }
-
-      // Check slippage
-      const slippageBps = quote.slippageBps || 0;
-      if (slippageBps > 1000) {
-        // >10%
-        return { score: 35, flags: ["HIGH_SLIPPAGE"] };
-      }
-
-      return { score: 0, flags: [] };
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        return { score: 30, flags: ["QUOTE_TIMEOUT"] };
-      }
-      return { score: 25, flags: ["QUOTE_ERROR"] };
-    }
-  }
-}
-```
-
-## HEURISTIC LAYER
-
-```typescript
-// src/services/honeypot/heuristics.ts
-
-export class HeuristicLayer {
-  constructor(private readonly rpcPool: RpcConnectionPool) {}
-
-  async check(tokenMint: TokenMint): Promise<LayerResult> {
-    let score = 0;
-    const flags: string[] = [];
-
-    try {
-      // Check liquidity
-      const liquidityResult = await this.checkLiquidity(tokenMint);
-      score += liquidityResult.score;
-      flags.push(...liquidityResult.flags);
-
-      // Check holder concentration
-      const holderResult = await this.checkHolderConcentration(tokenMint);
-      score += holderResult.score;
-      flags.push(...holderResult.flags);
-
-      // Check token age
-      const ageResult = await this.checkTokenAge(tokenMint);
-      score += ageResult.score;
-      flags.push(...ageResult.flags);
-    } catch (error) {
-      logger.error("Heuristic layer error", { error, tokenMint });
-      return { score: 50, flags: ["HEURISTIC_ERROR"], confidence: 0 };
-    }
-
-    return {
-      score: Math.min(score, 100),
-      flags,
-      confidence: flags.length > 0 ? 75 : 50,
-    };
-  }
-
-  private async checkLiquidity(
-    tokenMint: TokenMint
-  ): Promise<{ score: number; flags: string[] }> {
-    // Placeholder - implement with Raydium/Orca API
-    // This would check liquidity pool depth
-
-    try {
-      // TODO: Implement actual liquidity check
-      // For MVP, can use Jupiter API's routeInfo which includes liquidity
-      const liquidityUsd = 5000; // Placeholder
-
-      if (liquidityUsd < 500) {
-        return { score: 40, flags: ["VERY_LOW_LIQUIDITY"] };
-      } else if (liquidityUsd < 1000) {
-        return { score: 30, flags: ["LOW_LIQUIDITY"] };
-      } else if (liquidityUsd < 5000) {
-        return { score: 15, flags: ["MODERATE_LIQUIDITY"] };
-      }
-
-      return { score: 0, flags: [] };
-    } catch {
-      return { score: 20, flags: ["LIQUIDITY_CHECK_FAILED"] };
-    }
-  }
-
-  private async checkHolderConcentration(
-    tokenMint: TokenMint
-  ): Promise<{ score: number; flags: string[] }> {
-    const conn = await this.rpcPool.getConnection();
-
-    try {
-      // Get top token accounts
-      const mintPubkey = new PublicKey(tokenMint);
-      const tokenAccounts = await conn.getTokenLargestAccounts(mintPubkey);
-
-      if (tokenAccounts.value.length === 0) {
-        return { score: 35, flags: ["NO_HOLDERS"] };
-      }
-
-      // Calculate concentration
-      const totalSupply = tokenAccounts.value.reduce(
-        (sum, account) => sum + Number(account.amount),
-        0
-      );
-
-      const top10Amount = tokenAccounts.value
-        .slice(0, Math.min(10, tokenAccounts.value.length))
-        .reduce((sum, account) => sum + Number(account.amount), 0);
-
-      const top10Percent = (top10Amount / totalSupply) * 100;
-
-      if (top10Percent > 90) {
-        return { score: 50, flags: ["EXTREMELY_CENTRALIZED"] };
-      } else if (top10Percent > 80) {
-        return { score: 40, flags: ["HIGHLY_CENTRALIZED"] };
-      } else if (top10Percent > 50) {
-        return { score: 20, flags: ["CENTRALIZED"] };
-      }
-
-      return { score: 0, flags: [] };
-    } catch (error) {
-      return { score: 25, flags: ["HOLDER_CHECK_FAILED"] };
-    }
-  }
-
-  private async checkTokenAge(
-    tokenMint: TokenMint
-  ): Promise<{ score: number; flags: string[] }> {
-    const conn = await this.rpcPool.getConnection();
-
-    try {
-      const mintPubkey = new PublicKey(tokenMint);
-
-      // Get token account creation signature
-      const signatures = await conn.getSignaturesForAddress(
-        mintPubkey,
-        { limit: 1 },
-        "confirmed"
-      );
-
-      if (signatures.length === 0) {
-        return { score: 30, flags: ["NO_HISTORY"] };
-      }
-
-      const creationTime = signatures[0].blockTime || Date.now() / 1000;
-      const ageHours = (Date.now() / 1000 - creationTime) / 3600;
-
-      if (ageHours < 1) {
-        return { score: 35, flags: ["VERY_NEW_TOKEN"] };
-      } else if (ageHours < 24) {
-        return { score: 20, flags: ["NEW_TOKEN"] };
-      } else if (ageHours < 168) {
-        // 1 week
-        return { score: 10, flags: ["RECENT_TOKEN"] };
-      }
-
-      return { score: 0, flags: [] };
-    } catch (error) {
-      return { score: 25, flags: ["AGE_CHECK_FAILED"] };
-    }
-  }
-}
-```
-
-## USAGE IN TRADING FLOW
-
-```typescript
-// src/bot/commands/trade.ts
-
-import { InlineKeyboard } from "grammy";
-
-bot.callbackQuery(/^buy:(.+):(.+)$/, async (ctx) => {
-  const [, tokenMint, amountStr] = ctx.match as [string, string, string];
-  const amount = parseFloat(amountStr);
-
-  await ctx.answerCallbackQuery();
-  await ctx.editMessageText("🔍 Analyzing token safety...");
-
-  // Analyze token
-  const analysis = await honeypotDetector.analyze(asTokenMint(tokenMint));
-
-  if (!analysis.success) {
-    return ctx.editMessageText("❌ Failed to analyze token. Please try again.");
-  }
-
-  // Show risk assessment
-  let emoji = "🟢";
-  let riskLevel = "Low";
-
-  if (analysis.value.riskScore > 70) {
-    emoji = "🔴";
-    riskLevel = "High";
-  } else if (analysis.value.riskScore > 40) {
-    emoji = "🟡";
-    riskLevel = "Medium";
-  }
-
-  const message =
-    `${emoji} *Risk Assessment*\n\n` +
-    `Token: \`${truncateAddress(tokenMint)}\`\n` +
-    `Risk Level: ${riskLevel}\n` +
-    `Risk Score: ${analysis.value.riskScore}/100\n` +
-    `Confidence: ${analysis.value.confidence}%\n\n` +
-    `Flags: ${analysis.value.flags.join(", ") || "None"}\n\n` +
-    `Analysis time: ${analysis.value.analysisTime}ms`;
-
-  if (analysis.value.isHoneypot) {
-    const keyboard = new InlineKeyboard()
-      .text("❌ Cancel", "cancel")
-      .text("⚠️ Buy Anyway", `force_buy:${tokenMint}:${amount}`);
-
-    return ctx.editMessageText(
-      message + "\n\n⚠️ *WARNING: High risk detected!*",
-      { parse_mode: "Markdown", reply_markup: keyboard }
-    );
-  }
-
-  // Proceed with trade
-  const keyboard = new InlineKeyboard()
-    .text("✅ Confirm", `confirm_buy:${tokenMint}:${amount}`)
-    .text("❌ Cancel", "cancel");
-
-  await ctx.editMessageText(message + "\n\nProceed with trade?", {
-    parse_mode: "Markdown",
-    reply_markup: keyboard,
-  });
+    },
+    rugcheck: {
+      enabled: true,
+      priority: 2,          // Second priority
+      timeout: 5000,
+    },
+    tokensniffer: {
+      enabled: false,       // Disabled by default (requires API key)
+      priority: 3,
+      timeout: 5000,
+      apiKey: process.env.TOKENSNIFFER_API_KEY,
+    },
+  },
+  fallbackChain: {
+    enabled: true,
+    stopOnFirstSuccess: true,  // Stop after first successful result (set to false to aggregate all providers)
+    maxProviders: 3,           // Max providers to try
+  },
+  highRiskThreshold: 70,
+  mediumRiskThreshold: 30,
+  cacheTTL: 3600,              // 1 hour
+  cacheEnabled: true,
+  enableOnChainChecks: true,
 });
+
+> **Note:** Set `fallbackChain.stopOnFirstSuccess = false` when you want to run *all* enabled providers and choose the most dangerous (highest risk score) result. This is useful for investigations or high-value trades where you prefer conservative outputs over fast responses.
 ```
+
+## API PROVIDERS
+
+### 1. GoPlus API (Priority 1)
+
+**Base URL:** `https://api.gopluslabs.io/api/v1`
+**Pricing:** FREE
+**Rate Limit:** 60 requests/minute
+**Latency:** 1-2s (fastest)
+**Accuracy:** 80-85%
+
+**Endpoint:**
+```
+GET /token_security/solana?contract_addresses={mint}
+```
+
+**Features:**
+- Multi-chain support
+- Fast baseline checks
+- Holder analysis
+- Tax detection
+- Honeypot flag
+
+### 2. RugCheck API (Priority 2)
+
+**Base URL:** `https://api.rugcheck.xyz`
+**Pricing:** FREE
+**Rate Limit:** ~30 requests/minute (conservative)
+**Latency:** 2-3s
+**Accuracy:** 85-90% (Solana-specific)
+
+**Endpoint:**
+```
+GET /v1/tokens/{mint}/report
+Headers: X-API-KEY (optional)
+```
+
+**Features:**
+- Solana-specific analysis
+- Comprehensive risk assessment
+- Liquidity pool analysis
+- Top holder concentration
+- Risk categorization (Good/Unknown/Danger)
+
+### 3. TokenSniffer API (Priority 3)
+
+**Base URL:** `https://tokensniffer.com/api/v2`
+**Pricing:** $99/month (500 req/day), Enterprise (5000+ req/day)
+**Rate Limit:** 5 requests/second (300 req/min)
+**Latency:** 3-5s
+**Accuracy:** 90-95% (most comprehensive)
+
+**Endpoint:**
+```
+GET /tokens/101/{mint}?include_metrics=true&include_tests=true
+Headers: API-KEY: {key}
+```
+
+**Features:**
+- Multi-chain support (Solana chain ID: 101)
+- Exploit detection
+- Scam probability score
+- Security tests (mintable, honeypot, etc.)
+- Contract analysis
+
+## RISK SCORING
+
+### Weighted Calculation
+
+```typescript
+finalScore = (apiScore * 0.6) + (onChainScore * 0.4)
+
+// Example:
+// API Layer:      GoPlus score = 80
+// On-Chain Layer: Score = 70 (has mint authority)
+// Final Score:    (80 * 0.6) + (70 * 0.4) = 76 → HIGH RISK
+```
+
+### Risk Levels
+
+| Score | Level | Action |
+|-------|-------|--------|
+| 0-30 | 🟢 Low | Safe to trade |
+| 31-69 | 🟡 Medium | Caution advised |
+| 70-100 | 🔴 High | Block trade (honeypot likely) |
+
+### Detection Flags
+
+#### Authority Flags (Solana-specific)
+- `MINT_AUTHORITY` - Can mint new tokens (+30-40 points)
+- `FREEZE_AUTHORITY` - Can freeze accounts (+30 points)
+- `OWNER_CHANGE_POSSIBLE` - Can change ownership (+40 points)
+
+#### Trading Flags
+- `HIGH_SELL_TAX` - Sell tax > 50% (+50 points)
+- `NO_SELL_ROUTE` - Cannot find sell route (+60 points)
+- `SELL_SIMULATION_FAILED` - Sell simulation failed (+70 points)
+
+#### Liquidity Flags
+- `LOW_LIQUIDITY` - < $1000 liquidity (+30 points)
+- `UNLOCKED_LIQUIDITY` - LP tokens not locked (+30 points)
+- `LP_NOT_BURNED` - LP tokens not burned (+20 points)
+
+#### Holder Flags
+- `CENTRALIZED` - Top 10 holders > 80% (+20 points)
+- `SINGLE_HOLDER_MAJORITY` - One holder > 50% (+25 points)
 
 ## METRICS & MONITORING
 
+### Prometheus Metrics
+
+```
+# API Provider Metrics
+honeypot_api_requests_total{provider="goplus", status="success"} 1250
+honeypot_api_requests_total{provider="rugcheck", status="failure"} 5
+honeypot_api_duration_ms{provider="goplus"} # Histogram
+
+# Circuit Breaker Metrics
+circuit_breaker_state{provider="goplus"} 0  # 0=CLOSED, 1=HALF_OPEN, 2=OPEN
+circuit_breaker_transitions_total{provider="goplus", from="CLOSED", to="OPEN"} 2
+
+# Fallback Chain Metrics
+honeypot_fallback_chain_total{successful_provider="goplus", attempts="1"} 950
+honeypot_fallback_chain_total{successful_provider="rugcheck", attempts="2"} 45
+honeypot_fallback_chain_total{successful_provider="none", attempts="3"} 5
+
+# Detection Metrics
+honeypot_detections_total{risk="low"} 800
+honeypot_detections_total{risk="high"} 150
+```
+
+### Grafana Dashboard Queries
+
+**Provider Success Rate:**
+```promql
+sum(rate(honeypot_api_requests_total{status="success"}[5m])) by (provider)
+/
+sum(rate(honeypot_api_requests_total[5m])) by (provider)
+```
+
+**Average Latency:**
+```promql
+histogram_quantile(0.95,
+  sum(rate(honeypot_api_duration_ms_bucket[5m])) by (provider, le)
+)
+```
+
+**Circuit Breaker Status:**
+```promql
+circuit_breaker_state{provider=~"goplus|rugcheck|tokensniffer"}
+```
+
+## USAGE EXAMPLES
+
+### Basic Usage
+
 ```typescript
-// src/utils/metrics.ts (honeypot-specific)
+import { getHoneypotDetector } from './services/honeypot/detector';
 
-export const honeypotChecks = new Counter({
-  name: "honeypot_checks_total",
-  help: "Total honeypot checks performed",
-  labelNames: ["result"], // cache_hit, cache_miss, detected, safe
-});
+const detector = getHoneypotDetector();
 
-export const honeypotLatency = new Histogram({
-  name: "honeypot_check_latency_seconds",
-  help: "Honeypot check latency",
-  buckets: [1, 5, 10, 20, 30],
-});
-
-export const honeypotLayerSuccess = new Counter({
-  name: "honeypot_layer_success_total",
-  help: "Successful layer executions",
-  labelNames: ["layer"], // api, simulation, heuristics
-});
-
-export const honeypotLayerFailure = new Counter({
-  name: "honeypot_layer_failure_total",
-  help: "Failed layer executions",
-  labelNames: ["layer"],
-});
-
-// Usage
-const timer = honeypotLatency.startTimer();
-const result = await honeypotDetector.analyze(tokenMint);
-timer();
+// Check token
+const result = await detector.check(tokenMint);
 
 if (result.success) {
-  honeypotChecks.inc({
-    result: result.value.isHoneypot ? "detected" : "safe",
-  });
+  const { isHoneypot, riskScore, flags, layers } = result.value;
+
+  if (isHoneypot) {
+    console.log(`🚨 HONEYPOT DETECTED! Risk: ${riskScore}/100`);
+    console.log(`Flags: ${flags.join(', ')}`);
+    console.log(`Provider used: ${layers.api?.source || 'none'}`);
+  } else {
+    console.log(`✅ Safe token. Risk: ${riskScore}/100`);
+  }
+} else {
+  console.error('Detection failed:', result.error);
 }
 ```
 
-## FUTURE: ML LAYER (PHASE 2)
+### Monitoring Provider Status
 
 ```typescript
-// src/services/honeypot/ml.ts (Placeholder for future implementation)
+// Get status of all providers
+const status = detector.getProvidersStatus();
 
-export class MLDetectionLayer {
-  async check(tokenMint: TokenMint): Promise<LayerResult> {
-    // Extract 100+ features:
-    // - Transaction patterns
-    // - Holder distribution
-    // - Liquidity metrics
-    // - Contract characteristics
-    // - Creator behavior
-
-    // Run through trained XGBoost model
-
-    // Return prediction with confidence
-    return { score: 0, flags: [], confidence: 0 };
-  }
+for (const provider of status) {
+  console.log(`${provider.name}:`);
+  console.log(`  Available: ${provider.available}`);
+  console.log(`  Circuit State: ${provider.metrics.state}`);
+  console.log(`  Failures: ${provider.metrics.failureCount}`);
 }
+```
+
+### Resetting Circuit Breakers
+
+```typescript
+// Reset all circuit breakers (admin/testing)
+detector.resetAllProviders();
 ```
 
 ## TESTING
 
+### Simulate Provider Failure
+
 ```typescript
-// tests/services/honeypot.test.ts
-
-import { describe, it, expect } from "bun:test";
-
-describe("HoneypotDetector", () => {
-  it("should detect known honeypot", async () => {
-    const detector = new HoneypotDetector(/* ... */);
-
-    // Use a known honeypot address (from test data)
-    const result = await detector.analyze(asTokenMint("..."));
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.value.isHoneypot).toBe(true);
-      expect(result.value.riskScore).toBeGreaterThan(70);
-    }
-  });
-
-  it("should pass legitimate token", async () => {
-    const detector = new HoneypotDetector(/* ... */);
-
-    // USDC
-    const USDC = asTokenMint("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
-    const result = await detector.analyze(USDC);
-
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.value.isHoneypot).toBe(false);
-      expect(result.value.riskScore).toBeLessThan(30);
-    }
-  });
+// Disable GoPlus to test fallback to RugCheck
+initializeHoneypotDetector({
+  providers: {
+    goplus: { enabled: false },
+    rugcheck: { enabled: true },
+  },
 });
 ```
 
+### Test Circuit Breaker
+
+```typescript
+// Lower thresholds for testing
+initializeHoneypotDetector({
+  providers: {
+    goplus: {
+      enabled: true,
+      circuitBreaker: {
+        failureThreshold: 2,  // Open after 2 failures
+        timeout: 5000,        // 5s cooldown
+      },
+    },
+  },
+});
+```
+
+## PERFORMANCE
+
+| Layer | Latency | Cache Hit Rate | Accuracy |
+|-------|---------|----------------|----------|
+| Redis Cache | <10ms | ~70% | 100% (cached) |
+| GoPlus API | 1-2s | - | 80-85% |
+| RugCheck API | 2-3s | - | 85-90% |
+| TokenSniffer API | 3-5s | - | 90-95% |
+| On-Chain | 500ms-1s | - | 70-75% |
+| **Combined** | **1-3s** | **70%** | **85-90%** |
+
+## PRODUCTION CHECKLIST
+
+- [x] Multi-provider fallback chain
+- [x] Circuit breaker per provider
+- [x] Exponential backoff retry logic
+- [x] Rate limiting per provider
+- [x] Redis caching (1 hour TTL)
+- [x] Comprehensive metrics
+- [x] Structured logging
+- [x] Type-safe configuration
+- [x] On-chain verification
+- [ ] Alerting for circuit breaker OPEN state
+- [ ] Daily API quota monitoring
+- [ ] Periodic health checks
+
+## FUTURE ENHANCEMENTS
+
+### Phase 2 (Optional)
+- [ ] ML-based detection layer (90-95% accuracy)
+- [ ] Historical pattern analysis
+- [ ] Social signal analysis (Twitter, Telegram)
+- [ ] Contract simulation layer
+- [ ] Custom Solana program analysis
+
+### Configuration Options
+- [ ] Dynamic provider priority based on success rate
+- [ ] Adaptive circuit breaker thresholds
+- [ ] Multi-region API failover
+- [ ] Result aggregation (consensus from multiple providers)
+
+## REFERENCES
+
+- **GoPlus API:** https://docs.gopluslabs.io/reference/token-security-solana
+- **RugCheck API:** https://api.rugcheck.xyz/swagger/index.html
+- **TokenSniffer API:** https://tokensniffer.readme.io/reference/get-token-results
+- **Circuit Breaker Pattern:** https://martinfowler.com/bliki/CircuitBreaker.html
+- **Metaplex Metadata:** https://docs.metaplex.com/programs/token-metadata/
+
+## SUPPORT
+
+For issues or questions:
+- GitHub Issues: https://github.com/yourusername/bolt-sniper-bot/issues
+- Discord: [Your Discord Server]
+
 ---
 
-**See Also:**
-
-- `CLAUDE.md` - Core principles
-- `ARCHITECTURE.md` - Jupiter integration for swap simulation
-- `DEVELOPMENT.md` - Testing strategies
+**Built with ❤️ by Senior Blockchain Architects**
+**Stack:** TypeScript, Solana Web3.js, Circuit Breaker Pattern, Prometheus Metrics

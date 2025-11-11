@@ -5,7 +5,40 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { asRiskScore } from '../../../src/types/honeypot.js';
-import type { GoPlusResponse } from '../../../src/types/honeypot.js';
+import type {
+  GoPlusResponse,
+  HoneypotDetectorOverrides,
+} from '../../../src/types/honeypot.js';
+
+const createTestConfig = (
+  overrides: HoneypotDetectorOverrides = {}
+): HoneypotDetectorOverrides => {
+  const { fallbackChain, providers, ...rest } = overrides;
+
+  return {
+    cacheEnabled: overrides.cacheEnabled ?? false,
+    enableOnChainChecks: overrides.enableOnChainChecks ?? false,
+    ...rest,
+    fallbackChain: {
+      enabled: false,
+      ...(fallbackChain ?? {}),
+    },
+    providers: {
+      goplus: {
+        enabled: false,
+        ...(providers?.goplus ?? {}),
+      },
+      rugcheck: {
+        enabled: false,
+        ...(providers?.rugcheck ?? {}),
+      },
+      tokensniffer: {
+        enabled: false,
+        ...(providers?.tokensniffer ?? {}),
+      },
+    },
+  };
+};
 
 // ============================================================================
 // Type & Utility Tests
@@ -62,15 +95,16 @@ describe('HoneypotDetector - Basic Functionality', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      highRiskThreshold: 80,
-      mediumRiskThreshold: 40,
-      cacheTTL: 7200,
-      goPlusTimeout: 3000,
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(
+      createTestConfig({
+        highRiskThreshold: 80,
+        mediumRiskThreshold: 40,
+        cacheTTL: 7200,
+        providers: {
+          goplus: { timeout: 3000 },
+        },
+      })
+    );
 
     expect(detector).toBeTruthy();
   });
@@ -80,11 +114,7 @@ describe('HoneypotDetector - Basic Functionality', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('invalid-address');
 
@@ -100,11 +130,7 @@ describe('HoneypotDetector - Basic Functionality', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     // Valid Solana address (Wrapped SOL)
     const result = await detector.check('So11111111111111111111111111111111111111112');
@@ -124,11 +150,7 @@ describe('HoneypotDetector - Basic Functionality', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 
@@ -159,12 +181,11 @@ describe('HoneypotDetector - Basic Functionality', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      highRiskThreshold: 70,
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(
+      createTestConfig({
+        highRiskThreshold: 70,
+      })
+    );
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 
@@ -187,11 +208,7 @@ describe('HoneypotDetector - Risk Score Calculation', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 
@@ -207,11 +224,7 @@ describe('HoneypotDetector - Risk Score Calculation', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 
@@ -227,12 +240,11 @@ describe('HoneypotDetector - Risk Score Calculation', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      highRiskThreshold: 50, // Lower threshold for testing
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(
+      createTestConfig({
+        highRiskThreshold: 50, // Lower threshold for testing
+      })
+    );
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 
@@ -254,11 +266,7 @@ describe('HoneypotDetector - Flags', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 
@@ -273,11 +281,7 @@ describe('HoneypotDetector - Flags', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 
@@ -299,11 +303,7 @@ describe('HoneypotDetector - Performance', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const startTime = Date.now();
     const result = await detector.check('So11111111111111111111111111111111111111112');
@@ -318,11 +318,7 @@ describe('HoneypotDetector - Performance', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 
@@ -344,11 +340,7 @@ describe('HoneypotDetector - Edge Cases', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const longAddress = 'So11111111111111111111111111111111111111112';
     const result = await detector.check(longAddress);
@@ -361,11 +353,7 @@ describe('HoneypotDetector - Edge Cases', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('invalid-@#$%-address');
 
@@ -380,11 +368,7 @@ describe('HoneypotDetector - Edge Cases', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('');
 
@@ -399,11 +383,7 @@ describe('HoneypotDetector - Edge Cases', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('   ');
 
@@ -422,11 +402,7 @@ describe('HoneypotDetector - Singleton Pattern', () => {
   it('should create and return singleton instance', async () => {
     const detector = await import('../../../src/services/honeypot/detector.js');
 
-    const instance1 = detector.initializeHoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const instance1 = detector.initializeHoneypotDetector(createTestConfig());
     const instance2 = detector.getHoneypotDetector();
 
     expect(instance1).toBe(instance2);
@@ -455,12 +431,11 @@ describe('HoneypotDetector - Configuration', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      highRiskThreshold: 80,
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(
+      createTestConfig({
+        highRiskThreshold: 80,
+      })
+    );
 
     expect(detector).toBeTruthy();
   });
@@ -470,12 +445,11 @@ describe('HoneypotDetector - Configuration', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      mediumRiskThreshold: 40,
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(
+      createTestConfig({
+        mediumRiskThreshold: 40,
+      })
+    );
 
     expect(detector).toBeTruthy();
   });
@@ -485,12 +459,11 @@ describe('HoneypotDetector - Configuration', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheTTL: 7200,
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(
+      createTestConfig({
+        cacheTTL: 7200,
+      })
+    );
 
     expect(detector).toBeTruthy();
   });
@@ -500,12 +473,13 @@ describe('HoneypotDetector - Configuration', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      goPlusTimeout: 3000,
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(
+      createTestConfig({
+        providers: {
+          goplus: { timeout: 3000 },
+        },
+      })
+    );
 
     expect(detector).toBeTruthy();
   });
@@ -515,11 +489,7 @@ describe('HoneypotDetector - Configuration', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig({ cacheEnabled: false }));
 
     expect(detector).toBeTruthy();
   });
@@ -529,11 +499,16 @@ describe('HoneypotDetector - Configuration', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      enableGoPlusAPI: false,
-      cacheEnabled: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(
+      createTestConfig({
+        fallbackChain: { enabled: false },
+        providers: {
+          goplus: { enabled: false },
+          rugcheck: { enabled: false },
+          tokensniffer: { enabled: false },
+        },
+      })
+    );
 
     expect(detector).toBeTruthy();
   });
@@ -543,11 +518,11 @@ describe('HoneypotDetector - Configuration', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      enableOnChainChecks: false,
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-    });
+    const detector = new HoneypotDetector(
+      createTestConfig({
+        enableOnChainChecks: false,
+      })
+    );
 
     expect(detector).toBeTruthy();
   });
@@ -563,11 +538,7 @@ describe('HoneypotDetector - Data Consistency', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const token = 'So11111111111111111111111111111111111111112';
 
@@ -589,11 +560,7 @@ describe('HoneypotDetector - Data Consistency', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const tokens = [
       'So11111111111111111111111111111111111111112',
@@ -620,11 +587,7 @@ describe('HoneypotDetector - Result Format', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 
@@ -639,11 +602,7 @@ describe('HoneypotDetector - Result Format', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('invalid');
 
@@ -658,11 +617,7 @@ describe('HoneypotDetector - Result Format', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('invalid');
 
@@ -678,11 +633,7 @@ describe('HoneypotDetector - Result Format', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 
@@ -698,11 +649,7 @@ describe('HoneypotDetector - Result Format', () => {
       '../../../src/services/honeypot/detector.js'
     );
 
-    const detector = new HoneypotDetector({
-      cacheEnabled: false,
-      enableGoPlusAPI: false,
-      enableOnChainChecks: false,
-    });
+    const detector = new HoneypotDetector(createTestConfig());
 
     const result = await detector.check('So11111111111111111111111111111111111111112');
 

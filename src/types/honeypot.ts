@@ -76,8 +76,10 @@ export interface HoneypotCheckResult {
   };
 }
 
+export type HoneypotProviderName = "goplus" | "rugcheck" | "tokensniffer";
+
 export interface APILayerResult {
-  source: "goplus" | "honeypot.is" | "rugcheck";
+  source: HoneypotProviderName;
   score: number;
   flags: HoneypotFlag[];
   data: Record<string, unknown>;
@@ -138,40 +140,88 @@ export interface GoPlusResponse {
 }
 
 /**
- * Honeypot.is API response
- * https://honeypot.is/docs
+ * RugCheck API response
+ * https://api.rugcheck.xyz/swagger/index.html
  */
-export interface HoneypotIsResponse {
+export interface RugCheckResponse {
+  mint: string;
+  tokenType: string;
   token: {
     name: string;
     symbol: string;
     decimals: number;
-    address: string;
-    totalHolders: number;
   };
+  tokenMeta?: {
+    name?: string;
+    symbol?: string;
+    uri?: string;
+  };
+  risks: Array<{
+    name: string;
+    value: string;
+    description: string;
+    score: number;
+    level: "info" | "warn" | "danger";
+  }>;
+  score: number;                // 0-100, lower is safer
+  rugged: boolean;
+  result: "Good" | "Unknown" | "Danger";
 
-  withToken: {
+  // Optional fields
+  creator?: string;
+  mintAuthority?: string | null;
+  freezeAuthority?: string | null;
+  totalMarketLiquidity?: number;
+  markets?: unknown[];
+  topHolders?: Array<{
+    address: string;
+    pct: number;
+  }>;
+}
+
+/**
+ * TokenSniffer API response
+ * https://tokensniffer.readme.io/reference/get-token-results
+ */
+export interface TokenSnifferResponse {
+  message: string;
+
+  token?: {
     address: string;
     name: string;
     symbol: string;
     decimals: number;
+    chain_id: number;
+    total_supply?: string;
   };
 
-  summary: {
-    risk: string;               // "low", "medium", "high"
-    riskLevel: number;          // 0-100
+  tests?: {
+    // Risk indicators
+    is_honeypot?: { value: boolean };
+    is_mintable?: { value: boolean };
+    can_be_minted?: { value: boolean };
+    owner_can_change_balance?: { value: boolean };
+    hidden_owner?: { value: boolean };
+    selfdestruct?: { value: boolean };
+    external_call?: { value: boolean };
+
+    // Trading tests
+    buy_tax?: { value: number };
+    sell_tax?: { value: number };
+    transfer_tax?: { value: number };
+
+    // Liquidity tests
+    liquidity_amount?: { value: number };
+    pair_liquidity?: { value: number };
   };
 
-  simulationSuccess: boolean;
-  simulationResult?: {
-    buyTax: number;
-    sellTax: number;
-    transferTax: number;
-  };
+  exploits?: Array<{
+    description: string;
+    severity: "low" | "medium" | "high" | "critical";
+  }>;
 
-  honeypotResult: {
-    isHoneypot: boolean;
-  };
+  score?: number;                // 0-100, higher is safer
+  scam_probability?: number;     // 0-1 probability
 }
 
 // ============================================================================
@@ -183,16 +233,96 @@ export type HoneypotError =
   | { type: "RATE_LIMITED"; retryAfter: number }
   | { type: "INVALID_TOKEN"; tokenMint: string }
   | { type: "CACHE_ERROR"; message: string }
+  | { type: "CIRCUIT_BREAKER_OPEN"; provider: string; retryAfter: number }
+  | { type: "ALL_PROVIDERS_FAILED"; attempts: number }
   | { type: "UNKNOWN"; message: string };
+
+// ============================================================================
+// Circuit Breaker Pattern
+// ============================================================================
+
+/**
+ * Circuit breaker states for API provider resilience
+ *
+ * CLOSED: Normal operation, requests flow through
+ * OPEN: Too many failures, requests blocked (fail fast)
+ * HALF_OPEN: Testing if service recovered, limited requests
+ */
+export type CircuitBreakerState = "CLOSED" | "OPEN" | "HALF_OPEN";
+
+export interface CircuitBreakerConfig {
+  failureThreshold: number;      // Failures before opening circuit (default: 5)
+  successThreshold: number;      // Successes to close from half-open (default: 2)
+  timeout: number;               // Time to wait before half-open (ms, default: 60000)
+  monitoringPeriod: number;      // Time window for failure tracking (ms, default: 120000)
+}
+
+export interface CircuitBreakerMetrics {
+  state: CircuitBreakerState;
+  failureCount: number;
+  successCount: number;
+  lastFailureTime: number | null;
+  lastSuccessTime: number | null;
+  nextAttemptTime: number | null;
+}
+
+// ============================================================================
+// API Provider Interface
+// ============================================================================
+
+/**
+ * Unified interface for all honeypot detection API providers
+ * Ensures consistent behavior across GoPlus, RugCheck, TokenSniffer
+ */
+export interface APIProvider {
+  readonly name: HoneypotProviderName;
+  readonly priority: number;     // Lower number = higher priority
+
+  /**
+   * Check if provider is currently available
+   * Returns false if circuit breaker is OPEN
+   */
+  isAvailable(): boolean;
+
+  /**
+   * Perform honeypot check for given token
+   * Returns null if provider fails (logs internally)
+   */
+  check(tokenMint: string): Promise<APILayerResult | null>;
+
+  /**
+   * Get current circuit breaker metrics
+   */
+  getMetrics(): CircuitBreakerMetrics;
+
+  /**
+   * Reset circuit breaker (for testing/admin)
+   */
+  reset(): void;
+}
+
+export interface APIProviderConfig {
+  enabled: boolean;
+  priority: number;
+  timeout: number;
+  apiKey?: string;
+  circuitBreaker?: CircuitBreakerConfig;
+}
 
 // ============================================================================
 // Service Configuration
 // ============================================================================
 
 export interface HoneypotDetectorConfig {
-  // API settings
-  goPlusApiKey?: string;
-  goPlusTimeout: number;        // Default: 5000ms
+  // API Provider settings
+  providers: Record<HoneypotProviderName, APIProviderConfig>;
+
+  // Fallback chain settings
+  fallbackChain: {
+    enabled: boolean;            // Default: true
+    stopOnFirstSuccess: boolean; // Default: true, stop after first successful result
+    maxProviders: number;        // Default: 3, max providers to try
+  };
 
   // Risk thresholds
   highRiskThreshold: number;    // Default: 70
@@ -203,9 +333,16 @@ export interface HoneypotDetectorConfig {
   cacheEnabled: boolean;
 
   // Feature flags
-  enableGoPlusAPI: boolean;     // Default: true
   enableOnChainChecks: boolean; // Default: true
 }
+
+export type HoneypotDetectorOverrides =
+  Partial<Omit<HoneypotDetectorConfig, "providers" | "fallbackChain">> & {
+    providers?: Partial<
+      Record<HoneypotProviderName, Partial<APIProviderConfig>>
+    >;
+    fallbackChain?: Partial<HoneypotDetectorConfig["fallbackChain"]>;
+  };
 
 // ============================================================================
 // Cache Types
