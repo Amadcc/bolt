@@ -25,6 +25,10 @@ import {
   recordTradeRequested,
   recordTradeSuccess,
 } from "../../utils/metrics.js";
+import {
+  registerInterval,
+  clearRegisteredInterval,
+} from "../../utils/intervals.js";
 
 // ============================================================================
 // Trading Executor Configuration
@@ -65,7 +69,7 @@ const DECIMALS_CACHE_CLEANUP_INTERVAL = 300000; // Cleanup every 5 minutes
 export class TradingExecutor {
   private config: TradingExecutorConfig;
   private decimalsCache: Map<string, DecimalsCacheEntry> = new Map();
-  private cacheCleanupTimer: Timer | null = null;
+  private cacheCleanupTimer: NodeJS.Timeout | null = null;
 
   constructor(config: Partial<TradingExecutorConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -88,9 +92,13 @@ export class TradingExecutor {
    * Start periodic cleanup of expired cache entries
    */
   private startCacheCleanup(): void {
-    this.cacheCleanupTimer = setInterval(() => {
-      this.cleanupExpiredEntries();
-    }, DECIMALS_CACHE_CLEANUP_INTERVAL);
+    this.cacheCleanupTimer = registerInterval(
+      () => {
+        this.cleanupExpiredEntries();
+      },
+      DECIMALS_CACHE_CLEANUP_INTERVAL,
+      "trading-executor-cache"
+    );
 
     // Ensure cleanup runs even if process is idle
     if (this.cacheCleanupTimer.unref) {
@@ -107,7 +115,7 @@ export class TradingExecutor {
    */
   public stopCacheCleanup(): void {
     if (this.cacheCleanupTimer) {
-      clearInterval(this.cacheCleanupTimer);
+      clearRegisteredInterval(this.cacheCleanupTimer);
       this.cacheCleanupTimer = null;
       logger.debug("Decimals cache cleanup timer stopped");
     }
@@ -244,7 +252,8 @@ export class TradingExecutor {
         if (!passwordResult.success) {
           logger.error("Failed to load password from Redis", {
             userId,
-            sessionToken: sessionToken.slice(0, 8) + "...",
+            sessionToken: "[REDACTED]",
+            sessionTokenPresent: true,
           });
           recordFailure("session_password_lookup", "session_password_error");
           return Err({
@@ -256,7 +265,8 @@ export class TradingExecutor {
         if (!passwordResult.value) {
           logger.warn("Session password expired before trade", {
             userId,
-            sessionToken: sessionToken.slice(0, 8) + "...",
+            sessionToken: "[REDACTED]",
+            sessionTokenPresent: true,
           });
           recordFailure("session_expired", "session_password_expired");
 
@@ -272,7 +282,11 @@ export class TradingExecutor {
       // ✅ Step 1: Get keypair - prefer Redis session, fallback to unlockWallet
       if (sessionToken && effectivePassword) {
         // Use Redis session + getKeypairForSigning
-        logger.info("Using Redis session for trade", { userId, sessionToken: sessionToken.substring(0, 10) + "..." });
+        logger.info("Using Redis session for trade", {
+          userId,
+          sessionToken: "[REDACTED]",
+          sessionTokenPresent: true,
+        });
 
         const keypairResult = await getKeypairForSigning(sessionToken, effectivePassword);
 

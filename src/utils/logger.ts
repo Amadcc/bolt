@@ -86,50 +86,35 @@ export const logger = {
     }
   },
   child: (bindings: Record<string, unknown>) => {
-    const childPino = pinoLogger.child(bindings);
+    const sanitizedBindings = sanitizeForLogging(
+      bindings
+    ) as Record<string, unknown>;
+    const childPino = pinoLogger.child(sanitizedBindings);
+
+    const safeLog =
+      (level: keyof typeof childPino) =>
+      (message: string, context?: object) => {
+        const sanitizedContext = context
+          ? (sanitizeForLogging(context) as Record<string, unknown>)
+          : undefined;
+
+        if (sanitizedContext) {
+          (childPino[level] as (obj: object, msg: string) => void)(
+            sanitizedContext,
+            message
+          );
+        } else {
+          (childPino[level] as (msg: string) => void)(message);
+        }
+      };
+
     return {
-      info: (message: string, context?: object) => {
-        if (context) {
-          childPino.info(context, message);
-        } else {
-          childPino.info(message);
-        }
-      },
-      error: (message: string, context?: object) => {
-        if (context) {
-          childPino.error(context, message);
-        } else {
-          childPino.error(message);
-        }
-      },
-      warn: (message: string, context?: object) => {
-        if (context) {
-          childPino.warn(context, message);
-        } else {
-          childPino.warn(message);
-        }
-      },
-      debug: (message: string, context?: object) => {
-        if (context) {
-          childPino.debug(context, message);
-        } else {
-          childPino.debug(message);
-        }
-      },
-      fatal: (message: string, context?: object) => {
-        if (context) {
-          childPino.fatal(context, message);
-        } else {
-          childPino.fatal(message);
-        }
-      },
-      trace: (message: string, context?: object) => {
-        if (context) {
-          childPino.trace(context, message);
-        } else {
-          childPino.trace(message);
-        }
-      },
+      info: safeLog("info"),
+      error: safeLog("error"),
+      warn: safeLog("warn"),
+      debug: safeLog("debug"),
+      fatal: safeLog("fatal"),
+      trace: safeLog("trace"),
     };
   },
 };
@@ -176,7 +161,7 @@ export function sanitizeForLogging(obj: unknown): unknown {
  * Create a child logger with context
  */
 export function createChildLogger(context: Record<string, unknown>) {
-  return logger.child(sanitizeForLogging(context) as Record<string, unknown>);
+  return logger.child(context);
 }
 
 export default logger;

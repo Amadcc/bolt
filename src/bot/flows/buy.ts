@@ -7,11 +7,11 @@ import type { Context } from "../views/index.js";
 import { logger } from "../../utils/logger.js";
 import { prisma } from "../../utils/db.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
-import { getHoneypotDetector } from "../../services/honeypot/detector.js";
 import { asTokenMint } from "../../types/common.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals } from "../../config/tokens.js";
 import type { TradingError } from "../../types/trading.js";
 import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
+import { performHoneypotAnalysis } from "../utils/honeypot.js";
 
 /**
  * Execute buy flow with honeypot check and real Jupiter execution
@@ -126,33 +126,47 @@ export async function executeBuyFlow(
       status: "Analyzing token safety...",
     });
 
-    // Honeypot check
-    const detector = getHoneypotDetector();
-    const honeypotCheck = await detector.check(tokenMint);
+    let honeypotAnalysis;
+    try {
+      honeypotAnalysis = await performHoneypotAnalysis(tokenMint);
+    } catch (error) {
+      logger.error("Honeypot check unavailable, blocking trade", {
+        token,
+        error,
+      });
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `⚠️ *Safety Check Unavailable*\n\n` +
+          `Could not verify ${token}. Trade cancelled. Please try again later.`,
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:buy" }]],
+          },
+        }
+      );
+      return;
+    }
 
-    if (honeypotCheck.success) {
-      const analysis = honeypotCheck.value;
-
-      // Block high-risk trades
-      if (analysis.riskScore >= 70) {
-        await ctx.api.editMessageText(
-          ctx.chat.id,
-          msgId,
-          `🔴 *High Risk Token Detected*\n\n` +
+    if (honeypotAnalysis.riskScore >= 70) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        msgId,
+        `🔴 *High Risk Token Detected*\n\n` +
           `Token: ${token}\n` +
-          `Risk Score: ${analysis.riskScore}/100\n\n` +
-          `⚠️ Flags: ${analysis.flags.join(", ")}\n\n` +
+          `Risk Score: ${honeypotAnalysis.riskScore}/100\n\n` +
+          `⚠️ Flags: ${honeypotAnalysis.flags.join(", ")}\n\n` +
           `❌ *TRADE CANCELLED*\n\n` +
           `This token appears to be a honeypot. Trading is blocked for your safety.`,
-          {
-            parse_mode: "Markdown",
-            reply_markup: {
-              inline_keyboard: [[{ text: "« Back", callback_data: "nav:buy" }]]
-            }
-          }
-        );
-        return;
-      }
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:buy" }]],
+          },
+        }
+      );
+      return;
     }
 
     // ✅ Auto-approve check: Show confirmation if disabled

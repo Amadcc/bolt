@@ -8,6 +8,12 @@ import type { Context as GrammyContext, SessionFlavor } from "grammy";
 import { prisma } from "../../utils/db.js";
 import { logger } from "../../utils/logger.js";
 import { hasActivePassword } from "../utils/passwordState.js";
+import {
+  buildConversationKey,
+  CONVERSATION_TOPICS,
+  DEFAULT_CONVERSATION_TTL_MS,
+  scheduleConversationTimeout,
+} from "../utils/conversationTimeouts.js";
 
 // ============================================================================
 // Types
@@ -46,7 +52,38 @@ export interface UIState {
   };
 }
 
-interface SessionData {
+export interface TokenMetadataCacheEntry {
+  symbol?: string;
+  name?: string;
+  label?: string;
+  expiresAt: number;
+}
+
+export interface TokenMetadataCacheState {
+  entries: Record<string, TokenMetadataCacheEntry>;
+}
+
+export interface BalanceTokenEntry {
+  mint: string;
+  label: string;
+  amount: number;
+  amountDisplay: string;
+  usdValue?: number;
+}
+
+export interface BalanceViewState {
+  snapshot: string;
+  walletPublicKey: string;
+  solAmount: number;
+  solUsdValue?: number;
+  tokens: BalanceTokenEntry[];
+  totalTokens: number;
+  pageSize: number;
+  currentPage: number;
+  lastUpdated: number;
+}
+
+export interface SessionData {
   walletId?: string;
   encryptedKey?: string;
   settings?: {
@@ -69,6 +106,14 @@ interface SessionData {
     type: "token" | "amount" | "password";
     page: Page;
   };
+  swapConversationStep?: "inputMint" | "outputMint" | "amount" | "password";
+  swapConversationData?: {
+    inputMint?: string;
+    outputMint?: string;
+    amount?: string;
+  };
+  tokenMetadataCache?: TokenMetadataCacheState;
+  balanceView?: BalanceViewState;
 }
 
 export type Context = GrammyContext & SessionFlavor<SessionData>;
@@ -108,6 +153,64 @@ export async function renderWelcomePage(ctx: Context): Promise<{
   }
 
   return { text, keyboard };
+}
+
+function scheduleWalletPasswordTimeout(ctx: Context): void {
+  const telegramId = ctx.from?.id;
+  const chatId = ctx.chat?.id ?? ctx.callbackQuery?.message?.chat?.id;
+
+  if (!telegramId || !chatId) {
+    return;
+  }
+
+  const key = buildConversationKey(
+    telegramId,
+    CONVERSATION_TOPICS.walletPassword
+  );
+  const sessionRef = ctx.session;
+  const api = ctx.api;
+
+  scheduleConversationTimeout(key, DEFAULT_CONVERSATION_TTL_MS, async () => {
+    if (!sessionRef.awaitingPasswordForWallet) {
+      return;
+    }
+
+    sessionRef.awaitingPasswordForWallet = false;
+    await api.sendMessage(
+      chatId,
+      "⏰ Wallet creation timed out. Please tap *Create Wallet* again.",
+      { parse_mode: "Markdown" }
+    );
+  });
+}
+
+function scheduleUnlockPasswordTimeout(ctx: Context): void {
+  const telegramId = ctx.from?.id;
+  const chatId = ctx.chat?.id ?? ctx.callbackQuery?.message?.chat?.id;
+
+  if (!telegramId || !chatId) {
+    return;
+  }
+
+  const key = buildConversationKey(
+    telegramId,
+    CONVERSATION_TOPICS.unlockPassword
+  );
+  const sessionRef = ctx.session;
+  const api = ctx.api;
+
+  scheduleConversationTimeout(key, DEFAULT_CONVERSATION_TTL_MS, async () => {
+    if (!sessionRef.awaitingPasswordForUnlock) {
+      return;
+    }
+
+    sessionRef.awaitingPasswordForUnlock = false;
+    await api.sendMessage(
+      chatId,
+      "⏰ Unlock timed out. Please tap *Unlock Wallet* again.",
+      { parse_mode: "Markdown" }
+    );
+  });
 }
 
 /**
@@ -389,7 +492,10 @@ export function renderSwapPage(data?: {
 /**
  * Balance page
  */
-export async function renderBalancePage(ctx: Context): Promise<{
+export async function renderBalancePage(
+  ctx: Context,
+  page = 0
+): Promise<{
   text: string;
   keyboard: InlineKeyboard;
 }> {
@@ -402,16 +508,104 @@ export async function renderBalancePage(ctx: Context): Promise<{
     return renderWelcomePage(ctx);
   }
 
-  const text =
-    `*Balance*\n\n` +
-    `Loading...`;
+  const wallet = user.wallets[0];
 
-  const keyboard = new InlineKeyboard()
-    .text("🔄 Refresh", "action:refresh_balance")
-    .row()
-    .text("« Back to Dashboard", "nav:main");
+  try {
+    // Get balance with caching (60s TTL)
+    const { getBalanceWithCache, getPaginatedTokens } = await import(
+      "../utils/balanceCache.js"
+    );
 
-  return { text, keyboard };
+    const balance = await getBalanceWithCache(ctx, wallet.publicKey, false);
+
+    // Update current page in balance state
+    balance.currentPage = page;
+
+    // Get paginated tokens
+    const { tokens, hasNext, hasPrev, pageInfo } = getPaginatedTokens(
+      balance,
+      page
+    );
+
+    // Format timestamp
+    const cacheAge = Math.floor((Date.now() - balance.lastUpdated) / 1000);
+    const ageDisplay =
+      cacheAge < 10
+        ? "just now"
+        : cacheAge < 60
+          ? `${cacheAge}s ago`
+          : `${Math.floor(cacheAge / 60)}m ago`;
+
+    // Build text
+    let text = `*Balance* 💰\n\n`;
+    text += `\`${wallet.publicKey.slice(0, 4)}...${wallet.publicKey.slice(-4)}\`\n\n`;
+    text += `━━━\n\n`;
+    text += `**SOL:** ${balance.solAmount.toFixed(4)} SOL\n`;
+
+    if (balance.solUsdValue) {
+      text += `≈ $${balance.solUsdValue.toFixed(2)}\n`;
+    }
+
+    text += `\n━━━\n\n`;
+
+    if (tokens.length > 0) {
+      text += `**Tokens:**\n\n`;
+
+      for (const token of tokens) {
+        // Token name/symbol
+        text += `**${token.label}**\n`;
+        // Token address
+        text += `\`${token.mint.slice(0, 4)}...${token.mint.slice(-4)}\`\n`;
+        // Amount and USD value
+        text += `  ${token.amountDisplay}`;
+        if (token.usdValue) {
+          text += ` ≈ $${token.usdValue.toFixed(2)}`;
+        }
+        text += `\n\n`;
+      }
+
+      text += `${pageInfo}`;
+    } else {
+      text += `No tokens found`;
+    }
+
+    text += `\n\n_Updated ${ageDisplay}_`;
+
+    // Build keyboard with pagination
+    const keyboard = new InlineKeyboard();
+
+    // Pagination buttons (only if multiple pages)
+    if (hasNext || hasPrev) {
+      if (hasPrev) {
+        keyboard.text("◀️ Prev", `balance:page:${page - 1}`);
+      }
+      if (hasNext) {
+        keyboard.text("Next ▶️", `balance:page:${page + 1}`);
+      }
+      keyboard.row();
+    }
+
+    keyboard
+      .text("🔄 Refresh", "action:refresh_balance")
+      .row()
+      .text("« Back to Dashboard", "nav:main");
+
+    return { text, keyboard };
+  } catch (error) {
+    logger.error("Failed to render balance page", { error });
+
+    const text =
+      `*Balance*\n\n` +
+      `❌ Failed to load balance\n\n` +
+      `Error: ${error instanceof Error ? error.message : String(error)}`;
+
+    const keyboard = new InlineKeyboard()
+      .text("🔄 Retry", "action:refresh_balance")
+      .row()
+      .text("« Back to Dashboard", "nav:main");
+
+    return { text, keyboard };
+  }
 }
 
 /**
@@ -629,6 +823,7 @@ export async function navigateToPage(
         result = renderCreateWalletPage();
         // Set state to await password input
         ctx.session.awaitingPasswordForWallet = true;
+        scheduleWalletPasswordTimeout(ctx);
         break;
       case "main":
         result = await renderMainPage(ctx);
@@ -655,6 +850,7 @@ export async function navigateToPage(
         result = await renderUnlockPage(ctx);
         // Set state to await password input
         ctx.session.awaitingPasswordForUnlock = true;
+        scheduleUnlockPasswordTimeout(ctx);
         break;
       case "status":
         result = await renderStatusPage(ctx);
@@ -720,13 +916,6 @@ export async function navigateToPage(
     }
 
     logger.debug("Navigated to page", { page, userId: ctx.from?.id });
-
-    // Trigger balance fetch after navigation if on balance page
-    if (page === "balance") {
-      // Dynamically import to avoid circular dependency
-      const { fetchAndDisplayBalance } = await import("../handlers/callbacks.js");
-      await fetchAndDisplayBalance(ctx);
-    }
   } catch (error) {
     logger.error("Error navigating to page", { page, error });
     await ctx.reply("❌ An error occurred. Please try /start again.");

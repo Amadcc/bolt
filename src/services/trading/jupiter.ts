@@ -6,7 +6,7 @@
 import { VersionedTransaction, Connection, Keypair } from "@solana/web3.js";
 import type { QuoteGetRequest } from "@jup-ag/api";
 import { logger } from "../../utils/logger.js";
-import { retry } from "../../types/common.js";
+import { retry } from "../../utils/helpers.js";
 import type { Result } from "../../types/common.js";
 import { Ok, Err } from "../../types/common.js";
 import type {
@@ -23,6 +23,7 @@ import { DEFAULT_JUPITER_CONFIG } from "../../types/jupiter.js";
 import { asTransactionSignature, type TokenMint } from "../../types/common.js";
 // AUDIT FIX: Import Jito service for MEV protection
 import { getJitoService } from "./jito.js";
+import { registerInterval } from "../../utils/intervals.js";
 
 // ============================================================================
 // Quote Cache (in-memory, 2s TTL)
@@ -97,21 +98,28 @@ export class JupiterService {
    * Clean up expired cache entries
    */
   private startCacheCleanup(): void {
-    setInterval(() => {
-      const now = Date.now();
-      let cleaned = 0;
+    registerInterval(
+      () => {
+        const now = Date.now();
+        let cleaned = 0;
 
-      for (const [key, cached] of this.quoteCache.entries()) {
-        if (now - cached.timestamp > this.QUOTE_CACHE_TTL) {
-          this.quoteCache.delete(key);
-          cleaned++;
+        for (const [key, cached] of this.quoteCache.entries()) {
+          if (now - cached.timestamp > this.QUOTE_CACHE_TTL) {
+            this.quoteCache.delete(key);
+            cleaned++;
+          }
         }
-      }
 
-      if (cleaned > 0) {
-        logger.info("Quote cache cleanup", { cleaned, remaining: this.quoteCache.size });
-      }
-    }, 5000); // Every 5 seconds
+        if (cleaned > 0) {
+          logger.info("Quote cache cleanup", {
+            cleaned,
+            remaining: this.quoteCache.size,
+          });
+        }
+      },
+      5000,
+      "jupiter-quote-cache"
+    );
   }
 
   // ==========================================================================

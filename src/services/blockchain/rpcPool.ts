@@ -16,6 +16,10 @@
 
 import { Connection, type Commitment } from "@solana/web3.js";
 import { logger } from "../../utils/logger.js";
+import {
+  registerInterval,
+  clearRegisteredInterval,
+} from "../../utils/intervals.js";
 import { observeRpcRequest } from "../../utils/metrics.js";
 
 // ============================================================================
@@ -416,13 +420,13 @@ export class RPCPool {
 
     // Stop health checks
     if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer);
+      clearRegisteredInterval(this.healthCheckTimer);
       this.healthCheckTimer = null;
     }
 
     // Stop cache cleanup
     if (this.cacheCleanupTimer) {
-      clearInterval(this.cacheCleanupTimer);
+      clearRegisteredInterval(this.cacheCleanupTimer);
       this.cacheCleanupTimer = null;
     }
 
@@ -749,9 +753,13 @@ export class RPCPool {
    * Checks endpoint health with simple getSlot() call.
    */
   private startHealthChecks(): void {
-    this.healthCheckTimer = setInterval(async () => {
-      await this.performHealthChecks();
-    }, this.config.healthCheckInterval);
+    this.healthCheckTimer = registerInterval(
+      () => {
+        void this.performHealthChecks();
+      },
+      this.config.healthCheckInterval,
+      "rpcPool-health"
+    );
 
     logger.info("Health check timer started", {
       interval: this.config.healthCheckInterval,
@@ -827,9 +835,13 @@ export class RPCPool {
    * Removes stale entries from deduplication cache every 10s.
    */
   private startCacheCleanup(): void {
-    this.cacheCleanupTimer = setInterval(() => {
-      this.cleanupRequestCache();
-    }, 10000); // Every 10s
+    this.cacheCleanupTimer = registerInterval(
+      () => {
+        this.cleanupRequestCache();
+      },
+      10000,
+      "rpcPool-cache"
+    );
 
     logger.debug("Cache cleanup timer started");
   }

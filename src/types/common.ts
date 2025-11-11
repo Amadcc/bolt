@@ -161,43 +161,4 @@ export function truncateAddress(address: string, chars = 4): string {
   return `${address.slice(0, chars)}...${address.slice(-chars)}`;
 }
 
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Retry function with exponential backoff
- */
-export async function retry<T>(
-  fn: () => Promise<T>,
-  options: {
-    maxRetries: number;
-    backoff: "linear" | "exponential";
-    baseDelay: number;
-  }
-): Promise<T> {
-  let lastError: Error | null = null;
-
-  for (let attempt = 0; attempt < options.maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error) {
-      lastError = error as Error;
-
-      if (attempt < options.maxRetries - 1) {
-        const delay =
-          options.backoff === "exponential"
-            ? options.baseDelay * Math.pow(2, attempt)
-            : options.baseDelay * (attempt + 1);
-
-        await sleep(delay);
-      }
-    }
-  }
-
-  throw lastError;
-}
+// End of shared types/utilities

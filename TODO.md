@@ -1312,34 +1312,34 @@ src/services/honeypot/
 
 ### Code Quality
 
-- [ ] **Item 15: Fix logger.child() bypassing sanitization**
+- [x] **Item 15: Fix logger.child() bypassing sanitization**
 
   - Apply sanitizeForLogging in child() method
   - Test child logger doesn't leak PII
   - Update all child logger uses in codebase
 
-- [ ] **Item 16: Remove duplicate sleep/retry functions**
+- [x] **Item 16: Remove duplicate sleep/retry functions**
 
   - Consolidate to single module in utils/helpers.ts
   - Remove duplicate from types/common.ts
   - Update all imports across codebase
   - Test all retry logic still works
 
-- [ ] **Item 22: Fix require() in ES Module**
+- [x] **Item 22: Fix require() in ES Module**
   - Replace `require('crypto')` with `import { randomBytes } from 'crypto'`
   - Find and replace all other require() calls
   - Test all module imports work
 
 ### Performance
 
-- [ ] **Item 17: Add view caching for wallet metadata**
+- [x] **Item 17: Add view caching for wallet metadata**
 
   - Cache wallet metadata in session
   - Invalidate cache on balance change
   - Reduce repeated RPC calls
   - Measure performance improvement
 
-- [ ] **Item 18: Add balance pagination**
+- [x] **Item 18: Add balance pagination**
   - Paginate token list if user has >10 tokens
   - Add "Next" and "Previous" inline buttons
   - Show "Showing 1-10 of 25 tokens"
@@ -1347,7 +1347,7 @@ src/services/honeypot/
 
 ### Security
 
-- [ ] **Item 20: Add unlock rate limiting**
+- [x] **Item 20: Add unlock rate limiting**
 
   - Track failed unlock attempts per user in Redis
   - Block after 5 failed attempts within 15 minutes
@@ -1355,7 +1355,7 @@ src/services/honeypot/
   - Show clear error message with time remaining
   - Consider CAPTCHA for repeated failures
 
-- [ ] **Item 23: Remove session token substring from logs**
+- [x] **Item 23: Remove session token substring from logs**
   - Find all `sessionToken.substring(0, 10)` in logs
   - Replace with `[REDACTED]` string
   - Update executor.ts:127 and other locations
@@ -1363,14 +1363,14 @@ src/services/honeypot/
 
 ### Reliability
 
-- [ ] **Item 24: Clear setInterval on shutdown**
+- [x] **Item 24: Clear setInterval on shutdown**
 
   - Store all interval IDs in global array
   - Clear all intervals in shutdown handler
   - Test graceful shutdown
   - Verify no dangling timers
 
-- [ ] **Item 25: Block trades on honeypot detector errors**
+- [x] **Item 25: Block trades on honeypot detector errors**
   - Change from best-effort to blocking mode
   - Return error if detector.check() fails
   - Add retry logic (3 attempts with backoff)
@@ -1378,21 +1378,21 @@ src/services/honeypot/
 
 ### UI/UX
 
-- [ ] **Item 19: Fix conversation state leak**
+- [x] **Item 19: Fix conversation state leak**
 
   - Add 5-minute TTL for partial flows
   - Cleanup abandoned flows with setInterval
   - Clear awaitingPasswordFor\* state on completion
   - Test state cleanup after timeout
 
-- [ ] **Item 26: Wire swap confirmation callbacks**
+- [x] **Item 26: Wire swap confirmation callbacks**
 
   - Implement confirmation button handlers
   - OR remove confirmation buttons entirely
   - Update swap.ts keyboard
   - Test swap flow end-to-end
 
-- [ ] **Item 27: Reset wallet creation flag on timeout**
+- [x] **Item 27: Reset wallet creation flag on timeout**
   - Add 5-minute timeout for wallet creation
   - Reset awaitingPasswordForWallet flag
   - Show timeout message to user
@@ -1400,7 +1400,7 @@ src/services/honeypot/
 
 ### Error Handling
 
-- [ ] **Item 21: Add error cause chain**
+- [x] **Item 21: Add error cause chain**
   - Add optional `cause: Error` parameter to AppError
   - Preserve error stack traces
   - Update all error constructors

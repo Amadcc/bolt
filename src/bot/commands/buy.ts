@@ -6,12 +6,14 @@
 import type { Context as GrammyContext, SessionFlavor } from "grammy";
 import { logger } from "../../utils/logger.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
-import { getHoneypotDetector } from "../../services/honeypot/detector.js";
 import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
 import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, SOL_MINT, getNetworkName, isDevnetMode } from "../../config/tokens.js";
 import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
+import { performHoneypotAnalysis } from "../utils/honeypot.js";
+import { invalidateBalanceCache } from "../utils/balanceCache.js";
+import type { BalanceViewState } from "../views/index.js";
 
 // Define session data structure (should match bot/index.ts)
 interface SessionData {
@@ -39,6 +41,7 @@ interface SessionData {
     tokenMint: string;
     tokenAmount: string;
   };
+  balanceView?: BalanceViewState;
 }
 
 type Context = GrammyContext & SessionFlavor<SessionData>;
@@ -134,28 +137,22 @@ export async function handleBuy(ctx: Context): Promise<void> {
     await ctx.reply("🔍 Analyzing token safety...");
 
     try {
-      const detector = getHoneypotDetector();
-      const honeypotCheck = await detector.check(tokenMint);
+      const analysis = await performHoneypotAnalysis(tokenMint);
 
-      if (!honeypotCheck.success) {
-        await ctx.reply("⚠️ Could not verify token safety. Proceeding with caution...");
-      } else {
-        const analysis = honeypotCheck.value;
+      // Format risk level
+      let riskEmoji = "🟢";
+      let riskLevel = "Low Risk";
 
-        // Format risk level
-        let riskEmoji = "🟢";
-        let riskLevel = "Low Risk";
+      if (analysis.riskScore >= 70) {
+        riskEmoji = "🔴";
+        riskLevel = "High Risk";
+      } else if (analysis.riskScore >= 30) {
+        riskEmoji = "🟡";
+        riskLevel = "Medium Risk";
+      }
 
-        if (analysis.riskScore >= 70) {
-          riskEmoji = "🔴";
-          riskLevel = "High Risk";
-        } else if (analysis.riskScore >= 30) {
-          riskEmoji = "🟡";
-          riskLevel = "Medium Risk";
-        }
-
-        await ctx.reply(
-          `${riskEmoji} *Token Safety Analysis*\n\n` +
+      await ctx.reply(
+        `${riskEmoji} *Token Safety Analysis*\n\n` +
           `Risk Level: **${riskLevel}** (${analysis.riskScore}/100)\n` +
           `Confidence: ${analysis.confidence}%\n` +
           `Analysis Time: ${analysis.analysisTimeMs}ms\n\n` +
@@ -165,23 +162,24 @@ export async function handleBuy(ctx: Context): Promise<void> {
           (analysis.riskScore >= 70
             ? `❌ *TRADE CANCELLED*\n\nThis token appears to be a honeypot. Trading is blocked for your safety.`
             : `✅ Safety check passed. Proceeding with trade...`),
-          { parse_mode: "Markdown" }
-        );
+        { parse_mode: "Markdown" }
+      );
 
-        // Block high-risk trades
-        if (analysis.riskScore >= 70) {
-          logger.warn("Trade blocked: high risk token", {
-            userId,
-            tokenMint,
-            riskScore: analysis.riskScore,
-            flags: analysis.flags,
-          });
-          return;
-        }
+      if (analysis.riskScore >= 70) {
+        logger.warn("Trade blocked: high risk token", {
+          userId,
+          tokenMint,
+          riskScore: analysis.riskScore,
+          flags: analysis.flags,
+        });
+        return;
       }
     } catch (error) {
       logger.error("Honeypot check failed", { error, tokenMint });
-      await ctx.reply("⚠️ Safety check unavailable. Please verify token manually before trading.");
+      await ctx.reply(
+        "⚠️ Safety check unavailable. Trade cancelled. Please try again later."
+      );
+      return;
     }
 
     // Execute buy (password is optional if session is active)
@@ -304,6 +302,9 @@ async function executeBuy(
     }
 
     const result = tradeResult.value;
+
+    // Invalidate balance cache after successful trade
+    invalidateBalanceCache(ctx);
 
     // Success!
     await ctx.reply(

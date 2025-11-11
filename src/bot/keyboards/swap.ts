@@ -11,10 +11,18 @@ import { InlineKeyboard } from "grammy";
 /**
  * Create a swap confirmation keyboard
  */
-export function createSwapConfirmationKeyboard(swapId: string): InlineKeyboard {
+export function createSwapConfirmationKeyboard(
+  inputToken: string,
+  outputToken: string,
+  amount: string
+): InlineKeyboard {
   return new InlineKeyboard()
-    .text("✅ Confirm Swap", `swap_confirm:${swapId}`)
-    .text("❌ Cancel", `swap_cancel:${swapId}`);
+    .text(
+      "✅ Confirm Swap",
+      `swap:confirm:${inputToken}:${outputToken}:${amount}`
+    )
+    .row()
+    .text("« Cancel", "nav:swap");
 }
 
 /**
@@ -25,8 +33,12 @@ export function createBuyConfirmationKeyboard(
   solAmount: number
 ): InlineKeyboard {
   return new InlineKeyboard()
-    .text(`✅ Buy ${tokenSymbol}`, `buy_confirm:${tokenSymbol}:${solAmount}`)
-    .text("❌ Cancel", "buy_cancel");
+    .text(
+      `✅ Buy ${tokenSymbol}`,
+      `buy:confirm:${tokenSymbol}:${solAmount}`
+    )
+    .row()
+    .text("« Cancel", "nav:buy");
 }
 
 /**
@@ -37,6 +49,10 @@ export function createSellConfirmationKeyboard(
   tokenAmount: string
 ): InlineKeyboard {
   return new InlineKeyboard()
-    .text(`✅ Sell ${tokenSymbol}`, `sell_confirm:${tokenSymbol}:${tokenAmount}`)
-    .text("❌ Cancel", "sell_cancel");
+    .text(
+      `✅ Sell ${tokenSymbol}`,
+      `sell:confirm:${tokenSymbol}:${tokenAmount}`
+    )
+    .row()
+    .text("« Cancel", "nav:sell");
 }

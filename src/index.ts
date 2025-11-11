@@ -11,6 +11,7 @@ import { initializeHoneypotDetector } from "./services/honeypot/detector.js";
 import { initializeJitoService } from "./services/trading/jito.js";
 import { logger } from "./utils/logger.js";
 import { getMetrics, metricsRegistry } from "./utils/metrics.js";
+import { clearAllIntervals } from "./utils/intervals.js";
 
 const app = Fastify({
   logger: true,
@@ -250,6 +251,7 @@ process.on("SIGINT", async () => {
 
     // Close Redis connection gracefully
     await closeRedis();
+    clearAllIntervals();
 
     logger.info("Shutdown complete");
     process.exit(0);
@@ -270,6 +272,7 @@ process.on("SIGTERM", async () => {
     await app.close();
     await prisma.$disconnect();
     await closeRedis();
+    clearAllIntervals();
 
     logger.info("Shutdown complete");
     process.exit(0);

@@ -19,6 +19,12 @@ import {
 } from "../../services/wallet/passwordVault.js";
 import { prisma } from "../../utils/db.js";
 import { navigateToPage, type Context } from "../views/index.js";
+import {
+  clearUnlockFailures,
+  isUnlockRateLimited,
+  recordUnlockFailure,
+  MAX_UNLOCK_ATTEMPTS,
+} from "../../services/security/unlockRateLimiter.js";
 
 /**
  * Handle /unlock command
@@ -54,6 +60,38 @@ async function executeUnlock(
     // Get UI message ID
     const uiMessageId = (ctx as any).session?.ui?.messageId;
 
+    const rateLimitStatus = await isUnlockRateLimited(userId);
+    if (rateLimitStatus.blocked) {
+      const retrySeconds =
+        rateLimitStatus.retryAfterSeconds ?? 15 * 60;
+      const cooldownMinutes = Math.max(
+        1,
+        Math.ceil(retrySeconds / 60)
+      );
+      const blockedMessage =
+        `🚫 *Too Many Attempts*\n\n` +
+        `Please wait ${cooldownMinutes} minute(s) before trying again.\n` +
+        `This protects your wallet from brute-force attacks.\n\n` +
+        `_If this wasn't you, contact support for manual verification._`;
+
+      if (uiMessageId) {
+        await ctx.api.editMessageText(
+          ctx.chat!.id,
+          uiMessageId,
+          blockedMessage,
+          { parse_mode: "Markdown" }
+        );
+      } else {
+        await ctx.reply(blockedMessage, { parse_mode: "Markdown" });
+      }
+
+      logger.warn("Unlock blocked by rate limiter", {
+        userId,
+        cooldownMinutes,
+      });
+      return;
+    }
+
     // Update UI to show progress
     if (uiMessageId) {
       try {
@@ -75,11 +113,31 @@ async function executeUnlock(
       const error = sessionResult.error;
 
       let errorMessage = "❌ *Failed to unlock wallet*\n\n";
+      let rateLimitNotice = "";
 
       if (error.message.includes("Failed to create session: WALLET_NOT_FOUND")) {
         errorMessage += "Wallet not found.\n\nUse /start to create one.";
       } else if (error.message.includes("password")) {
         errorMessage += "Invalid password.\n\nPlease try again.";
+
+        try {
+          const failureInfo = await recordUnlockFailure(userId);
+          const attemptsLeft = Math.max(
+            MAX_UNLOCK_ATTEMPTS - failureInfo.attempts,
+            0
+          );
+          rateLimitNotice =
+            attemptsLeft > 0
+              ? `Attempts remaining: ${attemptsLeft}`
+              : `Cooldown: ${Math.ceil(
+                  failureInfo.retryAfterSeconds / 60
+                )} minute(s).`;
+        } catch (rateError) {
+          logger.error("Failed to record unlock failure", {
+            userId,
+            error: rateError,
+          });
+        }
       } else {
         errorMessage += "An error occurred.\n\nPlease try again.";
       }
@@ -94,18 +152,22 @@ async function executeUnlock(
         ]
       };
 
+      const finalMessage = rateLimitNotice
+        ? `${errorMessage}\n${rateLimitNotice}`
+        : errorMessage;
+
       if (uiMessageId) {
         await ctx.api.editMessageText(
           ctx.chat!.id,
           uiMessageId,
-          errorMessage,
+          finalMessage,
           {
             parse_mode: "Markdown",
             reply_markup: keyboard
           }
         );
       } else {
-        await ctx.reply(errorMessage, {
+        await ctx.reply(finalMessage, {
           parse_mode: "Markdown",
           reply_markup: keyboard
         });
@@ -187,7 +249,13 @@ async function executeUnlock(
       await ctx.reply(successMessage, { parse_mode: "Markdown" });
     }
 
-    logger.info("Wallet unlocked successfully via Redis session", { userId, publicKey, sessionToken: sessionToken.substring(0, 10) + "..." });
+    await clearUnlockFailures(userId);
+    logger.info("Wallet unlocked successfully via Redis session", {
+      userId,
+      publicKey,
+      sessionToken: "[REDACTED]",
+      sessionTokenPresent: true,
+    });
 
   } catch (error) {
     logger.error("Error executing unlock", { userId, error });

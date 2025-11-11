@@ -8,11 +8,17 @@ export class AppError extends Error {
     message: string,
     public readonly code: string,
     public readonly statusCode: number = 500,
-    public readonly isOperational: boolean = true
+    public readonly isOperational: boolean = true,
+    public readonly cause?: Error
   ) {
     super(message);
     this.name = this.constructor.name;
-    Error.captureStackTrace(this, this.constructor);
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, this.constructor);
+    }
+    if (cause?.stack) {
+      this.stack = `${this.stack ?? ""}\nCaused by: ${cause.stack}`;
+    }
   }
 
   toJSON() {
@@ -21,40 +27,49 @@ export class AppError extends Error {
       message: this.message,
       code: this.code,
       statusCode: this.statusCode,
+      ...(this.cause
+        ? {
+            cause: {
+              name: this.cause.name,
+              message: this.cause.message,
+            },
+          }
+        : {}),
     };
   }
 }
 
 export class ValidationError extends AppError {
-  constructor(message: string) {
-    super(message, "VALIDATION_ERROR", 400);
+  constructor(message: string, cause?: Error) {
+    super(message, "VALIDATION_ERROR", 400, true, cause);
   }
 }
 
 export class AuthenticationError extends AppError {
-  constructor(message: string = "Authentication required") {
-    super(message, "AUTH_ERROR", 401);
+  constructor(message: string = "Authentication required", cause?: Error) {
+    super(message, "AUTH_ERROR", 401, true, cause);
   }
 }
 
 export class AuthorizationError extends AppError {
-  constructor(message: string = "Access denied") {
-    super(message, "AUTHORIZATION_ERROR", 403);
+  constructor(message: string = "Access denied", cause?: Error) {
+    super(message, "AUTHORIZATION_ERROR", 403, true, cause);
   }
 }
 
 export class NotFoundError extends AppError {
-  constructor(resource: string) {
-    super(`${resource} not found`, "NOT_FOUND", 404);
+  constructor(resource: string, cause?: Error) {
+    super(`${resource} not found`, "NOT_FOUND", 404, true, cause);
   }
 }
 
 export class RateLimitError extends AppError {
   constructor(
     message: string = "Rate limit exceeded",
-    public readonly retryAfter?: number
+    public readonly retryAfter?: number,
+    cause?: Error
   ) {
-    super(message, "RATE_LIMIT", 429);
+    super(message, "RATE_LIMIT", 429, true, cause);
   }
 }
 
@@ -62,9 +77,10 @@ export class BlockchainError extends AppError {
   constructor(
     message: string,
     public readonly txSignature?: string,
-    public readonly chain: string = "solana"
+    public readonly chain: string = "solana",
+    cause?: Error
   ) {
-    super(message, "BLOCKCHAIN_ERROR", 500);
+    super(message, "BLOCKCHAIN_ERROR", 500, true, cause);
   }
 
   toJSON() {
@@ -77,32 +93,32 @@ export class BlockchainError extends AppError {
 }
 
 export class EncryptionError extends AppError {
-  constructor(message: string) {
-    super(message, "ENCRYPTION_ERROR", 500);
+  constructor(message: string, cause?: Error) {
+    super(message, "ENCRYPTION_ERROR", 500, true, cause);
   }
 }
 
 export class DecryptionError extends AppError {
-  constructor(message: string) {
-    super(message, "DECRYPTION_ERROR", 500);
+  constructor(message: string, cause?: Error) {
+    super(message, "DECRYPTION_ERROR", 500, true, cause);
   }
 }
 
 export class WalletError extends AppError {
-  constructor(message: string) {
-    super(message, "WALLET_ERROR", 500);
+  constructor(message: string, cause?: Error) {
+    super(message, "WALLET_ERROR", 500, true, cause);
   }
 }
 
 export class SessionError extends AppError {
-  constructor(message: string) {
-    super(message, "SESSION_ERROR", 401);
+  constructor(message: string, cause?: Error) {
+    super(message, "SESSION_ERROR", 401, true, cause);
   }
 }
 
 export class HoneypotError extends AppError {
-  constructor(message: string, public readonly tokenMint: string) {
-    super(message, "HONEYPOT_ERROR", 400);
+  constructor(message: string, public readonly tokenMint: string, cause?: Error) {
+    super(message, "HONEYPOT_ERROR", 400, true, cause);
   }
 
   toJSON() {

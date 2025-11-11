@@ -18,6 +18,7 @@ import {
   setCircuitBreakerState,
   recordCircuitBreakerTransition,
 } from "../../../utils/metrics.js";
+import { registerInterval } from "../../../utils/intervals.js";
 import type {
   APIProvider,
   APIProviderConfig,
@@ -271,20 +272,24 @@ export abstract class BaseAPIProvider implements APIProvider {
     // Poll for state changes (every 5 seconds)
     let lastState = initialMetrics.state;
 
-    setInterval(() => {
-      const metrics = this.circuitBreaker.getMetrics();
-      if (metrics.state !== lastState) {
-        recordCircuitBreakerTransition(this.name, lastState, metrics.state);
-        setCircuitBreakerState(this.name, metrics.state);
+    registerInterval(
+      () => {
+        const metrics = this.circuitBreaker.getMetrics();
+        if (metrics.state !== lastState) {
+          recordCircuitBreakerTransition(this.name, lastState, metrics.state);
+          setCircuitBreakerState(this.name, metrics.state);
 
-        logger.info("Circuit breaker state changed", {
-          provider: this.name,
-          from: lastState,
-          to: metrics.state,
-        });
+          logger.info("Circuit breaker state changed", {
+            provider: this.name,
+            from: lastState,
+            to: metrics.state,
+          });
 
-        lastState = metrics.state;
-      }
-    }, 5000);
+          lastState = metrics.state;
+        }
+      },
+      5000,
+      `honeypot-${this.name}-circuit`
+    );
   }
 }

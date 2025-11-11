@@ -3,7 +3,13 @@
  * Handle all inline button clicks
  */
 
-import type { Context } from "../views/index.js";
+import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import type {
+  BalanceViewState,
+  Context,
+  Page,
+  TokenMetadataCacheState,
+} from "../views/index.js";
 import { navigateToPage } from "../views/index.js";
 import { logger } from "../../utils/logger.js";
 import { prisma } from "../../utils/db.js";
@@ -11,10 +17,37 @@ import { lockSession } from "../commands/session.js";
 import { destroySession } from "../../services/wallet/session.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
 import { asTokenMint } from "../../types/common.js";
-import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
+import {
+  resolveTokenSymbol,
+  SOL_MINT,
+  getTokenDecimals,
+  toMinimalUnits,
+} from "../../config/tokens.js";
 import type { TradingError } from "../../types/trading.js";
 import { executeBuyFlow } from "../flows/buy.js";
 import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
+import { getSolanaConnection } from "../../services/blockchain/solana.js";
+import { getJupiter } from "../../services/trading/jupiter.js";
+import { getTokenAccountsForOwner } from "../../services/tokens/accounts.js";
+import { fetchTokenMetadata } from "../../services/tokens/metadata.js";
+import {
+  buildConversationKey,
+  CONVERSATION_TOPICS,
+  DEFAULT_CONVERSATION_TTL_MS,
+  scheduleConversationTimeout,
+} from "../utils/conversationTimeouts.js";
+import { createSwapConfirmationKeyboard } from "../keyboards/swap.js";
+
+const BALANCE_PAGE_SIZE = 10;
+const SESSION_METADATA_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const KNOWN_TOKENS: Record<string, string> = {
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: "USDC",
+  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: "USDT",
+  DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263: "BONK",
+  EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm: "WIF",
+  JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN: "JUP",
+};
 
 // ============================================================================
 // Navigation Callbacks
@@ -77,8 +110,16 @@ export async function handleActionCallback(
       await handleRefreshBalanceAction(ctx);
       break;
 
+    case "balance_page":
+      await handleBalancePaginationAction(ctx, params?.[0]);
+      break;
+
     case "copy":
       await handleCopyAction(ctx, params?.[0]);
+      break;
+
+    case "noop":
+      await ctx.answerCallbackQuery();
       break;
 
     default:
@@ -139,24 +180,48 @@ async function handleRefreshBalanceAction(ctx: Context): Promise<void> {
     logger.error("Error updating balance loading state", { error });
   }
 
-  // Fetch and display balance
-  await fetchAndDisplayBalance(ctx);
+  // Force refresh balance with new caching system
+  const user = await prisma.user.findUnique({
+    where: { telegramId: BigInt(ctx.from!.id) },
+    include: { wallets: { where: { isActive: true } } },
+  });
+
+  if (!user?.wallets.length) {
+    await navigateToPage(ctx, "main");
+    return;
+  }
+
+  const wallet = user.wallets[0];
+
+  // Use new balance cache with forceRefresh=true
+  const { getBalanceWithCache } = await import("../utils/balanceCache.js");
+  const { renderBalancePage } = await import("../views/index.js");
+
+  // Invalidate cache and fetch fresh data
+  await getBalanceWithCache(ctx, wallet.publicKey, true);
+
+  // Re-render balance page with new data
+  const { text, keyboard } = await renderBalancePage(ctx, 0);
+
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: "Markdown",
+      reply_markup: keyboard,
+    });
+  } catch (error) {
+    logger.error("Error updating balance after refresh", { error });
+  }
 }
 
 /**
  * Fetch balance and update message
+ * @deprecated Use renderBalancePage() from views/index.ts instead (with caching)
+ * This function is kept only for backward compatibility
  */
 export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
-  try {
-    const { prisma } = await import("../../utils/db.js");
-    const { getSolanaConnection } = await import("../../services/blockchain/solana.js");
-    const { LAMPORTS_PER_SOL, PublicKey } = await import("@solana/web3.js");
-    const { getJupiter } = await import("../../services/trading/jupiter.js");
-    const { asTokenMint } = await import("../../types/common.js");
-    const { SOL_MINT } = await import("../../config/tokens.js");
-    const { getTokenAccountsForOwner } = await import("../../services/tokens/accounts.js");
-    const { fetchTokenMetadata } = await import("../../services/tokens/metadata.js");
+  const startedAt = Date.now();
 
+  try {
     const user = await prisma.user.findUnique({
       where: { telegramId: BigInt(ctx.from!.id) },
       include: { wallets: { where: { isActive: true } } },
@@ -171,115 +236,356 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
     const connection = await getSolanaConnection();
     const publicKey = new PublicKey(wallet.publicKey);
 
-    // Get SOL balance
-    const lamports = await connection.getBalance(publicKey);
+    const [lamports, tokenAccounts] = await Promise.all([
+      connection.getBalance(publicKey),
+      getTokenAccountsForOwner(publicKey, connection),
+    ]);
+
+    const snapshot = createBalanceSnapshot(lamports, tokenAccounts);
+    const previousSnapshot = ctx.session.balanceView?.snapshot;
+
+    if (previousSnapshot && previousSnapshot !== snapshot) {
+      ctx.session.tokenMetadataCache = undefined;
+    }
+
+    const metadataCache = ensureTokenMetadataCache(ctx);
+    const metadataStats = { hits: 0, misses: 0 };
+
     const sol = lamports / LAMPORTS_PER_SOL;
-
-    // Get token accounts via SPL Token helper
-    const tokenAccounts = await getTokenAccountsForOwner(publicKey, connection);
-
-    // Build balance message
-    let message = `*Balance*\n\n`;
-    message += `\`${wallet.publicKey}\`\n\n`;
-
-    // Get SOL price
     const jupiter = getJupiter();
     const solPriceResult = await jupiter.getTokenPrice(asTokenMint(SOL_MINT));
     const solPrice = solPriceResult.success ? solPriceResult.value : null;
-    const solUsdValue = solPrice ? sol * solPrice : null;
+    const solUsdValue = solPrice ? sol * solPrice : undefined;
 
-    message += `SOL: *${sol.toFixed(4)}*`;
-    if (solUsdValue !== null) {
-      message += ` ($${solUsdValue.toFixed(2)})`;
+    const tokenRows: BalanceViewState["tokens"] = [];
+
+    for (const tokenAccount of tokenAccounts) {
+      if (tokenAccount.amount <= 0) {
+        continue;
+      }
+
+      const mint = tokenAccount.mint;
+      const label =
+        KNOWN_TOKENS[mint] ??
+        (await resolveTokenLabel(metadataCache, mint, metadataStats));
+
+      const tokenPriceResult = await jupiter.getTokenPrice(asTokenMint(mint));
+      const tokenPrice = tokenPriceResult.success ? tokenPriceResult.value : null;
+      const tokenUsdValue = tokenPrice
+        ? tokenAccount.amount * tokenPrice
+        : undefined;
+
+      tokenRows.push({
+        mint,
+        label,
+        amount: tokenAccount.amount,
+        amountDisplay: formatAmount(tokenAccount.amount),
+        usdValue: tokenUsdValue,
+      });
     }
-    message += `\n`;
 
-    // Add token balances
-    const KNOWN_TOKENS: Record<string, string> = {
-      "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
-      "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "USDT",
-      "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": "BONK",
-      "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm": "WIF",
-      "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": "JUP",
+    tokenRows.sort((a, b) => b.amount - a.amount);
+
+    const balanceState: BalanceViewState = {
+      snapshot,
+      walletPublicKey: wallet.publicKey,
+      solAmount: sol,
+      solUsdValue,
+      tokens: tokenRows,
+      totalTokens: tokenRows.length,
+      pageSize: BALANCE_PAGE_SIZE,
+      currentPage: 0,
+      lastUpdated: Date.now(),
     };
 
-    if (tokenAccounts.length > 0) {
-      message += `\n*Tokens*\n`;
+    ctx.session.balanceView = balanceState;
 
-      for (const tokenAccount of tokenAccounts) {
-        if (tokenAccount.amount <= 0) {
-          continue;
-        }
+    await updateBalanceMessage(ctx, balanceState);
 
-        const mint = tokenAccount.mint;
-        let symbol = KNOWN_TOKENS[mint];
-        let displayLabel: string | undefined;
-
-        if (!symbol) {
-          const metadata = await fetchTokenMetadata(mint);
-          const sanitizedSymbol = metadata?.symbol?.trim();
-          const sanitizedName = metadata?.name?.trim();
-
-          if (sanitizedSymbol) {
-            symbol = sanitizedSymbol;
-          }
-
-          if (sanitizedName && sanitizedName !== symbol) {
-            displayLabel = `${sanitizedName} (${symbol ?? truncateAddress(mint)})`;
-          } else if (sanitizedName) {
-            displayLabel = sanitizedName;
-          }
-        }
-
-        const label =
-          displayLabel ??
-          symbol ??
-          truncateAddress(mint);
-
-        // Get token price
-        const tokenPriceResult = await jupiter.getTokenPrice(asTokenMint(mint));
-        const tokenPrice = tokenPriceResult.success ? tokenPriceResult.value : null;
-        const tokenUsdValue = tokenPrice ? tokenAccount.amount * tokenPrice : null;
-
-        message += `${label}: ${formatAmount(tokenAccount.amount)}`;
-        if (tokenUsdValue !== null) {
-          message += ` ($${tokenUsdValue.toFixed(2)})`;
-        }
-        message += `\n`;
-      }
-    } else {
-      message += `\nNo tokens yet`;
-    }
-
-    // Update message with balance
-    await ctx.editMessageText(message, {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "🔄 Refresh", callback_data: "action:refresh_balance" },
-        ], [
-          { text: "« Back to Dashboard", callback_data: "nav:main" }
-        ]]
-      }
+    logger.debug("Balance view refreshed", {
+      userId: ctx.from?.id,
+      tokens: tokenRows.length,
+      durationMs: Date.now() - startedAt,
+      metadataCacheHits: metadataStats.hits,
+      metadataCacheMisses: metadataStats.misses,
     });
-
   } catch (error) {
     logger.error("Error fetching balance", { error });
     await ctx.editMessageText(
-      `*Balance*\n\n` +
-      `Failed to load. Please try again.`,
+      `*Balance*\n\n` + `Failed to load. Please try again.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [[
-            { text: "🔄 Try Again", callback_data: "action:refresh_balance" },
-          ], [
-            { text: "« Back to Dashboard", callback_data: "nav:main" }
-          ]]
-        }
+          inline_keyboard: [
+            [{ text: "🔄 Try Again", callback_data: "action:refresh_balance" }],
+            [{ text: "« Back to Dashboard", callback_data: "nav:main" }],
+          ],
+        },
       }
     );
   }
+}
+
+async function handleBalancePaginationAction(
+  ctx: Context,
+  direction?: string
+): Promise<void> {
+  const state = ctx.session.balanceView;
+
+  if (!state) {
+    await ctx.answerCallbackQuery("⚠️ Tap refresh first");
+    return;
+  }
+
+  if (state.totalTokens <= state.pageSize) {
+    await ctx.answerCallbackQuery("ℹ️ All tokens already visible");
+    return;
+  }
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(state.totalTokens / state.pageSize)
+  );
+
+  if (direction === "next") {
+    state.currentPage = (state.currentPage + 1) % totalPages;
+  } else if (direction === "prev") {
+    state.currentPage =
+      (state.currentPage - 1 + totalPages) % totalPages;
+  }
+
+  ctx.session.balanceView = state;
+  await ctx.answerCallbackQuery();
+  await updateBalanceMessage(ctx, state);
+}
+
+/**
+ * Handle balance page navigation (new format: balance:page:N)
+ */
+export async function handleBalancePageCallback(
+  ctx: Context,
+  page: number
+): Promise<void> {
+  const state = ctx.session.balanceView;
+
+  if (!state) {
+    await ctx.answerCallbackQuery("⚠️ Tap refresh first");
+    return;
+  }
+
+  if (state.totalTokens <= state.pageSize) {
+    await ctx.answerCallbackQuery("ℹ️ All tokens already visible");
+    return;
+  }
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(state.totalTokens / state.pageSize)
+  );
+
+  // Validate page number
+  if (page < 0 || page >= totalPages) {
+    await ctx.answerCallbackQuery("❌ Invalid page");
+    return;
+  }
+
+  await ctx.answerCallbackQuery();
+
+  // Use new rendering system
+  const { renderBalancePage } = await import("../views/index.js");
+  const { text, keyboard } = await renderBalancePage(ctx, page);
+
+  try {
+    await ctx.editMessageText(text, {
+      parse_mode: "Markdown",
+      reply_markup: keyboard,
+    });
+  } catch (error) {
+    logger.error("Error updating balance page", { error });
+  }
+}
+
+function ensureTokenMetadataCache(
+  ctx: Context
+): TokenMetadataCacheState {
+  if (!ctx.session.tokenMetadataCache) {
+    ctx.session.tokenMetadataCache = { entries: {} };
+  }
+  return ctx.session.tokenMetadataCache;
+}
+
+type MetadataStats = {
+  hits: number;
+  misses: number;
+};
+
+async function resolveTokenLabel(
+  cache: TokenMetadataCacheState,
+  mint: string,
+  stats: MetadataStats
+): Promise<string> {
+  const now = Date.now();
+  const cached = cache.entries[mint];
+
+  if (cached && cached.expiresAt > now) {
+    stats.hits++;
+    return (
+      cached.label ??
+      cached.symbol ??
+      cached.name ??
+      truncateAddress(mint)
+    );
+  }
+
+  if (cached) {
+    delete cache.entries[mint];
+  }
+
+  stats.misses++;
+
+  const metadata = await fetchTokenMetadata(mint);
+  const symbol = metadata?.symbol?.trim();
+  const name = metadata?.name?.trim();
+
+  let label: string;
+  if (name && symbol && name !== symbol) {
+    label = `${name} (${symbol})`;
+  } else if (name) {
+    label = name;
+  } else if (symbol) {
+    label = symbol;
+  } else {
+    label = truncateAddress(mint);
+  }
+
+  cache.entries[mint] = {
+    symbol,
+    name,
+    label,
+    expiresAt: now + SESSION_METADATA_CACHE_TTL_MS,
+  };
+
+  return label;
+}
+
+/**
+ * @deprecated Use renderBalancePage() from views/index.ts instead (with caching)
+ * This function uses old format without caching
+ */
+async function updateBalanceMessage(
+  ctx: Context,
+  state: BalanceViewState
+): Promise<void> {
+  const totalPages =
+    state.totalTokens > 0
+      ? Math.ceil(state.totalTokens / state.pageSize)
+      : 1;
+
+  if (state.totalTokens > 0 && state.currentPage >= totalPages) {
+    state.currentPage = Math.max(totalPages - 1, 0);
+  }
+
+  const payload = buildBalancePayload(state, totalPages);
+
+  try {
+    await ctx.editMessageText(payload.text, {
+      parse_mode: "Markdown",
+      reply_markup: payload.keyboard,
+    });
+    ctx.session.balanceView = state;
+  } catch (error: any) {
+    if (error?.description?.includes("message is not modified")) {
+      logger.debug("Balance message unchanged", {
+        userId: ctx.from?.id,
+        page: state.currentPage,
+      });
+      return;
+    }
+    throw error;
+  }
+}
+
+function buildBalancePayload(
+  state: BalanceViewState,
+  totalPages: number
+): {
+  text: string;
+  keyboard: {
+    inline_keyboard: { text: string; callback_data: string }[][];
+  };
+} {
+  const hasTokens = state.totalTokens > 0;
+  const startIndex = hasTokens ? state.currentPage * state.pageSize : 0;
+  const endIndex = hasTokens
+    ? Math.min(state.totalTokens, startIndex + state.pageSize)
+    : 0;
+  const visibleTokens = hasTokens
+    ? state.tokens.slice(startIndex, endIndex)
+    : [];
+
+  let text = `*Balance*\n\n`;
+  text += `\`${state.walletPublicKey}\`\n\n`;
+  text += `SOL: *${state.solAmount.toFixed(4)}*`;
+  if (state.solUsdValue !== undefined) {
+    text += ` ($${state.solUsdValue.toFixed(2)})`;
+  }
+  text += `\n`;
+
+  if (!hasTokens) {
+    text += `\nNo tokens yet`;
+  } else {
+    text += `\n*Tokens (${state.totalTokens})*\n`;
+    for (const token of visibleTokens) {
+      text += `${token.label}: ${token.amountDisplay}`;
+      if (token.usdValue !== undefined) {
+        text += ` ($${token.usdValue.toFixed(2)})`;
+      }
+      text += `\n`;
+    }
+
+    if (state.totalTokens > state.pageSize) {
+      text += `\nShowing ${startIndex + 1}-${endIndex} of ${state.totalTokens} tokens`;
+    }
+  }
+
+  text += `\nLast updated: ${new Date(
+    state.lastUpdated
+  ).toLocaleTimeString()}`;
+
+  const inline_keyboard: { text: string; callback_data: string }[][] = [];
+
+  if (state.totalTokens > state.pageSize) {
+    inline_keyboard.push([
+      { text: "⬅️ Prev", callback_data: "action:balance_page:prev" },
+      {
+        text: `Page ${state.currentPage + 1}/${totalPages}`,
+        callback_data: "action:noop",
+      },
+      { text: "Next ➡️", callback_data: "action:balance_page:next" },
+    ]);
+  }
+
+  inline_keyboard.push([
+    { text: "🔄 Refresh", callback_data: "action:refresh_balance" },
+  ]);
+  inline_keyboard.push([
+    { text: "« Back to Dashboard", callback_data: "nav:main" },
+  ]);
+
+  return {
+    text,
+    keyboard: { inline_keyboard },
+  };
+}
+
+function createBalanceSnapshot(
+  lamports: number,
+  tokenAccounts: Array<{ mint: string; rawAmount: bigint }>
+): string {
+  const parts = tokenAccounts
+    .map((account) => `${account.mint}:${account.rawAmount.toString()}`)
+    .sort();
+  return `${lamports}:${parts.join("|")}`;
 }
 
 function truncateAddress(address: string): string {
@@ -293,6 +599,45 @@ function formatAmount(amount: number): string {
   if (amount >= 1) return amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
   if (amount >= 0.000001) return amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
   return amount.toExponential(2);
+}
+
+const INPUT_TIMEOUT_MESSAGES: Partial<Record<Page, string>> = {
+  buy: "⏰ Buy flow timed out. Open *Buy* again to continue.",
+  sell: "⏰ Sell flow timed out. Open *Sell* again to continue.",
+  swap: "⏰ Swap flow timed out. Open *Swap* again to continue.",
+};
+
+function scheduleAwaitingInputTimeout(ctx: Context, page: Page): void {
+  const telegramId = ctx.from?.id;
+  const chatId = ctx.chat?.id ?? ctx.callbackQuery?.message?.chat?.id;
+
+  if (!telegramId || !chatId) {
+    return;
+  }
+
+  const key = buildConversationKey(
+    telegramId,
+    CONVERSATION_TOPICS.awaitingInput
+  );
+  const sessionRef = ctx.session;
+  const api = ctx.api;
+  const timeoutMessage =
+    INPUT_TIMEOUT_MESSAGES[page] ??
+    "⏰ Input timed out. Please reopen the flow to continue.";
+
+  scheduleConversationTimeout(key, DEFAULT_CONVERSATION_TTL_MS, async () => {
+    if (
+      !sessionRef.awaitingInput ||
+      sessionRef.awaitingInput.page !== page
+    ) {
+      return;
+    }
+
+    sessionRef.awaitingInput = undefined;
+    await api.sendMessage(chatId, timeoutMessage, {
+      parse_mode: "Markdown",
+    });
+  });
 }
 
 /**
@@ -359,6 +704,7 @@ async function handleBuyTokenSelection(
       type: "token",
       page: "buy",
     };
+    scheduleAwaitingInputTimeout(ctx, "buy");
 
     await ctx.editMessageText(
       `🛒 *Buy Tokens*\n\n` +
@@ -402,6 +748,7 @@ async function handleBuyAmountSelection(
       type: "amount",
       page: "buy",
     };
+    scheduleAwaitingInputTimeout(ctx, "buy");
 
     if (!ctx.session.ui.buyData) {
       ctx.session.ui.buyData = {};
@@ -546,6 +893,7 @@ async function handleSellTokenSelection(
       type: "token",
       page: "sell",
     };
+    scheduleAwaitingInputTimeout(ctx, "sell");
 
     await ctx.editMessageText(
       `💸 *Sell Tokens*\n\n` +
@@ -584,6 +932,7 @@ async function handleSellAmountSelection(
       type: "amount",
       page: "sell",
     };
+    scheduleAwaitingInputTimeout(ctx, "sell");
 
     if (!ctx.session.ui.sellData) {
       ctx.session.ui.sellData = {};
@@ -1035,6 +1384,7 @@ async function handleSwapInputSelection(
       type: "token",
       page: "swap",
     };
+    scheduleAwaitingInputTimeout(ctx, "swap");
 
     await ctx.editMessageText(
       `🔄 *Swap Tokens*\n\n` +
@@ -1073,6 +1423,7 @@ async function handleSwapOutputSelection(
       type: "token",
       page: "swap",
     };
+    scheduleAwaitingInputTimeout(ctx, "swap");
 
     if (!ctx.session.ui.swapData) {
       ctx.session.ui.swapData = {};
@@ -1121,6 +1472,7 @@ async function handleSwapAmountSelection(
       type: "amount",
       page: "swap",
     };
+    scheduleAwaitingInputTimeout(ctx, "swap");
 
     if (!ctx.session.ui.swapData) {
       ctx.session.ui.swapData = {};
@@ -1221,16 +1573,11 @@ export async function executeSwapFlow(
       `⚠️ Confirm to execute this trade`,
       {
         parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: "✅ Confirm Swap", callback_data: `swap:confirm:${inputToken}:${outputToken}:${amount}` },
-            ],
-            [
-              { text: "« Cancel", callback_data: "nav:swap" },
-            ],
-          ],
-        },
+        reply_markup: createSwapConfirmationKeyboard(
+          inputToken,
+          outputToken,
+          amount
+        ),
       }
     );
     return;

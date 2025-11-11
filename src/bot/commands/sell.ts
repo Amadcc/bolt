@@ -11,6 +11,8 @@ import type { TradingError } from "../../types/trading.js";
 import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
 import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
+import { invalidateBalanceCache } from "../utils/balanceCache.js";
+import type { BalanceViewState } from "../views/index.js";
 
 // Define session data structure (should match bot/index.ts)
 interface SessionData {
@@ -38,6 +40,7 @@ interface SessionData {
     tokenMint: string;
     tokenAmount: string;
   };
+  balanceView?: BalanceViewState;
 }
 
 type Context = GrammyContext & SessionFlavor<SessionData>;
@@ -273,6 +276,9 @@ async function executeSell(
     }
 
     const result = tradeResult.value;
+
+    // Invalidate balance cache after successful trade
+    invalidateBalanceCache(ctx);
 
     // Calculate SOL received
     const solReceived = Number(result.outputAmount) / 1e9;

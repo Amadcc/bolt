@@ -11,6 +11,8 @@ import type { TradingError } from "../../types/trading.js";
 import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
 import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
+import { invalidateBalanceCache } from "../utils/balanceCache.js";
+import type { BalanceViewState } from "../views/index.js";
 
 // Define session data structure (should match bot/index.ts)
 interface SessionData {
@@ -36,6 +38,7 @@ interface SessionData {
     outputMint?: string;
     amount?: string;
   };
+  balanceView?: BalanceViewState;
 }
 
 type Context = GrammyContext & SessionFlavor<SessionData>;
@@ -268,6 +271,9 @@ async function executeSwap(
     }
 
     const result = tradeResult.value;
+
+    // Invalidate balance cache after successful trade
+    invalidateBalanceCache(ctx);
 
     // Success!
     await ctx.reply(

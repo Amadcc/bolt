@@ -1,4 +1,4 @@
-import { Bot, Context, session, SessionFlavor } from "grammy";
+import { Bot, session } from "grammy";
 import { prisma } from "../utils/db.js";
 import { handlePasswordInput } from "./commands/createWallet.js";
 // ✅ Redis Session Integration: Now using secure Redis sessions instead of in-memory
@@ -9,7 +9,11 @@ import {
   handleUnlockPasswordInput,
 } from "./commands/session.js";
 import { logger } from "../utils/logger.js";
-import { navigateToPage, type UIState, type Page } from "./views/index.js";
+import {
+  navigateToPage,
+  type Context as ViewContext,
+  type SessionData,
+} from "./views/index.js";
 import {
   handleNavigationCallback,
   handleActionCallback,
@@ -17,47 +21,20 @@ import {
   handleSellCallback,
   handleSwapCallback,
   handleSettingsCallback,
+  handleBalancePageCallback,
   executeSwapFlow,
   executeSellWithAbsoluteAmount,
   executeSellFlow,
 } from "./handlers/callbacks.js";
 import { executeBuyFlow } from "./flows/buy.js";
 import { hasActivePassword } from "./utils/passwordState.js";
+import {
+  buildConversationKey,
+  cancelConversationTimeout,
+  CONVERSATION_TOPICS,
+} from "./utils/conversationTimeouts.js";
 
-interface SessionData {
-  walletId?: string;
-  encryptedKey?: string;
-  settings?: {
-    slippage: number;
-    autoApprove: boolean;
-  };
-  // ✅ Redis Session Integration (CRITICAL-1 + CRITICAL-2 fix)
-  sessionToken?: string; // Redis session token (15 min TTL)
-  sessionExpiresAt?: number; // Timestamp for UI display
-  passwordExpiresAt?: number; // Timestamp for temporary password TTL (2 minutes)
-  // UI State
-  ui: UIState;
-  // Conversation state
-  awaitingPasswordForWallet?: boolean;
-  awaitingPasswordForUnlock?: boolean;
-  returnToPageAfterUnlock?: Page; // Save page to return after unlock
-  pendingCommand?: {
-    type: "buy" | "sell" | "sell_pct" | "swap";
-    params: string[];
-  }; // Save command to execute after unlock
-  awaitingInput?: {
-    type: "token" | "amount" | "password";
-    page: Page;
-  };
-  swapConversationStep?: "inputMint" | "outputMint" | "amount" | "password";
-  swapConversationData?: {
-    inputMint?: string;
-    outputMint?: string;
-    amount?: string;
-  };
-}
-
-type MyContext = Context & SessionFlavor<SessionData>;
+type MyContext = ViewContext;
 
 export const bot = new Bot<MyContext>(process.env.BOT_TOKEN!);
 
@@ -167,7 +144,11 @@ bot.command("buy", async (ctx) => {
     const token = params[0];
     const amount = params[1];
 
-    logger.info("Buy command with parameters", { token, amount, userId: ctx.from?.id });
+    logger.info("Buy command with parameters", {
+      token,
+      amount,
+      userId: ctx.from?.id,
+    });
 
     // Save pending command (in case wallet is locked)
     ctx.session.pendingCommand = {
@@ -213,7 +194,11 @@ bot.command("sell", async (ctx) => {
     const token = params[0];
     const amount = params[1];
 
-    logger.info("Sell command with parameters", { token, amount, userId: ctx.from?.id });
+    logger.info("Sell command with parameters", {
+      token,
+      amount,
+      userId: ctx.from?.id,
+    });
 
     // Save pending command (in case wallet is locked)
     ctx.session.pendingCommand = {
@@ -260,7 +245,12 @@ bot.command("swap", async (ctx) => {
     const outputToken = params[1];
     const amount = params[2];
 
-    logger.info("Swap command with parameters", { inputToken, outputToken, amount, userId: ctx.from?.id });
+    logger.info("Swap command with parameters", {
+      inputToken,
+      outputToken,
+      amount,
+      userId: ctx.from?.id,
+    });
 
     // Save pending command (in case wallet is locked)
     ctx.session.pendingCommand = {
@@ -384,6 +374,15 @@ bot.on("callback_query:data", async (ctx) => {
         await handleSettingsCallback(ctx, params[0]);
         break;
 
+      case "balance":
+        // Balance pagination: balance:page:N
+        if (params[0] === "page") {
+          await handleBalancePageCallback(ctx, parseInt(params[1], 10));
+        } else {
+          await ctx.answerCallbackQuery("❌ Unknown balance action");
+        }
+        break;
+
       default:
         await ctx.answerCallbackQuery("❌ Unknown action");
         logger.warn("Unknown callback action", {
@@ -416,6 +415,7 @@ bot.on("message:text", async (ctx, next) => {
 
     // Reset conversation state
     ctx.session.awaitingPasswordForWallet = false;
+    cancelWalletPasswordTimeout(ctx);
 
     // Handle password input
     await handlePasswordInput(ctx, password);
@@ -453,6 +453,7 @@ bot.on("message:text", async (ctx, next) => {
 
     // Reset conversation state
     ctx.session.awaitingPasswordForUnlock = false;
+    cancelUnlockPasswordTimeout(ctx);
 
     // Handle unlock password input (creates Redis session)
     await handleUnlockPasswordInput(ctx, password);
@@ -470,20 +471,34 @@ bot.on("message:text", async (ctx, next) => {
           const pendingCommand = ctx.session.pendingCommand;
 
           if (pendingCommand) {
-            logger.info("Executing pending command after unlock", { command: pendingCommand });
+            logger.info("Executing pending command after unlock", {
+              command: pendingCommand,
+            });
 
             // DON'T navigate - the execution functions will handle UI themselves
             // Execute the pending command directly
-            if (pendingCommand.type === "buy" && pendingCommand.params.length >= 2) {
+            if (
+              pendingCommand.type === "buy" &&
+              pendingCommand.params.length >= 2
+            ) {
               const [token, amount] = pendingCommand.params;
               await executeBuyFlow(ctx, token, amount);
-            } else if (pendingCommand.type === "sell" && pendingCommand.params.length >= 2) {
+            } else if (
+              pendingCommand.type === "sell" &&
+              pendingCommand.params.length >= 2
+            ) {
               const [token, amount] = pendingCommand.params;
               await executeSellWithAbsoluteAmount(ctx, token, amount);
-            } else if (pendingCommand.type === "sell_pct" && pendingCommand.params.length >= 2) {
+            } else if (
+              pendingCommand.type === "sell_pct" &&
+              pendingCommand.params.length >= 2
+            ) {
               const [token, percentage] = pendingCommand.params;
               await executeSellFlow(ctx, token, percentage);
-            } else if (pendingCommand.type === "swap" && pendingCommand.params.length >= 3) {
+            } else if (
+              pendingCommand.type === "swap" &&
+              pendingCommand.params.length >= 3
+            ) {
               const [inputToken, outputToken, amount] = pendingCommand.params;
               await executeSwapFlow(ctx, inputToken, outputToken, amount);
             }
@@ -505,6 +520,7 @@ bot.on("message:text", async (ctx, next) => {
 
   // Check if we're waiting for custom input (token address, amount, etc)
   if (ctx.session.awaitingInput) {
+    cancelAwaitingInputTimeout(ctx);
     const input = ctx.message.text;
     const inputType = ctx.session.awaitingInput.type;
     const page = ctx.session.awaitingInput.page;
@@ -544,11 +560,16 @@ bot.on("message:text", async (ctx, next) => {
               {
                 parse_mode: "Markdown",
                 reply_markup: {
-                  inline_keyboard: [[
-                    { text: "🔄 Try Again", callback_data: `buy:amount:${token}:custom` },
-                    { text: "« Back", callback_data: "nav:buy" }
-                  ]]
-                }
+                  inline_keyboard: [
+                    [
+                      {
+                        text: "🔄 Try Again",
+                        callback_data: `buy:amount:${token}:custom`,
+                      },
+                      { text: "« Back", callback_data: "nav:buy" },
+                    ],
+                  ],
+                },
               }
             );
           }
@@ -580,11 +601,16 @@ bot.on("message:text", async (ctx, next) => {
               {
                 parse_mode: "Markdown",
                 reply_markup: {
-                  inline_keyboard: [[
-                    { text: "🔄 Try Again", callback_data: `sell:amount:${token}:custom` },
-                    { text: "« Back", callback_data: "nav:sell" }
-                  ]]
-                }
+                  inline_keyboard: [
+                    [
+                      {
+                        text: "🔄 Try Again",
+                        callback_data: `sell:amount:${token}:custom`,
+                      },
+                      { text: "« Back", callback_data: "nav:sell" },
+                    ],
+                  ],
+                },
               }
             );
           }
@@ -615,7 +641,10 @@ bot.on("message:text", async (ctx, next) => {
       }
     } else if (page === "swap" && inputType === "amount") {
       // Swap custom amount input
-      if (ctx.session.ui.swapData?.inputMint && ctx.session.ui.swapData?.outputMint) {
+      if (
+        ctx.session.ui.swapData?.inputMint &&
+        ctx.session.ui.swapData?.outputMint
+      ) {
         const inputToken = ctx.session.ui.swapData.inputMint;
         const outputToken = ctx.session.ui.swapData.outputMint;
         const amount = parseFloat(input);
@@ -631,11 +660,16 @@ bot.on("message:text", async (ctx, next) => {
               {
                 parse_mode: "Markdown",
                 reply_markup: {
-                  inline_keyboard: [[
-                    { text: "🔄 Try Again", callback_data: `swap:amount:${inputToken}:${outputToken}:custom` },
-                    { text: "« Back", callback_data: "nav:swap" }
-                  ]]
-                }
+                  inline_keyboard: [
+                    [
+                      {
+                        text: "🔄 Try Again",
+                        callback_data: `swap:amount:${inputToken}:${outputToken}:custom`,
+                      },
+                      { text: "« Back", callback_data: "nav:swap" },
+                    ],
+                  ],
+                },
               }
             );
           }
@@ -643,7 +677,12 @@ bot.on("message:text", async (ctx, next) => {
         }
 
         // Execute swap (will check unlock inside)
-        await executeSwapFromAmount(ctx, inputToken, outputToken, amount.toString());
+        await executeSwapFromAmount(
+          ctx,
+          inputToken,
+          outputToken,
+          amount.toString()
+        );
       }
     }
 
@@ -693,6 +732,39 @@ async function executeSwapFromAmount(
 ): Promise<void> {
   // Use the real swap flow from callbacks
   await executeSwapFlow(ctx, inputToken, outputToken, amount);
+}
+
+function cancelWalletPasswordTimeout(ctx: MyContext): void {
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+
+  const key = buildConversationKey(
+    telegramId,
+    CONVERSATION_TOPICS.walletPassword
+  );
+  cancelConversationTimeout(key);
+}
+
+function cancelUnlockPasswordTimeout(ctx: MyContext): void {
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+
+  const key = buildConversationKey(
+    telegramId,
+    CONVERSATION_TOPICS.unlockPassword
+  );
+  cancelConversationTimeout(key);
+}
+
+function cancelAwaitingInputTimeout(ctx: MyContext): void {
+  const telegramId = ctx.from?.id;
+  if (!telegramId) return;
+
+  const key = buildConversationKey(
+    telegramId,
+    CONVERSATION_TOPICS.awaitingInput
+  );
+  cancelConversationTimeout(key);
 }
 
 // Error handler

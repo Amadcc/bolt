@@ -2,8 +2,13 @@
  * Helper utilities for common operations
  */
 
+import { randomBytes as nodeRandomBytes } from "node:crypto";
 import type { Lamports } from "../types/common.js";
 import { asLamports } from "../types/common.js";
+
+type CryptoLike = {
+  getRandomValues<T extends ArrayBufferView>(array: T): T;
+};
 
 /**
  * Sleep for specified milliseconds
@@ -95,12 +100,14 @@ export function formatUsdCents(cents: number): string {
  * Generate cryptographically secure random bytes
  */
 export function generateRandomBytes(length: number): Uint8Array {
-  if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-    return crypto.getRandomValues(new Uint8Array(length));
+  const globalCrypto = (globalThis as { crypto?: CryptoLike }).crypto;
+
+  if (globalCrypto && typeof globalCrypto.getRandomValues === "function") {
+    return globalCrypto.getRandomValues(new Uint8Array(length));
   }
+
   // Fallback for Node.js
-  const { randomBytes } = require("crypto");
-  return new Uint8Array(randomBytes(length));
+  return new Uint8Array(nodeRandomBytes(length));
 }
 
 /**
