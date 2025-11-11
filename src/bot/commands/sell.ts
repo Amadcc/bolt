@@ -3,47 +3,15 @@
  * User-friendly wrapper for selling tokens to SOL
  */
 
-import type { Context as GrammyContext, SessionFlavor } from "grammy";
 import { logger } from "../../utils/logger.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
 import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
-import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
 import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
 import { invalidateBalanceCache } from "../utils/balanceCache.js";
-import type { BalanceViewState } from "../views/index.js";
-
-// Define session data structure (should match bot/index.ts)
-interface SessionData {
-  walletId?: string;
-  encryptedKey?: string;
-  settings?: {
-    slippage: number;
-    autoApprove: boolean;
-  };
-  // ✅ Redis Session Integration
-  sessionToken?: string;
-  sessionExpiresAt?: number;
-  passwordExpiresAt?: number;
-  awaitingPasswordForWallet?: boolean;
-  awaitingPasswordForSwap?: {
-    inputMint: string;
-    outputMint: string;
-    amount: string;
-  };
-  awaitingPasswordForBuy?: {
-    tokenMint: string;
-    solAmount: string;
-  };
-  awaitingPasswordForSell?: {
-    tokenMint: string;
-    tokenAmount: string;
-  };
-  balanceView?: BalanceViewState;
-}
-
-type Context = GrammyContext & SessionFlavor<SessionData>;
+import { getUserContext } from "../utils/userContext.js";
+import type { Context } from "../views/index.js";
 
 /**
  * Handle /sell command
@@ -60,17 +28,12 @@ export async function handleSell(ctx: Context): Promise<void> {
       return;
     }
 
-    // Get user from database to get UUID
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(telegramId) },
-    });
-
-    if (!user) {
-      await ctx.reply("❌ User not found. Please use /start first.");
+    const userContext = await getUserContext(ctx);
+    const userId = userContext.userId;
+    if (!userContext.activeWallet) {
+      await ctx.reply("❌ Wallet not found. Please create one first.");
       return;
     }
-
-    const userId = user.id; // Use UUID, not Telegram ID
 
     const text = ctx.message?.text;
     if (!text) {
@@ -340,17 +303,8 @@ export async function handleSellPasswordInput(
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
 
-  // Get user from database to get UUID
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(telegramId) },
-  });
-
-  if (!user) {
-    await ctx.reply("❌ User not found. Please use /start first.");
-    return;
-  }
-
-  const userId = user.id; // Use UUID, not Telegram ID
+  const userContext = await getUserContext(ctx);
+  const userId = userContext.userId;
 
   const sellData = ctx.session.awaitingPasswordForSell;
   if (!sellData) return;

@@ -3,45 +3,15 @@
  * Allows users to swap tokens using Jupiter
  */
 
-import type { Context as GrammyContext, SessionFlavor } from "grammy";
 import { logger } from "../../utils/logger.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
 import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
-import { prisma } from "../../utils/db.js";
 import { resolveTokenSymbol, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
 import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
 import { invalidateBalanceCache } from "../utils/balanceCache.js";
-import type { BalanceViewState } from "../views/index.js";
-
-// Define session data structure (should match bot/index.ts)
-interface SessionData {
-  walletId?: string;
-  encryptedKey?: string;
-  settings?: {
-    slippage: number;
-    autoApprove: boolean;
-  };
-  // ✅ Redis Session Integration
-  sessionToken?: string;
-  sessionExpiresAt?: number;
-  passwordExpiresAt?: number;
-  awaitingPasswordForWallet?: boolean;
-  awaitingPasswordForSwap?: {
-    inputMint: string;
-    outputMint: string;
-    amount: string;
-  };
-  swapConversationStep?: "inputMint" | "outputMint" | "amount" | "password";
-  swapConversationData?: {
-    inputMint?: string;
-    outputMint?: string;
-    amount?: string;
-  };
-  balanceView?: BalanceViewState;
-}
-
-type Context = GrammyContext & SessionFlavor<SessionData>;
+import { getUserContext } from "../utils/userContext.js";
+import type { Context } from "../views/index.js";
 
 /**
  * Handle /swap command
@@ -56,17 +26,8 @@ export async function handleSwap(ctx: Context): Promise<void> {
       return;
     }
 
-    // Get user from database to get UUID
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(telegramId) },
-    });
-
-    if (!user) {
-      await ctx.reply("❌ User not found. Please use /start first.");
-      return;
-    }
-
-    const userId = user.id; // Use UUID, not Telegram ID
+    const userContext = await getUserContext(ctx);
+    const userId = userContext.userId;
 
     const text = ctx.message?.text;
     if (!text) {
@@ -328,17 +289,8 @@ export async function handleSwapPasswordInput(
   const telegramId = ctx.from?.id;
   if (!telegramId) return;
 
-  // Get user from database to get UUID
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(telegramId) },
-  });
-
-  if (!user) {
-    await ctx.reply("❌ User not found. Please use /start first.");
-    return;
-  }
-
-  const userId = user.id; // Use UUID, not Telegram ID
+  const userContext = await getUserContext(ctx);
+  const userId = userContext.userId;
 
   const swapData = ctx.session.awaitingPasswordForSwap;
   if (!swapData) return;

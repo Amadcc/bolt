@@ -12,7 +12,6 @@ import type {
 } from "../views/index.js";
 import { navigateToPage } from "../views/index.js";
 import { logger } from "../../utils/logger.js";
-import { prisma } from "../../utils/db.js";
 import { lockSession } from "../commands/session.js";
 import { destroySession } from "../../services/wallet/session.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
@@ -37,6 +36,7 @@ import {
   scheduleConversationTimeout,
 } from "../utils/conversationTimeouts.js";
 import { createSwapConfirmationKeyboard } from "../keyboards/swap.js";
+import { getUserContext } from "../utils/userContext.js";
 
 const BALANCE_PAGE_SIZE = 10;
 const SESSION_METADATA_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -180,18 +180,14 @@ async function handleRefreshBalanceAction(ctx: Context): Promise<void> {
     logger.error("Error updating balance loading state", { error });
   }
 
-  // Force refresh balance with new caching system
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(ctx.from!.id) },
-    include: { wallets: { where: { isActive: true } } },
-  });
+  const userContext = await getUserContext(ctx);
 
-  if (!user?.wallets.length) {
+  if (!userContext.activeWallet) {
     await navigateToPage(ctx, "main");
     return;
   }
 
-  const wallet = user.wallets[0];
+  const wallet = userContext.activeWallet;
 
   // Use new balance cache with forceRefresh=true
   const { getBalanceWithCache } = await import("../utils/balanceCache.js");
@@ -222,17 +218,14 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
   const startedAt = Date.now();
 
   try {
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(ctx.from!.id) },
-      include: { wallets: { where: { isActive: true } } },
-    });
+    const userContext = await getUserContext(ctx);
 
-    if (!user?.wallets.length) {
+    if (!userContext.activeWallet) {
       await navigateToPage(ctx, "main");
       return;
     }
 
-    const wallet = user.wallets[0];
+    const wallet = userContext.activeWallet;
     const connection = await getSolanaConnection();
     const publicKey = new PublicKey(wallet.publicKey);
 
@@ -1052,13 +1045,10 @@ export async function executeSellFlow(
   logger.info("Executing sell immediately (auto-approve enabled or confirmed)", { token, percentage });
 
   try {
-    // Get user
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(ctx.from!.id) },
-      include: { wallets: { where: { isActive: true } } },
-    });
+    const userContext = await getUserContext(ctx);
+    const wallet = userContext.activeWallet;
 
-    if (!user || !user.wallets.length) {
+    if (!wallet) {
       await ctx.editMessageText("❌ Wallet not found. Please create one first.", {
         parse_mode: "Markdown",
         reply_markup: {
@@ -1096,7 +1086,7 @@ export async function executeSellFlow(
     const { getSolanaConnection } = await import("../../services/blockchain/solana.js");
     const { PublicKey } = await import("@solana/web3.js");
     const connection = await getSolanaConnection();
-    const publicKey = new PublicKey(user.wallets[0].publicKey);
+    const publicKey = new PublicKey(wallet.publicKey);
 
     // Get token balance
     const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
@@ -1154,7 +1144,7 @@ export async function executeSellFlow(
     const executor = getTradingExecutor();
     const tradeResult = await executor.executeTrade(
       {
-        userId: user.id,
+        userId: userContext.userId,
         inputMint,
         outputMint,
         amount: amountToSell.toString(),
@@ -1587,13 +1577,10 @@ export async function executeSwapFlow(
   logger.info("Executing swap immediately (auto-approve enabled or confirmed)", { inputToken, outputToken, amount });
 
   try {
-    // Get user with wallet
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(ctx.from!.id) },
-      include: { wallets: { where: { isActive: true } } },
-    });
+    const userContext = await getUserContext(ctx);
+    const wallet = userContext.activeWallet;
 
-    if (!user || !user.wallets.length) {
+    if (!wallet) {
       await ctx.api.editMessageText(
         ctx.chat!.id,
         msgId,
@@ -1666,7 +1653,7 @@ export async function executeSwapFlow(
       const { getSolanaConnection } = await import("../../services/blockchain/solana.js");
       const { PublicKey } = await import("@solana/web3.js");
       const connection = await getSolanaConnection();
-      const publicKey = new PublicKey(user.wallets[0].publicKey);
+      const publicKey = new PublicKey(wallet.publicKey);
 
       // Get token balance
       const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
@@ -1747,7 +1734,7 @@ export async function executeSwapFlow(
     const executor = getTradingExecutor();
     const tradeResult = await executor.executeTrade(
       {
-        userId: user.id,
+        userId: userContext.userId,
         inputMint,
         outputMint,
         amount: minimalUnits,
@@ -1942,13 +1929,10 @@ export async function executeSellWithAbsoluteAmount(
   logger.info("Executing sell immediately (auto-approve enabled or confirmed)", { token, absoluteAmount });
 
   try {
-    // Get user
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(ctx.from!.id) },
-      include: { wallets: { where: { isActive: true } } },
-    });
+    const userContext = await getUserContext(ctx);
+    const wallet = userContext.activeWallet;
 
-    if (!user || !user.wallets.length) {
+    if (!wallet) {
       await ctx.api.editMessageText(
         ctx.chat.id,
         msgId,
@@ -2009,7 +1993,7 @@ export async function executeSellWithAbsoluteAmount(
     const executor = getTradingExecutor();
     const tradeResult = await executor.executeTrade(
       {
-        userId: user.id,
+        userId: userContext.userId,
         inputMint,
         outputMint,
         amount: minimalUnits,

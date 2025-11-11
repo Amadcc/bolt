@@ -17,7 +17,6 @@ import {
   deletePasswordTemporary,
   PASSWORD_TTL_MS,
 } from "../../services/wallet/passwordVault.js";
-import { prisma } from "../../utils/db.js";
 import { navigateToPage, type Context } from "../views/index.js";
 import {
   clearUnlockFailures,
@@ -25,6 +24,7 @@ import {
   recordUnlockFailure,
   MAX_UNLOCK_ATTEMPTS,
 } from "../../services/security/unlockRateLimiter.js";
+import { getUserContext } from "../utils/userContext.js";
 
 /**
  * Handle /unlock command
@@ -223,12 +223,8 @@ async function executeUnlock(
     ctx.session.sessionExpiresAt = expiresAt.getTime();
     ctx.session.passwordExpiresAt = Date.now() + PASSWORD_TTL_MS;
 
-    // Get wallet publicKey from database
-    const wallet = await prisma.wallet.findFirst({
-      where: { userId, isActive: true },
-    });
-
-    const publicKey = wallet?.publicKey || "Unknown";
+    const userContext = await getUserContext(ctx);
+    const publicKey = userContext.activeWallet?.publicKey ?? "Unknown";
 
     // Success message
     const successMessage =
@@ -287,18 +283,8 @@ export async function handleUnlockPasswordInput(
   // Clear session
   ctx.session.awaitingPasswordForUnlock = false;
 
-  // Get user from database
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(telegramId) },
-  });
-
-  if (!user) {
-    await ctx.reply("❌ User not found. Please use /start first.");
-    return;
-  }
-
-  // Execute unlock with UUID userId
-  await executeUnlock(ctx, user.id, password);
+  const userContext = await getUserContext(ctx);
+  await executeUnlock(ctx, userContext.userId, password);
 }
 
 /**
@@ -351,13 +337,9 @@ export async function handleLock(ctx: Context): Promise<void> {
       logger.warn("Failed to delete lock command message", { error });
     }
 
-    // Check if user has a wallet
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(telegramId) },
-      include: { wallets: true },
-    });
+    const userContext = await getUserContext(ctx);
 
-    if (!user || !user.wallets.length) {
+    if (!userContext.activeWallet) {
       await ctx.reply("❌ You don't have a wallet yet. Use /createwallet to create one.");
       return;
     }
@@ -370,7 +352,10 @@ export async function handleLock(ctx: Context): Promise<void> {
     // Also clear Grammy session
     await lockSession(ctx);
 
-    logger.info("Wallet locked - Redis session destroyed", { userId: user.id, telegramId });
+    logger.info("Wallet locked - Redis session destroyed", {
+      userId: userContext.userId,
+      telegramId,
+    });
 
     // Navigate to main page (will show locked status)
     await navigateToPage(ctx, "main");

@@ -1,5 +1,4 @@
 import { Bot, session } from "grammy";
-import { prisma } from "../utils/db.js";
 import { handlePasswordInput } from "./commands/createWallet.js";
 // ✅ Redis Session Integration: Now using secure Redis sessions instead of in-memory
 import {
@@ -33,8 +32,17 @@ import {
   cancelConversationTimeout,
   CONVERSATION_TOPICS,
 } from "./utils/conversationTimeouts.js";
+import {
+  getUserContext,
+  invalidateUserContext,
+} from "./utils/userContext.js";
+import type { CachedUserContext } from "./utils/userContext.js";
 
-type MyContext = ViewContext;
+type MyContext = ViewContext & {
+  state: {
+    userContext?: CachedUserContext;
+  };
+};
 
 export const bot = new Bot<MyContext>(process.env.BOT_TOKEN!);
 
@@ -53,22 +61,12 @@ bot.use(
 // Middleware для проверки/создания пользователя
 bot.use(async (ctx, next) => {
   if (ctx.from) {
-    let user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(ctx.from.id) },
+    await getUserContext(ctx).catch((error) => {
+      logger.error("Failed to hydrate user context", {
+        error,
+        telegramId: ctx.from?.id,
+      });
     });
-
-    if (!user) {
-      user = await prisma.user.create({
-        data: {
-          telegramId: BigInt(ctx.from.id),
-          username: ctx.from.username || null,
-        },
-      });
-      logger.info("New user created", {
-        userId: user.id,
-        telegramId: ctx.from.id,
-      });
-    }
   }
 
   await next();
@@ -82,25 +80,12 @@ bot.use(async (ctx, next) => {
  * /start - Show create wallet or dashboard
  */
 bot.command("start", async (ctx) => {
-  // Clear message ID to force creating a new message (in case user cleared chat)
   ctx.session.ui.messageId = undefined;
 
-  // Check if user has wallet
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(ctx.from!.id) },
-    include: { wallets: true },
-  });
+  const userContext = await getUserContext(ctx);
+  const hasWallet = !!userContext.activeWallet;
 
-  const hasWallet = user?.wallets && user.wallets.length > 0;
-
-  // Navigate to appropriate page
-  if (hasWallet) {
-    // User has wallet → show dashboard
-    await navigateToPage(ctx, "main");
-  } else {
-    // No wallet → show create wallet directly
-    await navigateToPage(ctx, "create_wallet");
-  }
+  await navigateToPage(ctx, hasWallet ? "main" : "create_wallet");
 });
 
 /**
@@ -417,16 +402,13 @@ bot.on("message:text", async (ctx, next) => {
     ctx.session.awaitingPasswordForWallet = false;
     cancelWalletPasswordTimeout(ctx);
 
-    // Handle password input
     await handlePasswordInput(ctx, password);
 
-    // After wallet creation, navigate to main page
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(ctx.from!.id) },
-      include: { wallets: true },
-    });
+    invalidateUserContext(ctx);
 
-    if (user?.wallets.length) {
+    const userContext = await getUserContext(ctx, { forceRefresh: true });
+
+    if (userContext.activeWallet) {
       // Update the message to show success and navigate to main
       setTimeout(async () => {
         try {

@@ -11,10 +11,10 @@
  * 7. Bot deletes password message for security
  */
 
-import type { Context } from "grammy";
+import type { Context } from "../views/index.js";
 import { createWallet, hasWallet } from "../../services/wallet/keyManager.js";
 import { logger } from "../../utils/logger.js";
-import { prisma } from "../../utils/db.js";
+import { getUserContext, invalidateUserContext } from "../utils/userContext.js";
 
 // ============================================================================
 // Command Handler
@@ -29,18 +29,10 @@ export async function handleCreateWallet(ctx: Context): Promise<void> {
   }
 
   try {
-    // Get user from database by telegramId
-    const user = await prisma.user.findUnique({
-      where: { telegramId },
-    });
-
-    if (!user) {
-      await ctx.reply("❌ User not found. Please use /start first.");
-      return;
-    }
+    const userContext = await getUserContext(ctx);
 
     // Check if user already has a wallet
-    const userHasWallet = await hasWallet(user.id);
+    const userHasWallet = await hasWallet(userContext.userId);
 
     if (userHasWallet) {
       await ctx.reply(
@@ -93,15 +85,7 @@ export async function handlePasswordInput(
   }
 
   try {
-    // Get user from database by telegramId
-    const user = await prisma.user.findUnique({
-      where: { telegramId },
-    });
-
-    if (!user) {
-      await ctx.reply("❌ User not found. Please use /start first.");
-      return;
-    }
+    const userContext = await getUserContext(ctx);
 
     // Update UI message to show processing
     const messageId = (ctx as any).session?.ui?.messageId;
@@ -119,13 +103,13 @@ export async function handlePasswordInput(
 
     // Create wallet
     const result = await createWallet({
-      userId: user.id,
+      userId: userContext.userId,
       password,
     });
 
     if (!result.success) {
       logger.error("Failed to create wallet", {
-        userId: user.id,
+        userId: userContext.userId,
         telegramId,
         error: result.error,
       });
@@ -177,11 +161,13 @@ export async function handlePasswordInput(
     }
 
     logger.info("Wallet created via Telegram", {
-      userId: user.id,
+      userId: userContext.userId,
       telegramId,
       walletId,
       publicKey,
     });
+
+    invalidateUserContext(ctx);
   } catch (error) {
     logger.error("Error processing password input", { telegramId, error });
     await ctx.reply(

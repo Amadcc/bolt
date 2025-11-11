@@ -4,11 +4,11 @@
  * Shows user's SOL and token balances
  */
 
-import type { Context } from "grammy";
-import { prisma } from "../../utils/db.js";
+import type { Context } from "../views/index.js";
 import { getSolanaConnection } from "../../services/blockchain/solana.js";
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { logger } from "../../utils/logger.js";
+import { getUserContext } from "../utils/userContext.js";
 
 // Known token metadata (symbol and decimals)
 const KNOWN_TOKENS: Record<string, { symbol: string; decimals: number }> = {
@@ -29,18 +29,9 @@ export async function handleBalance(ctx: Context): Promise<void> {
   }
 
   try {
-    // Get user from database
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(telegramId) },
-      include: { wallets: { where: { isActive: true } } },
-    });
+    const userContext = await getUserContext(ctx);
 
-    if (!user) {
-      await ctx.reply("❌ User not found. Please use /start first.");
-      return;
-    }
-
-    if (!user.wallets.length) {
+    if (!userContext.activeWallet) {
       await ctx.reply(
         "💼 You don't have a wallet yet.\n\n" +
           "Use /createwallet to create one."
@@ -48,7 +39,7 @@ export async function handleBalance(ctx: Context): Promise<void> {
       return;
     }
 
-    const wallet = user.wallets[0];
+    const wallet = userContext.activeWallet;
     const connection = await getSolanaConnection();
     const publicKey = new PublicKey(wallet.publicKey);
 
@@ -101,7 +92,7 @@ export async function handleBalance(ctx: Context): Promise<void> {
     await ctx.reply(message, { parse_mode: "Markdown" });
 
     logger.info("Balance checked", {
-      userId: user.id,
+      userId: userContext.userId,
       telegramId,
       publicKey: wallet.publicKey,
       sol,

@@ -5,7 +5,6 @@
 
 import { InlineKeyboard } from "grammy";
 import type { Context as GrammyContext, SessionFlavor } from "grammy";
-import { prisma } from "../../utils/db.js";
 import { logger } from "../../utils/logger.js";
 import { hasActivePassword } from "../utils/passwordState.js";
 import {
@@ -14,6 +13,8 @@ import {
   DEFAULT_CONVERSATION_TTL_MS,
   scheduleConversationTimeout,
 } from "../utils/conversationTimeouts.js";
+import type { CachedUserContext } from "../utils/userContext.js";
+import { getUserContext } from "../utils/userContext.js";
 
 // ============================================================================
 // Types
@@ -97,6 +98,19 @@ export interface SessionData {
   ui: UIState;
   awaitingPasswordForWallet?: boolean;
   awaitingPasswordForUnlock?: boolean;
+  awaitingPasswordForBuy?: {
+    tokenMint: string;
+    solAmount: string;
+  };
+  awaitingPasswordForSell?: {
+    tokenMint: string;
+    tokenAmount: string;
+  };
+  awaitingPasswordForSwap?: {
+    inputMint: string;
+    outputMint: string;
+    amount: string;
+  };
   returnToPageAfterUnlock?: Page; // Save page to return after unlock
   pendingCommand?: {
     type: "buy" | "sell" | "sell_pct" | "swap";
@@ -114,6 +128,7 @@ export interface SessionData {
   };
   tokenMetadataCache?: TokenMetadataCacheState;
   balanceView?: BalanceViewState;
+  cachedUserContext?: CachedUserContext;
 }
 
 export type Context = GrammyContext & SessionFlavor<SessionData>;
@@ -129,12 +144,8 @@ export async function renderWelcomePage(ctx: Context): Promise<{
   text: string;
   keyboard: InlineKeyboard;
 }> {
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(ctx.from!.id) },
-    include: { wallets: true },
-  });
-
-  const hasWallet = user?.wallets && user.wallets.length > 0;
+  const userContext = await getUserContext(ctx);
+  const hasWallet = userContext.wallets.length > 0;
 
   const text =
     `*Bolt Sniper Bot*\n\n` +
@@ -240,16 +251,13 @@ export async function renderMainPage(ctx: Context): Promise<{
   text: string;
   keyboard: InlineKeyboard;
 }> {
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(ctx.from!.id) },
-    include: { wallets: true },
-  });
+  const userContext = await getUserContext(ctx);
 
-  if (!user?.wallets.length) {
+  if (!userContext.activeWallet) {
     return renderWelcomePage(ctx);
   }
 
-  const wallet = user.wallets[0];
+  const wallet = userContext.activeWallet;
   // ✅ Redis Session Integration: Check Redis session + password TTL
   const isLocked =
     !ctx.session.sessionToken || !hasActivePassword(ctx.session);
@@ -499,16 +507,13 @@ export async function renderBalancePage(
   text: string;
   keyboard: InlineKeyboard;
 }> {
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(ctx.from!.id) },
-    include: { wallets: { where: { isActive: true } } },
-  });
+  const userContext = await getUserContext(ctx);
 
-  if (!user?.wallets.length) {
+  if (!userContext.activeWallet) {
     return renderWelcomePage(ctx);
   }
 
-  const wallet = user.wallets[0];
+  const wallet = userContext.activeWallet;
 
   try {
     // Get balance with caching (60s TTL)
@@ -615,16 +620,13 @@ export async function renderWalletInfoPage(ctx: Context): Promise<{
   text: string;
   keyboard: InlineKeyboard;
 }> {
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(ctx.from!.id) },
-    include: { wallets: true },
-  });
+  const userContext = await getUserContext(ctx);
 
-  if (!user?.wallets.length) {
+  if (!userContext.activeWallet) {
     return renderWelcomePage(ctx);
   }
 
-  const wallet = user.wallets[0];
+  const wallet = userContext.activeWallet;
 
   const text =
     `*Wallet*\n\n` +
@@ -679,16 +681,13 @@ export async function renderUnlockPage(ctx: Context): Promise<{
   text: string;
   keyboard: InlineKeyboard;
 }> {
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(ctx.from!.id) },
-    include: { wallets: true },
-  });
+  const userContext = await getUserContext(ctx);
 
-  if (!user?.wallets.length) {
+  if (!userContext.activeWallet) {
     return renderWelcomePage(ctx);
   }
 
-  const wallet = user.wallets[0];
+  const wallet = userContext.activeWallet;
 
   const text =
     `*Unlock Wallet*\n\n` +
@@ -709,16 +708,13 @@ export async function renderStatusPage(ctx: Context): Promise<{
   text: string;
   keyboard: InlineKeyboard;
 }> {
-  const user = await prisma.user.findUnique({
-    where: { telegramId: BigInt(ctx.from!.id) },
-    include: { wallets: true },
-  });
+  const userContext = await getUserContext(ctx);
 
-  if (!user?.wallets.length) {
+  if (!userContext.activeWallet) {
     return renderWelcomePage(ctx);
   }
 
-  const wallet = user.wallets[0];
+  const wallet = userContext.activeWallet;
 
   // ✅ Redis Session Integration: Check Redis session status
   const hasSession = !!ctx.session.sessionToken;

@@ -5,13 +5,13 @@
 
 import type { Context } from "../views/index.js";
 import { logger } from "../../utils/logger.js";
-import { prisma } from "../../utils/db.js";
 import { getTradingExecutor } from "../../services/trading/executor.js";
 import { asTokenMint } from "../../types/common.js";
 import { resolveTokenSymbol, SOL_MINT, getTokenDecimals } from "../../config/tokens.js";
 import type { TradingError } from "../../types/trading.js";
 import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
 import { performHoneypotAnalysis } from "../utils/honeypot.js";
+import { getUserContext } from "../utils/userContext.js";
 
 /**
  * Execute buy flow with honeypot check and real Jupiter execution
@@ -79,13 +79,10 @@ export async function executeBuyFlow(
   }
 
   try {
-    // Get user with wallets
-    const user = await prisma.user.findUnique({
-      where: { telegramId: BigInt(ctx.from!.id) },
-      include: { wallets: { where: { isActive: true } } },
-    });
+    const userContext = await getUserContext(ctx);
+    const wallet = userContext.activeWallet;
 
-    if (!user || !user.wallets.length) {
+    if (!wallet) {
       await ctx.api.editMessageText(
         ctx.chat.id,
         msgId,
@@ -189,8 +186,10 @@ export async function executeBuyFlow(
       const outputMint = asTokenMint(tokenMint);
 
       // Ensure wallet exists before getting quote
-      if (!user.wallets || !user.wallets[0] || !user.wallets[0].publicKey) {
-        logger.error("Cannot get quote: wallet not found", { userId: user.id });
+      if (!wallet?.publicKey) {
+        logger.error("Cannot get quote: wallet not found", {
+          userId: userContext.userId,
+        });
         await ctx.api.editMessageText(
           ctx.chat.id,
           msgId,
@@ -208,7 +207,7 @@ export async function executeBuyFlow(
       logger.info("Getting quote for buy confirmation", {
         token,
         amount,
-        userPublicKey: user.wallets[0].publicKey
+        userPublicKey: wallet.publicKey
       });
 
       const executor = getTradingExecutor();
@@ -217,7 +216,7 @@ export async function executeBuyFlow(
         outputMint,
         amount: lamports,
         slippageBps: 50,
-        userPublicKey: user.wallets[0].publicKey,
+        userPublicKey: wallet.publicKey,
       });
 
       if (!quoteResult.success) {
@@ -306,7 +305,7 @@ export async function executeBuyFlow(
     const executor = getTradingExecutor();
     const tradeResult = await executor.executeTrade(
       {
-        userId: user.id,
+        userId: userContext.userId,
         inputMint,
         outputMint,
         amount: lamports,
@@ -349,7 +348,7 @@ export async function executeBuyFlow(
             `📊 Check your balance: /balance\n\n` +
             `💎 *Fund your wallet:*\n` +
             `Send SOL to:\n` +
-            `\`${user.wallets[0].publicKey}\``;
+            `\`${wallet.publicKey}\``;
 
           buttons = [[
             { text: "📊 Check Balance", callback_data: "nav:balance" },
