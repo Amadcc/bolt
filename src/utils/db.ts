@@ -15,7 +15,12 @@ const prismaBase = new PrismaClient({
 export const prisma = prismaBase.$extends({
   query: {
     $allModels: {
-      async $allOperations({ model, operation, args, query }) {
+      async $allOperations({ model, operation, args, query }: {
+        model: string;
+        operation: string;
+        args: unknown;
+        query: (args: unknown) => Promise<unknown>;
+      }) {
         incrementDbActivity();
         const start = Date.now();
         try {

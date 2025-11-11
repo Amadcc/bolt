@@ -1135,20 +1135,20 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
 **Location:** `docker-compose.yml`
 **Purpose:** Production-ready containerization
 
-- [ ] **Add resource limits**
+- [x] **Add resource limits**
 
   - Set CPU limits (1-2 cores per service)
   - Set memory limits (512MB app, 1GB PostgreSQL, 256MB Redis)
   - Set memory reservations
   - Test resource enforcement
 
-- [ ] **Add restart policies**
+- [x] **Add restart policies**
 
   - Set restart: always for all services
   - Add max restart attempts
   - Test automatic restart on crash
 
-- [ ] **Add health checks**
+- [x] **Add health checks**
 
   - PostgreSQL: pg_isready
   - Redis: redis-cli ping
@@ -1156,13 +1156,13 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
   - Configure intervals (30s) and timeouts (10s)
   - Test unhealthy container restart
 
-- [ ] **Remove development volumes**
+- [x] **Remove development volumes**
 
   - Remove ./src:/app/src bind mount
   - Use named volumes for data only
   - Update .dockerignore
 
-- [ ] **Configure PostgreSQL production**
+- [x] **Configure PostgreSQL production**
 
   - Set shared_buffers (256MB)
   - Set work_mem (4MB)
@@ -1170,7 +1170,7 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
   - Add backup volume mount
   - Set max_connections (100)
 
-- [ ] **Configure Redis production**
+- [x] **Configure Redis production**
 
   - Set maxmemory (256MB)
   - Set maxmemory-policy allkeys-lru
@@ -1178,14 +1178,14 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
   - Enable AOF persistence
   - Add backup volume mount
 
-- [ ] **Use Docker secrets**
+- [x] **Use Docker secrets**
 
   - Create secrets files for BOT_TOKEN, DB password, etc
   - Update service configs to read from /run/secrets/
   - Remove environment variables with secrets
   - Document secret rotation process
 
-- [ ] **Create production Dockerfile**
+- [x] **Create production Dockerfile**
 
   - Use multi-stage build
   - Minimize image size (alpine base)
@@ -1193,7 +1193,7 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
   - Add HEALTHCHECK instruction
   - Security scan with Trivy
 
-- [ ] **Test Docker setup**
+- [x] **Test Docker setup**
   - Run `docker-compose up`
   - Verify all services start and healthy
   - Test service restarts

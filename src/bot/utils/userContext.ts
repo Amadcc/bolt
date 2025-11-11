@@ -87,21 +87,31 @@ export async function getUserContext(
   }
 
   const activeWallet =
-    user.wallets.find((wallet) => wallet.isActive) ?? user.wallets[0];
+    user.wallets.find((wallet: { isActive: boolean }) => wallet.isActive) ??
+    user.wallets[0];
 
   const payload: CachedUserContext = {
     userId: user.id,
     telegramId: user.telegramId,
     username: user.username,
     subscriptionTier: user.subscriptionTier,
-    wallets: user.wallets.map((wallet) => ({
-      id: wallet.id,
-      publicKey: wallet.publicKey,
-      encryptedPrivateKey: wallet.encryptedPrivateKey,
-      chain: wallet.chain,
-      isActive: wallet.isActive,
-      createdAt: wallet.createdAt,
-    })),
+    wallets: user.wallets.map(
+      (wallet: {
+        id: string;
+        publicKey: string;
+        encryptedPrivateKey: string;
+        chain: string;
+        isActive: boolean;
+        createdAt: Date;
+      }) => ({
+        id: wallet.id,
+        publicKey: wallet.publicKey,
+        encryptedPrivateKey: wallet.encryptedPrivateKey,
+        chain: wallet.chain,
+        isActive: wallet.isActive,
+        createdAt: wallet.createdAt,
+      })
+    ),
     activeWallet,
     cachedAt: Date.now(),
   };
