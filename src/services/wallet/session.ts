@@ -33,6 +33,11 @@ import {
 import { SessionError } from "../../utils/errors.js";
 import { logger } from "../../utils/logger.js";
 import { generateRandomHex } from "../../utils/helpers.js";
+import {
+  decrementActiveSessions,
+  incrementActiveSessions,
+  incrementWalletUnlockFailures,
+} from "../../utils/metrics.js";
 
 // ============================================================================
 // Constants
@@ -95,6 +100,10 @@ export async function createSession(
     const unlockResult = await unlockWallet({ userId, password });
 
     if (!unlockResult.success) {
+      const walletError = unlockResult.error;
+      if (walletError && walletError.type === "INVALID_PASSWORD") {
+        incrementWalletUnlockFailures();
+      }
       return Err(
         new SessionError(
           `Failed to create session: ${unlockResult.error.type}`
@@ -137,9 +146,10 @@ export async function createSession(
       expiresAt,
     };
 
-    // Store in Redis with TTL
-    const key = getSessionKey(sessionToken);
-    await redis.setex(key, SESSION_TTL, JSON.stringify(sessionData));
+  // Store in Redis with TTL
+  const key = getSessionKey(sessionToken);
+  await redis.setex(key, SESSION_TTL, JSON.stringify(sessionData));
+  incrementActiveSessions();
 
     logger.info("Session created securely", {
       userId,
@@ -227,7 +237,10 @@ export async function destroySession(
 ): Promise<Result<void, SessionError>> {
   try {
     const key = getSessionKey(sessionToken);
-    await redis.del(key);
+    const deleted = await redis.del(key);
+    if (deleted > 0) {
+      decrementActiveSessions();
+    }
 
     logger.info("Session destroyed", { sessionToken: "[REDACTED]" });
     return Ok(undefined);
@@ -261,8 +274,11 @@ export async function destroyAllUserSessions(
       if (data) {
         const sessionData: SessionData = JSON.parse(data);
         if (sessionData.userId === userId) {
-          await redis.del(key);
-          deletedCount++;
+          const removed = await redis.del(key);
+          if (removed > 0) {
+            deletedCount++;
+            decrementActiveSessions();
+          }
         }
       }
     }

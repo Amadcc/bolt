@@ -18,6 +18,13 @@ import type { TradeParams, TradeResult, TradingError } from "../../types/trading
 import type { JupiterError } from "../../types/jupiter.js";
 import type { WalletError } from "../../types/solana.js";
 import { asTransactionSignature } from "../../types/common.js";
+import {
+  incrementWalletUnlockFailures,
+  recordError,
+  recordTradeFailure,
+  recordTradeRequested,
+  recordTradeSuccess,
+} from "../../utils/metrics.js";
 
 // ============================================================================
 // Trading Executor Configuration
@@ -204,6 +211,14 @@ export class TradingExecutor {
     sessionToken?: SessionToken // ✅ Optional Redis session token
   ): Promise<Result<TradeResult, TradingError>> {
     const { userId, inputMint, outputMint, amount, slippageBps } = params;
+    const tradeSide = this.determineSide(inputMint, outputMint);
+    const tradeStart = Date.now();
+    const recordFailure = (reason: string, errorType?: string) => {
+      if (errorType) {
+        recordError(errorType);
+      }
+      recordTradeFailure(tradeSide, Date.now() - tradeStart, reason);
+    };
 
     logger.info("Executing trade", {
       userId,
@@ -214,6 +229,8 @@ export class TradingExecutor {
       passwordProvided: !!password,
       hasSession: !!sessionToken,
     });
+
+    recordTradeRequested(tradeSide);
 
     try {
       let keypair;
@@ -229,7 +246,7 @@ export class TradingExecutor {
             userId,
             sessionToken: sessionToken.slice(0, 8) + "...",
           });
-
+          recordFailure("session_password_lookup", "session_password_error");
           return Err({
             type: "INVALID_PASSWORD",
             message: "Unable to access secure password cache. Please /unlock again."
@@ -241,6 +258,7 @@ export class TradingExecutor {
             userId,
             sessionToken: sessionToken.slice(0, 8) + "...",
           });
+          recordFailure("session_expired", "session_password_expired");
 
           return Err({
             type: "INVALID_PASSWORD",
@@ -259,6 +277,7 @@ export class TradingExecutor {
         const keypairResult = await getKeypairForSigning(sessionToken, effectivePassword);
 
         if (!keypairResult.success) {
+          recordFailure("session_unlock_failed", "session_keypair_failure");
           return Err({
             type: "INVALID_PASSWORD",
             message: "Session expired or invalid password. Please /unlock again."
@@ -272,6 +291,7 @@ export class TradingExecutor {
       } else {
         // Fallback: unlock wallet directly
         if (!effectivePassword) {
+          recordFailure("missing_password", "trade_missing_password");
           return Err({
             type: "INVALID_PASSWORD",
             message: "Password is required for trading"
@@ -286,13 +306,17 @@ export class TradingExecutor {
           const error = unlockResult.error as WalletError;
 
           if (error.type === "WALLET_NOT_FOUND") {
+            recordFailure("wallet_not_found", "wallet_not_found");
             return Err({ type: "WALLET_NOT_FOUND", message: `Wallet not found for user ${error.userId}` });
           }
 
           if (error.type === "INVALID_PASSWORD") {
+            incrementWalletUnlockFailures();
+            recordFailure("invalid_password", "wallet_invalid_password");
             return Err({ type: "INVALID_PASSWORD", message: error.message });
           }
 
+          recordFailure("wallet_unlock_unknown", "wallet_unlock_unknown");
           return Err({ type: "UNKNOWN", message: "Failed to unlock wallet" });
         }
 
@@ -307,7 +331,7 @@ export class TradingExecutor {
         data: {
           userId,
           tokenMint: outputMint, // The token being acquired
-          side: this.determineSide(inputMint, outputMint),
+          side: tradeSide,
           amount: amount,
           status: "pending",
         },
@@ -342,6 +366,8 @@ export class TradingExecutor {
 
       if (!swapResult.success) {
         const error = swapResult.error as JupiterError;
+        recordError("swap_failed");
+        recordTradeFailure(tradeSide, Date.now() - tradeStart, "swap_failed");
 
         // Update order status to failed
         await prisma.order.update({
@@ -395,6 +421,12 @@ export class TradingExecutor {
         priceImpactPct: swapData.priceImpactPct,
         commissionUsd,
       });
+
+      recordTradeSuccess(
+        tradeSide,
+        Date.now() - tradeStart,
+        commissionUsd
+      );
 
       return Ok({
         orderId: order.id,

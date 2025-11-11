@@ -13,6 +13,10 @@
 
 import Redis, { type RedisOptions } from "ioredis";
 import { logger } from "./logger.js";
+import {
+  setRedisConnectionStatus,
+  trackRedisCommand,
+} from "./metrics.js";
 
 // ============================================================================
 // Configuration
@@ -113,6 +117,28 @@ const redisOptions: RedisOptions = {
 // ============================================================================
 
 export const redis = new Redis(REDIS_URL, redisOptions);
+setRedisConnectionStatus(false);
+
+const originalSendCommand = redis.sendCommand.bind(redis);
+redis.sendCommand = function patchedSendCommand(command: any, ...args: any[]) {
+  const commandName =
+    (command?.name as string | undefined)?.toLowerCase() ?? "unknown";
+  const start = Date.now();
+  const result = originalSendCommand(
+    command,
+    ...args
+  ) as Promise<unknown>;
+
+  result
+    .then(() => {
+      trackRedisCommand(commandName, Date.now() - start);
+    })
+    .catch(() => {
+      trackRedisCommand(commandName, Date.now() - start);
+    });
+
+  return result;
+};
 
 // ============================================================================
 // Event Handlers
@@ -148,6 +174,7 @@ redis.on("ready", () => {
   logger.info("Redis ready to accept commands", {
     tls: IS_PRODUCTION && REDIS_URL.startsWith("rediss://"),
   });
+  setRedisConnectionStatus(true);
 });
 
 /**
@@ -167,6 +194,7 @@ redis.on("reconnecting", (timeUntilReconnect: number) => {
  */
 redis.on("close", () => {
   logger.warn("Redis connection closed");
+  setRedisConnectionStatus(false);
 });
 
 /**
@@ -176,6 +204,7 @@ redis.on("end", () => {
   logger.warn("Redis connection ended", {
     reconnectCount,
   });
+  setRedisConnectionStatus(false);
 });
 
 /**

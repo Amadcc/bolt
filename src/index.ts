@@ -10,6 +10,7 @@ import { initializeTradingExecutor } from "./services/trading/executor.js";
 import { initializeHoneypotDetector } from "./services/honeypot/detector.js";
 import { initializeJitoService } from "./services/trading/jito.js";
 import { logger } from "./utils/logger.js";
+import { getMetrics, metricsRegistry } from "./utils/metrics.js";
 
 const app = Fastify({
   logger: true,
@@ -96,6 +97,11 @@ app.get("/health", async () => {
       },
     },
   };
+});
+
+app.get("/metrics", async (_, reply) => {
+  reply.header("Content-Type", metricsRegistry.contentType);
+  return getMetrics();
 });
 
 async function checkDatabase(): Promise<boolean> {

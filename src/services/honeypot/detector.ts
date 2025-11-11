@@ -15,6 +15,7 @@ import axios, { type AxiosInstance, type AxiosResponse, type AxiosError } from "
 import { logger } from "../../utils/logger.js";
 import { redis } from "../../utils/redis.js";
 import { getSolana } from "../blockchain/solana.js";
+import { recordHoneypotDetection } from "../../utils/metrics.js";
 import type { Result } from "../../types/common.js";
 import { Ok, Err } from "../../types/common.js";
 import type {
@@ -171,6 +172,14 @@ export class HoneypotDetector {
       if (this.config.cacheEnabled) {
         await this.saveToCache(tokenMint, result);
       }
+
+      const riskLevel: "low" | "medium" | "high" =
+        result.riskScore >= this.config.highRiskThreshold
+          ? "high"
+          : result.riskScore >= this.config.mediumRiskThreshold
+            ? "medium"
+            : "low";
+      recordHoneypotDetection(riskLevel);
 
       logger.info("Honeypot check: completed", {
         tokenMint: tokenMint.slice(0, 8),

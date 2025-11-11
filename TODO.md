@@ -1037,61 +1037,44 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
 **Priority:** MEDIUM 🟡
 **Dependencies:** Week 2 must be complete
 
-### 15. Prometheus Metrics
+### 15. Prometheus Metrics ✅
 
 **Location:** New file `src/utils/metrics.ts`
 **Purpose:** Monitoring and observability
 
-- [ ] **Install prom-client**
+- [x] **Install prom-client**
 
-  - Run `npm install prom-client`
-  - Create metrics.ts service
-  - Initialize Prometheus registry
+  - ✅ Added `prom-client` dependency and centralized registry in `src/utils/metrics.ts`
+  - ✅ Default process metrics collected with `bolt_` prefix
 
-- [ ] **Add RPC latency metrics**
+- [x] **Add RPC latency metrics**
 
-  - Create histogram `rpc_request_duration_ms`
-  - Track P50, P90, P95, P99 percentiles
-  - Label by endpoint name
-  - Label by RPC method (getBalance, sendTransaction, etc)
+  - ✅ Added histogram `rpc_request_duration_ms` with endpoint/method/status labels
+  - ✅ `RPCPool` now wraps `Connection._rpcRequest` to capture every Solana call automatically
 
-- [ ] **Add trade execution metrics**
+- [x] **Add trade execution metrics**
 
-  - Counter `trades_total` (labeled by side: buy/sell/swap)
-  - Counter `trades_success_total`
-  - Counter `trades_failed_total`
-  - Histogram `trade_execution_duration_ms`
-  - Histogram `trade_commission_usd`
+  - ✅ Counters for total/success/failed trades with `side` label
+  - ✅ Histograms for execution duration + commission USD recorded in `TradingExecutor`
 
-- [ ] **Add error rate metrics**
+- [x] **Add error rate metrics**
 
-  - Counter `errors_total` (labeled by error type)
-  - Counter `wallet_unlock_failures_total`
-  - Counter `honeypot_detections_total` (labeled by risk level)
-  - Gauge `active_sessions` (current count)
+  - ✅ `errors_total` counter plus dedicated `wallet_unlock_failures_total`
+  - ✅ Honeypot detection counter keyed by risk bucket
+  - ✅ Active sessions gauge driven by session lifecycle (create/destroy)
 
-- [ ] **Add system metrics**
+- [x] **Add system metrics**
 
-  - Gauge `database_connections` (Prisma pool)
-  - Gauge `redis_connections`
-  - Histogram `database_query_duration_ms`
-  - Histogram `redis_command_duration_ms`
+  - ✅ Prisma middleware instruments `database_query_duration_ms` + concurrent query gauge
+  - ✅ Redis command wrapper tracks `redis_command_duration_ms` and connection state
 
-- [ ] **Create /metrics endpoint**
+- [x] **Create /metrics endpoint**
 
-  - Add Fastify route for GET /metrics
-  - Return Prometheus text format
-  - Test with curl
-  - Document metrics in README
+  - ✅ Fastify exposes `GET /metrics` returning Prometheus text format
+  - ✅ README documents scraping instructions and available telemetry
 
-- [ ] **Set up Grafana dashboard**
-  - Create dashboard JSON file
-  - Add RPC latency panel (graph)
-  - Add trade volume panel (counter)
-  - Add error rate panel (graph)
-  - Add active sessions panel (gauge)
-  - Add uptime panel
-  - Export dashboard for sharing
+- [x] **Set up Grafana dashboard**
+  - ✅ Added `docs/grafana/bolt-metrics-dashboard.json` with RPC latency, trade volume, error rate, session gauge, and Redis panels ready for import
 
 ### 16. E2E Tests on Testnet
 

@@ -16,6 +16,7 @@
 
 import { Connection, type Commitment } from "@solana/web3.js";
 import { logger } from "../../utils/logger.js";
+import { observeRpcRequest } from "../../utils/metrics.js";
 
 // ============================================================================
 // Types and Interfaces
@@ -311,9 +312,42 @@ export class RPCPool {
         name: endpoint.name,
         url: endpoint.url,
       });
+
+      this.instrumentConnection(endpoint.connection, endpoint.name);
     }
 
     return endpoint.connection;
+  }
+
+  private instrumentConnection(
+    connection: Connection,
+    endpointName: string
+  ): void {
+    const anyConnection = connection as Connection & {
+      __metricsPatched?: boolean;
+      _rpcRequest?: (...args: unknown[]) => Promise<unknown>;
+    };
+
+    if (anyConnection.__metricsPatched || typeof anyConnection._rpcRequest !== "function") {
+      return;
+    }
+
+    const original = anyConnection._rpcRequest!.bind(connection);
+    anyConnection.__metricsPatched = true;
+
+    anyConnection._rpcRequest = async (...args: unknown[]) => {
+      const method = (args[0] as string) ?? "unknown";
+      const start = Date.now();
+
+      try {
+        const result = await original(...args);
+        observeRpcRequest(endpointName, method, Date.now() - start, "ok");
+        return result;
+      } catch (error) {
+        observeRpcRequest(endpointName, method, Date.now() - start, "error");
+        throw error;
+      }
+    };
   }
 
   /**

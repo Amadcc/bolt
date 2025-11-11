@@ -1,0 +1,79 @@
+{
+  "title": "Bolt Sniper Bot - Production Metrics",
+  "tags": ["bolt-sniper-bot", "prometheus"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "RPC Request Duration (ms)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(rpc_request_duration_ms_bucket[5m])) by (le, endpoint))",
+          "legendFormat": "{{endpoint}} p95",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(rpc_request_duration_ms_bucket[5m])) by (le, endpoint))",
+          "legendFormat": "{{endpoint}} p50",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Active Sessions",
+      "targets": [
+        {
+          "expr": "active_sessions",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Trades per Minute",
+      "targets": [
+        {
+          "expr": "sum(rate(trades_total[5m])) by (side)",
+          "legendFormat": "{{side}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Trade Failures",
+      "targets": [
+        {
+          "expr": "sum(rate(trades_failed_total[5m])) by (side)",
+          "legendFormat": "{{side}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Errors by Type",
+      "targets": [
+        {
+          "expr": "sum(rate(errors_total[5m])) by (type)",
+          "legendFormat": "{{type}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis Command Duration (ms)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(redis_command_duration_ms_bucket[5m])) by (le, command))",
+          "legendFormat": "{{command}} p95",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

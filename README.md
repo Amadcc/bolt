@@ -160,6 +160,12 @@ Please report security vulnerabilities to [your-email@example.com]. Do NOT open 
 - [ ] Redis persistence configured
 - [ ] Error messages sanitized (no stack traces to users)
 
+## 📈 Metrics & Monitoring
+
+- Prometheus metrics are exposed via `GET /metrics` (Fastify) and include RPC histograms, trade counters, error gauges, Redis/Prisma timings, honeypot detections, and active session counts.
+- Default process metrics from `prom-client` are enabled automatically; point your Prometheus server at the endpoint to start scraping.
+- A starter Grafana dashboard (`docs/grafana/bolt-metrics-dashboard.json`) visualizes RPC latency, trade volume, error rates, session gauges, and uptime panels for quick import into your stack.
+
 ## 📊 Commands
 
 ### Telegram Bot Commands
