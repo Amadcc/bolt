@@ -16,6 +16,9 @@ import {
   storePasswordTemporary,
   deletePasswordTemporary,
   PASSWORD_TTL_MS,
+  PASSWORD_TTL_SECONDS,
+  PASSWORD_REUSE_TTL_MS,
+  PASSWORD_REUSE_TTL_SECONDS,
 } from "../../services/wallet/passwordVault.js";
 import { navigateToPage, type Context } from "../views/index.js";
 import {
@@ -106,6 +109,15 @@ async function executeUnlock(
       }
     }
 
+    const userContext = await getUserContext(ctx);
+    const reusePassword = userContext.allowPasswordReuse;
+    const passwordTtlSeconds = reusePassword
+      ? PASSWORD_REUSE_TTL_SECONDS
+      : PASSWORD_TTL_SECONDS;
+    const passwordTtlMs = reusePassword
+      ? PASSWORD_REUSE_TTL_MS
+      : PASSWORD_TTL_MS;
+
     // ✅ Redis Session Integration: Create Redis session (encrypted keys)
     const sessionResult = await createSession({ userId, password });
 
@@ -181,7 +193,8 @@ async function executeUnlock(
 
     const passwordStoreResult = await storePasswordTemporary(
       sessionToken,
-      password
+      password,
+      { ttlSeconds: passwordTtlSeconds }
     );
 
     if (!passwordStoreResult.success) {
@@ -221,18 +234,31 @@ async function executeUnlock(
     // ✅ Store session metadata only (no password)
     ctx.session.sessionToken = sessionToken;
     ctx.session.sessionExpiresAt = expiresAt.getTime();
-    ctx.session.passwordExpiresAt = Date.now() + PASSWORD_TTL_MS;
+    ctx.session.passwordExpiresAt = Date.now() + passwordTtlMs;
+    ctx.session.passwordReuseEnabled = reusePassword;
 
-    const userContext = await getUserContext(ctx);
+    // ✅ Auto-grant automation access when unlocking wallet
+    const { establishAutomationLease } = await import("../../services/snipe/automationService.js");
+    const automationResult = await establishAutomationLease(userId, password);
+
     const publicKey = userContext.activeWallet?.publicKey ?? "Unknown";
 
     // Success message
-    const successMessage =
+    let successMessage =
       `✅ *Wallet Unlocked!*\n\n` +
       `Address: \`${publicKey}\`\n\n` +
       `🔐 Session active for *15 minutes*.\n` +
-      `You can now trade without entering password.\n\n` +
-      `_Returning to dashboard..._`;
+      `You can now trade without entering password.\n\n`;
+
+    if (automationResult.success) {
+      successMessage += `🤖 Auto-sniper enabled for 15 minutes.\n\n`;
+      logger.info("Automation access granted during unlock", { userId });
+    } else {
+      successMessage += `⚠️ Auto-sniper not available (${automationResult.error})\n\n`;
+      logger.warn("Failed to grant automation during unlock", { userId, error: automationResult.error });
+    }
+
+    successMessage += `_Returning to dashboard..._`;
 
     if (uiMessageId) {
       await ctx.api.editMessageText(
@@ -313,6 +339,7 @@ export async function lockSession(ctx: Context): Promise<void> {
   ctx.session.sessionToken = undefined;
   ctx.session.sessionExpiresAt = undefined;
   ctx.session.passwordExpiresAt = undefined;
+  ctx.session.passwordReuseEnabled = undefined;
   // Legacy fields (may still be used in some places)
   ctx.session.encryptedKey = undefined;
   ctx.session.walletId = undefined;
@@ -348,6 +375,10 @@ export async function handleLock(ctx: Context): Promise<void> {
     if (ctx.session.sessionToken) {
       await destroySession(ctx.session.sessionToken as any);
     }
+
+    // ✅ Auto-revoke automation access when locking wallet
+    const { revokeAutomationLease } = await import("../../services/snipe/automationService.js");
+    await revokeAutomationLease(userContext.userId);
 
     // Also clear Grammy session
     await lockSession(ctx);

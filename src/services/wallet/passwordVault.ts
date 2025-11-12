@@ -9,8 +9,16 @@ import { SessionError } from "../../utils/errors.js";
 import { Err, Ok, type Result, type SessionToken } from "../../types/common.js";
 
 const PASSWORD_KEY_PREFIX = "wallet:pw:";
+
+// Strict mode: password consumed after single use (default, most secure)
 export const PASSWORD_TTL_SECONDS = 120; // 2 minutes
 export const PASSWORD_TTL_MS = PASSWORD_TTL_SECONDS * 1000;
+
+// Reuse mode: password persists for multiple trades (opt-in, convenience vs security)
+export const PASSWORD_REUSE_TTL_SECONDS = Number(
+  process.env.PASSWORD_REUSE_TTL_SECONDS || "900"
+); // 15 minutes
+export const PASSWORD_REUSE_TTL_MS = PASSWORD_REUSE_TTL_SECONDS * 1000;
 
 function buildKey(sessionToken: SessionToken): string {
   return `${PASSWORD_KEY_PREFIX}${sessionToken}`;
@@ -21,18 +29,26 @@ function maskToken(sessionToken: SessionToken): string {
 }
 
 /**
- * Store password in Redis with short TTL.
+ * Store password in Redis with configurable TTL.
+ *
+ * @param sessionToken - Session identifier
+ * @param password - Plaintext password (cleared from caller's memory immediately)
+ * @param options.ttlSeconds - Custom TTL (defaults to strict 2-minute mode)
  */
 export async function storePasswordTemporary(
   sessionToken: SessionToken,
-  password: string
+  password: string,
+  options?: { ttlSeconds?: number }
 ): Promise<Result<void, SessionError>> {
   try {
-    await redis.setex(buildKey(sessionToken), PASSWORD_TTL_SECONDS, password);
+    const ttl = options?.ttlSeconds ?? PASSWORD_TTL_SECONDS;
+
+    await redis.setex(buildKey(sessionToken), ttl, password);
 
     logger.debug("Stored session password in Redis", {
       sessionToken: maskToken(sessionToken),
-      ttlSeconds: PASSWORD_TTL_SECONDS,
+      ttlSeconds: ttl,
+      mode: ttl > PASSWORD_TTL_SECONDS ? "reuse" : "strict",
     });
 
     return Ok(undefined);
@@ -51,12 +67,19 @@ export async function storePasswordTemporary(
 }
 
 /**
- * Fetch password once and immediately delete it.
+ * Fetch password from Redis with optional consumption.
+ *
+ * @param sessionToken - Session identifier
+ * @param options.consume - If true (default), deletes password after read (strict mode).
+ *                          If false, leaves password in Redis for reuse (opt-in convenience).
+ * @returns Password string or null if expired/missing
  */
 export async function getPasswordTemporary(
-  sessionToken: SessionToken
+  sessionToken: SessionToken,
+  options?: { consume?: boolean }
 ): Promise<Result<string | null, SessionError>> {
   const key = buildKey(sessionToken);
+  const consume = options?.consume ?? true; // Default: strict single-use mode
 
   try {
     const password = await redis.get(key);
@@ -65,11 +88,21 @@ export async function getPasswordTemporary(
       return Ok(null);
     }
 
-    await redis.del(key);
+    if (consume) {
+      // Strict mode: delete after reading (default, most secure)
+      await redis.del(key);
 
-    logger.debug("Retrieved and deleted session password from Redis", {
-      sessionToken: maskToken(sessionToken),
-    });
+      logger.debug("Retrieved and deleted session password from Redis", {
+        sessionToken: maskToken(sessionToken),
+        mode: "strict",
+      });
+    } else {
+      // Reuse mode: keep password in Redis for subsequent trades
+      logger.debug("Retrieved session password from Redis (reuse mode)", {
+        sessionToken: maskToken(sessionToken),
+        mode: "reuse",
+      });
+    }
 
     return Ok(password);
   } catch (error) {

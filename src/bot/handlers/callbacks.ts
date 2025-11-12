@@ -24,7 +24,7 @@ import {
 } from "../../config/tokens.js";
 import type { TradingError } from "../../types/trading.js";
 import { executeBuyFlow } from "../flows/buy.js";
-import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
+import { clearPasswordState } from "../utils/passwordState.js";
 import { getSolanaConnection } from "../../services/blockchain/solana.js";
 import { getJupiter } from "../../services/trading/jupiter.js";
 import { getTokenAccountsForOwner } from "../../services/tokens/accounts.js";
@@ -36,7 +36,8 @@ import {
   scheduleConversationTimeout,
 } from "../utils/conversationTimeouts.js";
 import { createSwapConfirmationKeyboard } from "../keyboards/swap.js";
-import { getUserContext } from "../utils/userContext.js";
+import { getUserContext, invalidateUserContext } from "../utils/userContext.js";
+import { setPasswordReusePreference } from "../../services/security/passwordPreference.js";
 
 const BALANCE_PAGE_SIZE = 10;
 const SESSION_METADATA_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -69,6 +70,7 @@ export async function handleNavigationCallback(
     "sell",
     "swap",
     "balance",
+    "snipe",
     "wallet_info",
     "settings",
     "unlock",
@@ -134,6 +136,13 @@ export async function handleActionCallback(
  */
 async function handleUnlockAction(ctx: Context): Promise<void> {
   await ctx.answerCallbackQuery("🔓 Unlock wallet");
+
+  // Save current page to return after unlock
+  const currentPage = ctx.session.ui?.currentPage;
+  if (currentPage && currentPage !== "unlock") {
+    ctx.session.returnToPageAfterUnlock = currentPage;
+  }
+
   await navigateToPage(ctx, "unlock");
 }
 
@@ -147,11 +156,16 @@ async function handleLockAction(ctx: Context): Promise<void> {
     await destroySession(ctx.session.sessionToken as any);
   }
 
+  // Save current page to return after lock
+  const currentPage = ctx.session.ui?.currentPage;
+  const returnToPage =
+    currentPage && currentPage !== "main" ? currentPage : "main";
+
   // Clear Grammy session
   await lockSession(ctx);
 
   await ctx.answerCallbackQuery("🔒 Wallet locked");
-  await navigateToPage(ctx, "main");
+  await navigateToPage(ctx, returnToPage);
 }
 
 /**
@@ -163,17 +177,15 @@ async function handleRefreshBalanceAction(ctx: Context): Promise<void> {
   // Show loading state
   try {
     await ctx.editMessageText(
-      `📊 *Your Balance*\n\n` +
-      `⏳ Loading balances...`,
+      `📊 *Your Balance*\n\n` + `⏳ Loading balances...`,
       {
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [[
-            { text: "🔄 Refresh", callback_data: "action:refresh_balance" },
-          ], [
-            { text: "« Back to Dashboard", callback_data: "nav:main" }
-          ]]
-        }
+          inline_keyboard: [
+            [{ text: "🔄 Refresh", callback_data: "action:refresh_balance" }],
+            [{ text: "« Back to Dashboard", callback_data: "nav:main" }],
+          ],
+        },
       }
     );
   } catch (error) {
@@ -263,7 +275,9 @@ export async function fetchAndDisplayBalance(ctx: Context): Promise<void> {
         (await resolveTokenLabel(metadataCache, mint, metadataStats));
 
       const tokenPriceResult = await jupiter.getTokenPrice(asTokenMint(mint));
-      const tokenPrice = tokenPriceResult.success ? tokenPriceResult.value : null;
+      const tokenPrice = tokenPriceResult.success
+        ? tokenPriceResult.value
+        : null;
       const tokenUsdValue = tokenPrice
         ? tokenAccount.amount * tokenPrice
         : undefined;
@@ -335,16 +349,12 @@ async function handleBalancePaginationAction(
     return;
   }
 
-  const totalPages = Math.max(
-    1,
-    Math.ceil(state.totalTokens / state.pageSize)
-  );
+  const totalPages = Math.max(1, Math.ceil(state.totalTokens / state.pageSize));
 
   if (direction === "next") {
     state.currentPage = (state.currentPage + 1) % totalPages;
   } else if (direction === "prev") {
-    state.currentPage =
-      (state.currentPage - 1 + totalPages) % totalPages;
+    state.currentPage = (state.currentPage - 1 + totalPages) % totalPages;
   }
 
   ctx.session.balanceView = state;
@@ -371,10 +381,7 @@ export async function handleBalancePageCallback(
     return;
   }
 
-  const totalPages = Math.max(
-    1,
-    Math.ceil(state.totalTokens / state.pageSize)
-  );
+  const totalPages = Math.max(1, Math.ceil(state.totalTokens / state.pageSize));
 
   // Validate page number
   if (page < 0 || page >= totalPages) {
@@ -398,9 +405,7 @@ export async function handleBalancePageCallback(
   }
 }
 
-function ensureTokenMetadataCache(
-  ctx: Context
-): TokenMetadataCacheState {
+function ensureTokenMetadataCache(ctx: Context): TokenMetadataCacheState {
   if (!ctx.session.tokenMetadataCache) {
     ctx.session.tokenMetadataCache = { entries: {} };
   }
@@ -423,10 +428,7 @@ async function resolveTokenLabel(
   if (cached && cached.expiresAt > now) {
     stats.hits++;
     return (
-      cached.label ??
-      cached.symbol ??
-      cached.name ??
-      truncateAddress(mint)
+      cached.label ?? cached.symbol ?? cached.name ?? truncateAddress(mint)
     );
   }
 
@@ -470,9 +472,7 @@ async function updateBalanceMessage(
   state: BalanceViewState
 ): Promise<void> {
   const totalPages =
-    state.totalTokens > 0
-      ? Math.ceil(state.totalTokens / state.pageSize)
-      : 1;
+    state.totalTokens > 0 ? Math.ceil(state.totalTokens / state.pageSize) : 1;
 
   if (state.totalTokens > 0 && state.currentPage >= totalPages) {
     state.currentPage = Math.max(totalPages - 1, 0);
@@ -537,13 +537,13 @@ function buildBalancePayload(
     }
 
     if (state.totalTokens > state.pageSize) {
-      text += `\nShowing ${startIndex + 1}-${endIndex} of ${state.totalTokens} tokens`;
+      text += `\nShowing ${startIndex + 1}-${endIndex} of ${
+        state.totalTokens
+      } tokens`;
     }
   }
 
-  text += `\nLast updated: ${new Date(
-    state.lastUpdated
-  ).toLocaleTimeString()}`;
+  text += `\nLast updated: ${new Date(state.lastUpdated).toLocaleTimeString()}`;
 
   const inline_keyboard: { text: string; callback_data: string }[][] = [];
 
@@ -588,9 +588,21 @@ function truncateAddress(address: string): string {
 
 function formatAmount(amount: number): string {
   if (amount >= 1_000_000) return amount.toExponential(2);
-  if (amount >= 1000) return amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  if (amount >= 1) return amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
-  if (amount >= 0.000001) return amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+  if (amount >= 1000)
+    return amount.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  if (amount >= 1)
+    return amount.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 4,
+    });
+  if (amount >= 0.000001)
+    return amount.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 6,
+    });
   return amount.toExponential(2);
 }
 
@@ -619,10 +631,7 @@ function scheduleAwaitingInputTimeout(ctx: Context, page: Page): void {
     "⏰ Input timed out. Please reopen the flow to continue.";
 
   scheduleConversationTimeout(key, DEFAULT_CONVERSATION_TTL_MS, async () => {
-    if (
-      !sessionRef.awaitingInput ||
-      sessionRef.awaitingInput.page !== page
-    ) {
+    if (!sessionRef.awaitingInput || sessionRef.awaitingInput.page !== page) {
       return;
     }
 
@@ -636,10 +645,7 @@ function scheduleAwaitingInputTimeout(ctx: Context, page: Page): void {
 /**
  * Copy address action
  */
-async function handleCopyAction(
-  ctx: Context,
-  address?: string
-): Promise<void> {
+async function handleCopyAction(ctx: Context, address?: string): Promise<void> {
   if (!address) {
     await ctx.answerCallbackQuery("❌ No address to copy");
     return;
@@ -660,7 +666,11 @@ export async function handleBuyCallback(
   action: string,
   params: string[]
 ): Promise<void> {
-  logger.info("Buy callback received", { action, params, userId: ctx.from?.id });
+  logger.info("Buy callback received", {
+    action,
+    params,
+    userId: ctx.from?.id,
+  });
 
   switch (action) {
     case "token":
@@ -678,7 +688,11 @@ export async function handleBuyCallback(
 
     default:
       await ctx.answerCallbackQuery("❌ Unknown buy action");
-      logger.warn("Unknown buy action", { action, params, userId: ctx.from?.id });
+      logger.warn("Unknown buy action", {
+        action,
+        params,
+        userId: ctx.from?.id,
+      });
   }
 }
 
@@ -962,7 +976,8 @@ export async function executeSellFlow(
   skipConfirmation = false
 ): Promise<void> {
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !hasActivePassword(ctx.session)) {
+  // We only check sessionToken - password availability will be checked in executor
+  if (!ctx.session.sessionToken) {
     // Only answer callback query if this is a callback context
     if (ctx.callbackQuery) {
       await ctx.answerCallbackQuery();
@@ -974,7 +989,11 @@ export async function executeSellFlow(
       params: [token, percentage],
     };
 
-    logger.info("Saved pending sell command", { token, percentage, userId: ctx.from?.id });
+    logger.info("Saved pending sell command", {
+      token,
+      percentage,
+      userId: ctx.from?.id,
+    });
 
     const msgId = ctx.session.ui.messageId;
     if (!msgId || !ctx.chat) {
@@ -992,11 +1011,13 @@ export async function executeSellFlow(
       {
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [[
-            { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
-            { text: "« Cancel", callback_data: "nav:main" }
-          ]]
-        }
+          inline_keyboard: [
+            [
+              { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
+              { text: "« Cancel", callback_data: "nav:main" },
+            ],
+          ],
+        },
       }
     );
     return;
@@ -1010,7 +1031,7 @@ export async function executeSellFlow(
     logger.info("Showing sell confirmation (auto-approve disabled)", {
       token,
       percentage,
-      userId: ctx.from?.id
+      userId: ctx.from?.id,
     });
 
     const msgId = ctx.session.ui.messageId;
@@ -1019,20 +1040,21 @@ export async function executeSellFlow(
         ctx.chat.id,
         msgId,
         `💸 *Confirm Sell*\n\n` +
-        `Token: **${token}**\n` +
-        `Amount: **${percentage}%** of balance\n\n` +
-        `━━━\n\n` +
-        `⚠️ Confirm to execute this trade`,
+          `Token: **${token}**\n` +
+          `Amount: **${percentage}%** of balance\n\n` +
+          `━━━\n\n` +
+          `⚠️ Confirm to execute this trade`,
         {
           parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [
               [
-                { text: "✅ Confirm Sell", callback_data: `sell:confirm:${token}:${percentage}` },
+                {
+                  text: "✅ Confirm Sell",
+                  callback_data: `sell:confirm:${token}:${percentage}`,
+                },
               ],
-              [
-                { text: "« Cancel", callback_data: "nav:sell" },
-              ],
+              [{ text: "« Cancel", callback_data: "nav:sell" }],
             ],
           },
         }
@@ -1042,19 +1064,25 @@ export async function executeSellFlow(
   }
 
   // Auto-approve enabled or confirmation skipped - execute immediately
-  logger.info("Executing sell immediately (auto-approve enabled or confirmed)", { token, percentage });
+  logger.info(
+    "Executing sell immediately (auto-approve enabled or confirmed)",
+    { token, percentage }
+  );
 
   try {
     const userContext = await getUserContext(ctx);
     const wallet = userContext.activeWallet;
 
     if (!wallet) {
-      await ctx.editMessageText("❌ Wallet not found. Please create one first.", {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [[{ text: "🏠 Home", callback_data: "nav:main" }]]
+      await ctx.editMessageText(
+        "❌ Wallet not found. Please create one first.",
+        {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [[{ text: "🏠 Home", callback_data: "nav:main" }]],
+          },
         }
-      });
+      );
       return;
     }
 
@@ -1066,8 +1094,8 @@ export async function executeSellFlow(
         {
           parse_mode: "Markdown",
           reply_markup: {
-            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
-          }
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]],
+          },
         }
       );
       return;
@@ -1083,7 +1111,9 @@ export async function executeSellFlow(
     });
 
     // Get balance from blockchain
-    const { getSolanaConnection } = await import("../../services/blockchain/solana.js");
+    const { getSolanaConnection } = await import(
+      "../../services/blockchain/solana.js"
+    );
     const { PublicKey } = await import("@solana/web3.js");
     const connection = await getSolanaConnection();
     const publicKey = new PublicKey(wallet.publicKey);
@@ -1100,8 +1130,8 @@ export async function executeSellFlow(
         {
           parse_mode: "Markdown",
           reply_markup: {
-            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
-          }
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]],
+          },
         }
       );
       return;
@@ -1122,8 +1152,8 @@ export async function executeSellFlow(
         {
           parse_mode: "Markdown",
           reply_markup: {
-            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
-          }
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]],
+          },
         }
       );
       return;
@@ -1133,7 +1163,10 @@ export async function executeSellFlow(
     await updateSellProgress(ctx, {
       step: 2,
       total: 3,
-      message: `Token: ${token}\nAmount: ${formatTokenAmount(amountToSell, decimals)} (${percentage}%)`,
+      message: `Token: ${token}\nAmount: ${formatTokenAmount(
+        amountToSell,
+        decimals
+      )} (${percentage}%)`,
       status: "Executing sell...",
     });
 
@@ -1151,9 +1184,18 @@ export async function executeSellFlow(
         slippageBps: 50, // 0.5% slippage
       },
       undefined,
-      ctx.session.sessionToken as any
+      ctx.session.sessionToken as any,
+      { reusePassword: Boolean(ctx.session.passwordReuseEnabled) }
     );
-    clearPasswordState(ctx.session);
+    if (!ctx.session.passwordReuseEnabled) {
+      clearPasswordState(ctx.session);
+      // In strict mode, also clear sessionToken to force unlock on next trade
+      ctx.session.sessionToken = undefined;
+      ctx.session.sessionExpiresAt = undefined;
+      logger.info("Strict mode: cleared session after trade", {
+        userId: userContext.userId,
+      });
+    }
 
     if (!tradeResult.success) {
       const error = tradeResult.error as TradingError;
@@ -1167,18 +1209,20 @@ export async function executeSellFlow(
         errorMessage = `Swap failed: ${error.reason}`;
       }
 
-      await ctx.editMessageText(
-        `❌ *Sell Failed*\n\n${errorMessage}`,
-        {
-          parse_mode: "Markdown",
-          reply_markup: {
-            inline_keyboard: [[
-              { text: "🔄 Try Again", callback_data: `sell:amount:${token}:${percentage}` },
-              { text: "« Back", callback_data: "nav:sell" }
-            ]]
-          }
-        }
-      );
+      await ctx.editMessageText(`❌ *Sell Failed*\n\n${errorMessage}`, {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: "🔄 Try Again",
+                callback_data: `sell:amount:${token}:${percentage}`,
+              },
+              { text: "« Back", callback_data: "nav:sell" },
+            ],
+          ],
+        },
+      });
       return;
     }
 
@@ -1189,24 +1233,27 @@ export async function executeSellFlow(
     await updateSellProgress(ctx, {
       step: 3,
       total: 3,
-      message: `Token: ${token}\nAmount: ${formatTokenAmount(amountToSell, decimals)} (${percentage}%)`,
+      message: `Token: ${token}\nAmount: ${formatTokenAmount(
+        amountToSell,
+        decimals
+      )} (${percentage}%)`,
       status: "Confirmed!",
     });
 
     // Show completion progress for a moment
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
     // Success!
     await ctx.editMessageText(
       `✅ *Sell Successful!*\n\n` +
-      `Sold **${token}** for **${solReceived.toFixed(4)} SOL**\n\n` +
-      `Transaction: \`${result.signature}\`\n` +
-      `Slot: ${result.slot}\n\n` +
-      `Input: ${formatTokenAmount(result.inputAmount, decimals)} ${token}\n` +
-      `Output: ${solReceived.toFixed(4)} SOL\n` +
-      `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
-      `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
-      `[View on Solscan](https://solscan.io/tx/${result.signature})`,
+        `Sold **${token}** for **${solReceived.toFixed(4)} SOL**\n\n` +
+        `Transaction: \`${result.signature}\`\n` +
+        `Slot: ${result.slot}\n\n` +
+        `Input: ${formatTokenAmount(result.inputAmount, decimals)} ${token}\n` +
+        `Output: ${solReceived.toFixed(4)} SOL\n` +
+        `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
+        `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
+        `[View on Solscan](https://solscan.io/tx/${result.signature})`,
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -1215,17 +1262,12 @@ export async function executeSellFlow(
               { text: "🔄 Swap", callback_data: "nav:swap" },
               { text: "🛒 Buy", callback_data: "nav:buy" },
             ],
-            [
-              { text: "💸 Sell Again", callback_data: "nav:sell" },
-            ],
-            [
-              { text: "🏠 Dashboard", callback_data: "nav:main" },
-            ],
+            [{ text: "💸 Sell Again", callback_data: "nav:sell" }],
+            [{ text: "🏠 Dashboard", callback_data: "nav:main" }],
           ],
         },
       }
     );
-
   } catch (error) {
     logger.error("Error executing sell", { error, token, percentage });
     await ctx.editMessageText(
@@ -1233,8 +1275,8 @@ export async function executeSellFlow(
       {
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
-        }
+          inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]],
+        },
       }
     );
   }
@@ -1289,6 +1331,52 @@ async function handleAutoApproveToggle(ctx: Context): Promise<void> {
     newValue ? "✅ Auto-approve enabled" : "❌ Auto-approve disabled"
   );
   await navigateToPage(ctx, "settings");
+}
+
+// ============================================================================
+// Unlock Page Callbacks
+// ============================================================================
+
+/**
+ * Handle unlock page callbacks (unlock:action)
+ */
+export async function handleUnlockCallback(
+  ctx: Context,
+  action: string
+): Promise<void> {
+  switch (action) {
+    case "toggle_reuse":
+      await handleUnlockToggleReuse(ctx);
+      break;
+
+    default:
+      await ctx.answerCallbackQuery("❌ Unknown unlock action");
+      logger.warn("Unknown unlock action", { action, userId: ctx.from?.id });
+  }
+}
+
+/**
+ * Toggle password reuse mode from unlock page
+ * Shows detailed risk explanation before toggling
+ */
+async function handleUnlockToggleReuse(ctx: Context): Promise<void> {
+  const userContext = await getUserContext(ctx);
+  const newMode = !userContext.allowPasswordReuse;
+
+  // Update preference in database
+  await setPasswordReusePreference(userContext.userId, newMode);
+  invalidateUserContext(ctx);
+
+  // Show toast notification with risk explanation
+  await ctx.answerCallbackQuery({
+    text: newMode
+      ? "♻️ Switched to Reuse Mode (15 min)\n⚠️ Higher risk, more convenience"
+      : "🔐 Switched to Strict Mode\n✅ Maximum security",
+    show_alert: false,
+  });
+
+  // Refresh unlock page to show new mode explanation
+  await navigateToPage(ctx, "unlock");
 }
 
 // ============================================================================
@@ -1503,12 +1591,16 @@ export async function executeSwapFlow(
   const msgId = ctx.session.ui.messageId;
 
   if (!msgId || !ctx.chat) {
-    logger.warn("Cannot execute swap: no messageId or chat", { msgId, hasChat: !!ctx.chat });
+    logger.warn("Cannot execute swap: no messageId or chat", {
+      msgId,
+      hasChat: !!ctx.chat,
+    });
     return;
   }
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !hasActivePassword(ctx.session)) {
+  // We only check sessionToken - password availability will be checked in executor
+  if (!ctx.session.sessionToken) {
     // Save pending command so unlock handler can execute it (if not already set by text command)
     if (!ctx.session.pendingCommand) {
       ctx.session.pendingCommand = {
@@ -1516,7 +1608,12 @@ export async function executeSwapFlow(
         params: [inputToken, outputToken, amount],
       };
 
-      logger.info("Saved pending swap command", { inputToken, outputToken, amount, userId: ctx.from?.id });
+      logger.info("Saved pending swap command", {
+        inputToken,
+        outputToken,
+        amount,
+        userId: ctx.from?.id,
+      });
     }
 
     await ctx.api.editMessageText(
@@ -1549,18 +1646,18 @@ export async function executeSwapFlow(
       inputToken,
       outputToken,
       amount,
-      userId: ctx.from?.id
+      userId: ctx.from?.id,
     });
 
     await ctx.api.editMessageText(
       ctx.chat.id,
       msgId,
       `🔄 *Confirm Swap*\n\n` +
-      `From: **${inputToken}**\n` +
-      `To: **${outputToken}**\n` +
-      `Amount: **${amount}**\n\n` +
-      `━━━\n\n` +
-      `⚠️ Confirm to execute this trade`,
+        `From: **${inputToken}**\n` +
+        `To: **${outputToken}**\n` +
+        `Amount: **${amount}**\n\n` +
+        `━━━\n\n` +
+        `⚠️ Confirm to execute this trade`,
       {
         parse_mode: "Markdown",
         reply_markup: createSwapConfirmationKeyboard(
@@ -1574,7 +1671,10 @@ export async function executeSwapFlow(
   }
 
   // Auto-approve enabled or confirmation skipped - execute immediately
-  logger.info("Executing swap immediately (auto-approve enabled or confirmed)", { inputToken, outputToken, amount });
+  logger.info(
+    "Executing swap immediately (auto-approve enabled or confirmed)",
+    { inputToken, outputToken, amount }
+  );
 
   try {
     const userContext = await getUserContext(ctx);
@@ -1588,8 +1688,8 @@ export async function executeSwapFlow(
         {
           parse_mode: "Markdown",
           reply_markup: {
-            inline_keyboard: [[{ text: "🏠 Home", callback_data: "nav:main" }]]
-          }
+            inline_keyboard: [[{ text: "🏠 Home", callback_data: "nav:main" }]],
+          },
         }
       );
       return;
@@ -1605,8 +1705,8 @@ export async function executeSwapFlow(
         {
           parse_mode: "Markdown",
           reply_markup: {
-            inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]]
-          }
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]],
+          },
         }
       );
       return;
@@ -1622,8 +1722,8 @@ export async function executeSwapFlow(
         {
           parse_mode: "Markdown",
           reply_markup: {
-            inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]]
-          }
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]],
+          },
         }
       );
       return;
@@ -1650,7 +1750,9 @@ export async function executeSwapFlow(
       });
 
       // Get balance from blockchain
-      const { getSolanaConnection } = await import("../../services/blockchain/solana.js");
+      const { getSolanaConnection } = await import(
+        "../../services/blockchain/solana.js"
+      );
       const { PublicKey } = await import("@solana/web3.js");
       const connection = await getSolanaConnection();
       const publicKey = new PublicKey(wallet.publicKey);
@@ -1669,8 +1771,10 @@ export async function executeSwapFlow(
           {
             parse_mode: "Markdown",
             reply_markup: {
-              inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]]
-            }
+              inline_keyboard: [
+                [{ text: "« Back", callback_data: "nav:swap" }],
+              ],
+            },
           }
         );
         return;
@@ -1692,15 +1796,20 @@ export async function executeSwapFlow(
           {
             parse_mode: "Markdown",
             reply_markup: {
-              inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]]
-            }
+              inline_keyboard: [
+                [{ text: "« Back", callback_data: "nav:swap" }],
+              ],
+            },
           }
         );
         return;
       }
 
       minimalUnits = amountToSwap.toString();
-      displayAmount = `${formatTokenAmount(amountToSwap, decimals)} ${inputToken} (${percentage}%)`;
+      displayAmount = `${formatTokenAmount(
+        amountToSwap,
+        decimals
+      )} ${inputToken} (${percentage}%)`;
       inputDecimals = decimals;
     } else {
       // Fixed amount swap - parse directly
@@ -1741,9 +1850,18 @@ export async function executeSwapFlow(
         slippageBps: 50, // 0.5% slippage
       },
       undefined,
-      ctx.session.sessionToken as any
+      ctx.session.sessionToken as any,
+      { reusePassword: Boolean(ctx.session.passwordReuseEnabled) }
     );
-    clearPasswordState(ctx.session);
+    if (!ctx.session.passwordReuseEnabled) {
+      clearPasswordState(ctx.session);
+      // In strict mode, also clear sessionToken to force unlock on next trade
+      ctx.session.sessionToken = undefined;
+      ctx.session.sessionExpiresAt = undefined;
+      logger.info("Strict mode: cleared session after trade", {
+        userId: userContext.userId,
+      });
+    }
 
     // Progress: Step 3 - Completed
     if (tradeResult.success) {
@@ -1774,11 +1892,16 @@ export async function executeSwapFlow(
         {
           parse_mode: "Markdown",
           reply_markup: {
-            inline_keyboard: [[
-              { text: "🔄 Try Again", callback_data: `swap:amount:${inputToken}:${outputToken}:${amount}` },
-              { text: "« Back", callback_data: "nav:swap" }
-            ]]
-          }
+            inline_keyboard: [
+              [
+                {
+                  text: "🔄 Try Again",
+                  callback_data: `swap:amount:${inputToken}:${outputToken}:${amount}`,
+                },
+                { text: "« Back", callback_data: "nav:swap" },
+              ],
+            ],
+          },
         }
       );
       return;
@@ -1787,21 +1910,27 @@ export async function executeSwapFlow(
     const result = tradeResult.value;
 
     // Show completion progress for a moment
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
     // Success!
     await ctx.api.editMessageText(
       ctx.chat!.id,
       msgId,
       `✅ *Swap Successful!*\n\n` +
-      `Swapped **${displayAmount}** → **${outputToken}**\n\n` +
-      `Transaction: \`${result.signature}\`\n` +
-      `Slot: ${result.slot}\n\n` +
-      `📥 Input: ${formatTokenAmount(result.inputAmount, inputDecimals)} ${inputToken}\n` +
-      `📤 Output: ${formatTokenAmount(result.outputAmount, getTokenDecimals(outputMintAddr))} ${outputToken}\n` +
-      `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
-      `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
-      `[View on Solscan](https://solscan.io/tx/${result.signature})`,
+        `Swapped **${displayAmount}** → **${outputToken}**\n\n` +
+        `Transaction: \`${result.signature}\`\n` +
+        `Slot: ${result.slot}\n\n` +
+        `📥 Input: ${formatTokenAmount(
+          result.inputAmount,
+          inputDecimals
+        )} ${inputToken}\n` +
+        `📤 Output: ${formatTokenAmount(
+          result.outputAmount,
+          getTokenDecimals(outputMintAddr)
+        )} ${outputToken}\n` +
+        `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
+        `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
+        `[View on Solscan](https://solscan.io/tx/${result.signature})`,
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -1810,19 +1939,19 @@ export async function executeSwapFlow(
               { text: "🛒 Buy", callback_data: "nav:buy" },
               { text: "💸 Sell", callback_data: "nav:sell" },
             ],
-            [
-              { text: "🔄 Swap Again", callback_data: "nav:swap" },
-            ],
-            [
-              { text: "🏠 Dashboard", callback_data: "nav:main" },
-            ],
+            [{ text: "🔄 Swap Again", callback_data: "nav:swap" }],
+            [{ text: "🏠 Dashboard", callback_data: "nav:main" }],
           ],
         },
       }
     );
-
   } catch (error) {
-    logger.error("Error executing swap", { error, inputToken, outputToken, amount });
+    logger.error("Error executing swap", {
+      error,
+      inputToken,
+      outputToken,
+      amount,
+    });
     await ctx.api.editMessageText(
       ctx.chat!.id,
       msgId,
@@ -1830,8 +1959,8 @@ export async function executeSwapFlow(
       {
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]]
-        }
+          inline_keyboard: [[{ text: "« Back", callback_data: "nav:swap" }]],
+        },
       }
     );
   }
@@ -1859,7 +1988,8 @@ export async function executeSellWithAbsoluteAmount(
   }
 
   // Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !hasActivePassword(ctx.session)) {
+  // We only check sessionToken - password availability will be checked in executor
+  if (!ctx.session.sessionToken) {
     // Save pending command so unlock handler can execute it (if not already set by text command)
     if (!ctx.session.pendingCommand) {
       ctx.session.pendingCommand = {
@@ -1867,23 +1997,29 @@ export async function executeSellWithAbsoluteAmount(
         params: [token, absoluteAmount],
       };
 
-      logger.info("Saved pending sell command (absolute)", { token, absoluteAmount, userId: ctx.from?.id });
+      logger.info("Saved pending sell command (absolute)", {
+        token,
+        absoluteAmount,
+        userId: ctx.from?.id,
+      });
     }
 
     await ctx.api.editMessageText(
       ctx.chat.id,
       msgId,
       `🔒 *Wallet Locked*\n\n` +
-      `To sell ${absoluteAmount} ${token}, please unlock your wallet first.\n\n` +
-      `Your session will be active for 15 minutes.`,
+        `To sell ${absoluteAmount} ${token}, please unlock your wallet first.\n\n` +
+        `Your session will be active for 15 minutes.`,
       {
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [[
-            { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
-            { text: "« Cancel", callback_data: "nav:main" }
-          ]]
-        }
+          inline_keyboard: [
+            [
+              { text: "🔓 Unlock Wallet", callback_data: "action:unlock" },
+              { text: "« Cancel", callback_data: "nav:main" },
+            ],
+          ],
+        },
       }
     );
     return;
@@ -1897,27 +2033,28 @@ export async function executeSellWithAbsoluteAmount(
     logger.info("Showing sell confirmation (auto-approve disabled)", {
       token,
       absoluteAmount,
-      userId: ctx.from?.id
+      userId: ctx.from?.id,
     });
 
     await ctx.api.editMessageText(
       ctx.chat.id,
       msgId,
       `💸 *Confirm Sell*\n\n` +
-      `Token: **${token}**\n` +
-      `Amount: **${absoluteAmount}** tokens\n\n` +
-      `━━━\n\n` +
-      `⚠️ Confirm to execute this trade`,
+        `Token: **${token}**\n` +
+        `Amount: **${absoluteAmount}** tokens\n\n` +
+        `━━━\n\n` +
+        `⚠️ Confirm to execute this trade`,
       {
         parse_mode: "Markdown",
         reply_markup: {
           inline_keyboard: [
             [
-              { text: "✅ Confirm Sell", callback_data: `sell:confirm_abs:${token}:${absoluteAmount}` },
+              {
+                text: "✅ Confirm Sell",
+                callback_data: `sell:confirm_abs:${token}:${absoluteAmount}`,
+              },
             ],
-            [
-              { text: "« Cancel", callback_data: "nav:sell" },
-            ],
+            [{ text: "« Cancel", callback_data: "nav:sell" }],
           ],
         },
       }
@@ -1926,7 +2063,10 @@ export async function executeSellWithAbsoluteAmount(
   }
 
   // Auto-approve enabled or confirmation skipped - execute immediately
-  logger.info("Executing sell immediately (auto-approve enabled or confirmed)", { token, absoluteAmount });
+  logger.info(
+    "Executing sell immediately (auto-approve enabled or confirmed)",
+    { token, absoluteAmount }
+  );
 
   try {
     const userContext = await getUserContext(ctx);
@@ -1940,8 +2080,8 @@ export async function executeSellWithAbsoluteAmount(
         {
           parse_mode: "Markdown",
           reply_markup: {
-            inline_keyboard: [[{ text: "🏠 Home", callback_data: "nav:main" }]]
-          }
+            inline_keyboard: [[{ text: "🏠 Home", callback_data: "nav:main" }]],
+          },
         }
       );
       return;
@@ -1957,8 +2097,8 @@ export async function executeSellWithAbsoluteAmount(
         {
           parse_mode: "Markdown",
           reply_markup: {
-            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
-          }
+            inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]],
+          },
         }
       );
       return;
@@ -2000,9 +2140,18 @@ export async function executeSellWithAbsoluteAmount(
         slippageBps: 50, // 0.5% slippage
       },
       undefined,
-      ctx.session.sessionToken as any
+      ctx.session.sessionToken as any,
+      { reusePassword: Boolean(ctx.session.passwordReuseEnabled) }
     );
-    clearPasswordState(ctx.session);
+    if (!ctx.session.passwordReuseEnabled) {
+      clearPasswordState(ctx.session);
+      // In strict mode, also clear sessionToken to force unlock on next trade
+      ctx.session.sessionToken = undefined;
+      ctx.session.sessionExpiresAt = undefined;
+      logger.info("Strict mode: cleared session after trade", {
+        userId: userContext.userId,
+      });
+    }
 
     if (!tradeResult.success) {
       const error = tradeResult.error as TradingError;
@@ -2023,11 +2172,13 @@ export async function executeSellWithAbsoluteAmount(
         {
           parse_mode: "Markdown",
           reply_markup: {
-            inline_keyboard: [[
-              { text: "🔄 Try Again", callback_data: `nav:sell` },
-              { text: "« Back", callback_data: "nav:sell" }
-            ]]
-          }
+            inline_keyboard: [
+              [
+                { text: "🔄 Try Again", callback_data: `nav:sell` },
+                { text: "« Back", callback_data: "nav:sell" },
+              ],
+            ],
+          },
         }
       );
       return;
@@ -2045,21 +2196,23 @@ export async function executeSellWithAbsoluteAmount(
     });
 
     // Show completion progress for a moment
-    await new Promise(resolve => setTimeout(resolve, 800));
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
     // Success!
     await ctx.api.editMessageText(
       ctx.chat.id,
       msgId,
       `✅ *Sell Successful!*\n\n` +
-      `Sold **${absoluteAmount} ${token}** for **${solReceived.toFixed(4)} SOL**\n\n` +
-      `Transaction: \`${result.signature}\`\n` +
-      `Slot: ${result.slot}\n\n` +
-      `Input: ${absoluteAmount} ${token}\n` +
-      `Output: ${solReceived.toFixed(4)} SOL\n` +
-      `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
-      `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
-      `[View on Solscan](https://solscan.io/tx/${result.signature})`,
+        `Sold **${absoluteAmount} ${token}** for **${solReceived.toFixed(
+          4
+        )} SOL**\n\n` +
+        `Transaction: \`${result.signature}\`\n` +
+        `Slot: ${result.slot}\n\n` +
+        `Input: ${absoluteAmount} ${token}\n` +
+        `Output: ${solReceived.toFixed(4)} SOL\n` +
+        `Price Impact: ${result.priceImpactPct.toFixed(2)}%\n` +
+        `Commission: $${result.commissionUsd.toFixed(4)}\n\n` +
+        `[View on Solscan](https://solscan.io/tx/${result.signature})`,
       {
         parse_mode: "Markdown",
         reply_markup: {
@@ -2068,19 +2221,18 @@ export async function executeSellWithAbsoluteAmount(
               { text: "🔄 Swap", callback_data: "nav:swap" },
               { text: "🛒 Buy", callback_data: "nav:buy" },
             ],
-            [
-              { text: "💸 Sell Again", callback_data: "nav:sell" },
-            ],
-            [
-              { text: "🏠 Dashboard", callback_data: "nav:main" },
-            ],
+            [{ text: "💸 Sell Again", callback_data: "nav:sell" }],
+            [{ text: "🏠 Dashboard", callback_data: "nav:main" }],
           ],
         },
       }
     );
-
   } catch (error) {
-    logger.error("Error executing custom sell", { error, token, absoluteAmount });
+    logger.error("Error executing custom sell", {
+      error,
+      token,
+      absoluteAmount,
+    });
     await ctx.api.editMessageText(
       ctx.chat.id,
       msgId,
@@ -2088,8 +2240,8 @@ export async function executeSellWithAbsoluteAmount(
       {
         parse_mode: "Markdown",
         reply_markup: {
-          inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]]
-        }
+          inline_keyboard: [[{ text: "« Back", callback_data: "nav:sell" }]],
+        },
       }
     );
   }

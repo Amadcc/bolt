@@ -935,6 +935,7 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
   - ✅ Functional equivalence with redis.keys() confirmed
 
 **Implementation Summary:**
+
 - New `scanKeys()` function uses cursor-based iteration
 - Replaced 2 blocking `redis.keys()` calls
 - Zero source code uses blocking redis.keys() now
@@ -1118,7 +1119,7 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
 - [x] **Add test automation** ✅ (2025-11-11)
   - [x] Added `bun run test:e2e` script (serial Vitest run) wired to `.env.e2e`
   - [x] Create GitHub Actions workflow (`.github/workflows/test.yml`)
-  - [x] Run tests nightly against devnet (cron: "0 2 * * *" - 2 AM UTC)
+  - [x] Run tests nightly against devnet (cron: "0 2 \* \* \*" - 2 AM UTC)
   - [x] Add test coverage reporting (Codecov, 80/80/75/80% thresholds)
   - [x] Fail build if tests fail (all-tests-passed job validates unit-tests + build + security)
   - [x] Unit tests on every push/PR (5 min)
@@ -1130,7 +1131,7 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
 
 **✅ WEEK 3 ITEM 16 COMPLETE - Ready for Production Deployment**
 
-### 17. Docker Production Config
+### 17. Docker Production Config (НАДО БУДЕТ СДЕЛАТЬ ПОТОМ)
 
 **Location:** `docker-compose.yml`
 **Purpose:** Production-ready containerization
@@ -1289,6 +1290,7 @@ JITO_TIP_LAMPORTS=100000  # 0.0001 SOL (base tip, multiplied for competitive/hig
   - ✅ Logs which provider succeeded
 
 **Architecture:**
+
 ```
 src/services/honeypot/
 ├── circuitBreaker.ts          # Circuit breaker pattern implementation
@@ -1302,6 +1304,7 @@ src/services/honeypot/
 ```
 
 **Metrics Added:**
+
 - `honeypot_api_requests_total{provider,status}` - Total requests per provider
 - `honeypot_api_duration_ms{provider}` - Request duration histogram
 - `circuit_breaker_state{provider}` - Circuit breaker state gauge

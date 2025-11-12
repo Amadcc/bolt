@@ -18,6 +18,7 @@ export interface CachedUserContext {
   telegramId: bigint;
   username: string | null;
   subscriptionTier: string;
+  allowPasswordReuse: boolean;
   wallets: CachedWalletSummary[];
   activeWallet?: CachedWalletSummary;
   cachedAt: number;
@@ -95,6 +96,7 @@ export async function getUserContext(
     telegramId: user.telegramId,
     username: user.username,
     subscriptionTier: user.subscriptionTier,
+    allowPasswordReuse: user.allowPasswordReuse,
     wallets: user.wallets.map(
       (wallet: {
         id: string;

@@ -8,7 +8,9 @@ High-performance Solana token trading bot for Telegram with enterprise-grade sec
 - **Jupiter v6 Integration**: Best swap rates across Solana DEXs
 - **Honeypot Detection with Fallback Chain**: Multi-provider API fallback (GoPlus → RugCheck → TokenSniffer) with circuit breakers for 85-90% accuracy
 - **Telegram Bot Interface**: User-friendly commands for trading
+- **Token Sniper Automation**: Pump.fun + Raydium/Orca log discovery, per-user filters, /snipe controls, and Telegram alerts
 - **Session-based Authentication**: Secure password management with Redis
+- **Password Policy Controls**: Toggle between per-trade prompts (default) and optional 15‑minute reuse for advanced users
 - **MEV Protection**: Built-in support for Jito bundles
 - **Production-Ready Resilience**: Circuit breaker pattern, exponential backoff, comprehensive metrics
 
@@ -50,6 +52,10 @@ nano .env  # or use your preferred editor
   ```bash
   node -e "console.log(require('crypto').randomBytes(64).toString('base64'))"
   ```
+- `SNIPE_ENABLED` (optional): Set to `false` to disable the auto-snipe orchestrator
+- `SNIPE_SOURCE_RAYDIUM_ENABLED` / `SNIPE_SOURCE_ORCA_ENABLED` (optional): Set to `false` to disable specific discovery feeds
+- `SNIPE_RAYDIUM_PROGRAM_IDS` / `SNIPE_ORCA_PROGRAM_IDS` (optional): Comma-separated program IDs to watch (defaults provided)
+- `PASSWORD_REUSE_TTL_SECONDS` (optional): TTL (in seconds) when password reuse mode is enabled (default 900)
 
 **⚠️ CRITICAL SECURITY NOTES:**
 
@@ -185,6 +191,7 @@ Please report security vulnerabilities to [your-email@example.com]. Do NOT open 
 - `/sell <token> <token_amount> [password]` - Sell token for SOL
 - `/swap <from_token> <to_token> <amount> [password]` - Swap any token
 - `/settings` - Configure slippage, auto-approve, etc.
+- `/snipe` - Configure auto-snipe filters, automation leases, and real-time execution
 
 ## 🤝 Contributing
 

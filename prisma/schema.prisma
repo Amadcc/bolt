@@ -18,11 +18,14 @@ model User {
   telegramId       BigInt   @unique
   username         String?
   subscriptionTier String   @default("free") // free, premium
+  allowPasswordReuse Boolean @default(false)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  wallets Wallet[]
-  orders  Order[]
+  wallets         Wallet[]
+  orders          Order[]
+  snipeConfig     SnipeConfig?
+  snipeExecutions SnipeExecution[]
 }
 
 model Wallet {
@@ -62,4 +65,113 @@ model HoneypotCheck {
   details    Json?
 
   @@index([checkedAt])
+}
+
+// ============================================================================
+// Auto-Snipe Models
+// ============================================================================
+
+model SnipeConfig {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Status & automation
+  enabled          Boolean   @default(false)
+  autoTrading      Boolean   @default(false)
+  lastAutomationAt DateTime?
+
+  // Trade Parameters
+  buyAmountLamports BigInt @default(100000000) // 0.1 SOL
+  slippageBps       Int    @default(500) // 5%
+
+  // Filters
+  minLiquidityLamports BigInt?
+  maxLiquidityLamports BigInt?
+  minMarketCapUsd      Int?
+  maxMarketCapUsd      Int?
+  maxHoneypotRisk      Int     @default(30) // 0-100 risk score
+
+  // Rate Limiting (Security)
+  maxBuysPerHour Int @default(10)
+  maxBuysPerDay  Int @default(50)
+
+  // Advanced Filters
+  whitelist String[] @default([]) // Only snipe these token mints
+  blacklist String[] @default([]) // Never snipe these token mints
+
+  // Notifications / UI
+  notifyOnSuccess Boolean @default(true)
+  notifyOnFailure Boolean @default(true)
+  autoApprove     Boolean @default(false)
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([enabled])
+}
+
+model SnipeExecution {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Token Info
+  tokenMint   String
+  tokenSymbol String?
+  tokenName   String?
+
+  // Execution Status
+  status SnipeStatus @default(PENDING)
+
+  // Trade Parameters
+  buyAmountLamports  BigInt
+  outputAmountTokens BigInt?
+
+  // Analysis Results
+  honeypotScore        Int?
+  liquidityLamports    BigInt?
+  marketCapUsd         Int?
+  holderCount          Int?
+  top10HolderPercent   Float?
+  creatorHolderPercent Float?
+  filterReason         String?
+
+  // Transaction
+  transactionSignature String? @unique
+  priorityFeeLamports  BigInt?
+  slippageBps          Int?
+
+  // Timing (Performance Metrics)
+  discoveredAt DateTime @default(now())
+  analyzedAt   DateTime?
+  executedAt   DateTime?
+  confirmedAt  DateTime?
+  analysisDurationMs  Int?
+  executionDurationMs Int?
+
+  // Result
+  success       Boolean @default(false)
+  failureReason String?
+  errorDetails  Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, status])
+  @@index([userId, createdAt])
+  @@index([status])
+  @@index([tokenMint])
+  @@index([discoveredAt])
+  @@index([success])
+}
+
+enum SnipeStatus {
+  PENDING
+  ANALYZING
+  EXECUTING
+  SUCCESS
+  FAILED
+  SKIPPED
 }

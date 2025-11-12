@@ -8,7 +8,7 @@ import { getTradingExecutor } from "../../services/trading/executor.js";
 import { asTokenMint } from "../../types/common.js";
 import type { TradingError } from "../../types/trading.js";
 import { resolveTokenSymbol, getTokenDecimals, toMinimalUnits } from "../../config/tokens.js";
-import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
+import { clearPasswordState } from "../utils/passwordState.js";
 import { invalidateBalanceCache } from "../utils/balanceCache.js";
 import { getUserContext } from "../utils/userContext.js";
 import type { Context } from "../views/index.js";
@@ -164,9 +164,9 @@ async function executeSwap(
     }
 
     const sessionToken = ctx.session.sessionToken;
-    const canUseSession = Boolean(
-      sessionToken && hasActivePassword(ctx.session)
-    );
+    // Only check sessionToken - password availability will be checked in executor
+    const canUseSession = Boolean(sessionToken);
+    const reusePassword = Boolean(ctx.session.passwordReuseEnabled);
 
     if (!canUseSession && !password) {
       await ctx.reply(
@@ -189,10 +189,14 @@ async function executeSwap(
         slippageBps: 50, // 0.5% slippage
       },
       canUseSession ? undefined : password,
-      canUseSession ? (sessionToken as any) : undefined
+      canUseSession ? (sessionToken as any) : undefined,
+      { reusePassword: canUseSession ? reusePassword : false }
     );
-    if (canUseSession) {
+    if (canUseSession && !reusePassword) {
       clearPasswordState(ctx.session);
+      // In strict mode, also clear sessionToken to force unlock on next trade
+      ctx.session.sessionToken = undefined;
+      ctx.session.sessionExpiresAt = undefined;
     }
 
     if (!tradeResult.success) {

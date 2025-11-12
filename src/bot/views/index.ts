@@ -15,6 +15,8 @@ import {
 } from "../utils/conversationTimeouts.js";
 import type { CachedUserContext } from "../utils/userContext.js";
 import { getUserContext } from "../utils/userContext.js";
+import { getSnipeConfig } from "../../services/snipe/configService.js";
+import { automationLeaseActive } from "../../services/snipe/automationService.js";
 
 // ============================================================================
 // Types
@@ -28,6 +30,7 @@ export type Page =
   | "sell"
   | "swap"
   | "balance"
+  | "snipe"
   | "settings"
   | "wallet_info"
   | "unlock"
@@ -95,9 +98,11 @@ export interface SessionData {
   sessionToken?: string; // Redis session token (15 min TTL)
   sessionExpiresAt?: number; // Timestamp for UI display
   passwordExpiresAt?: number; // Timestamp for password TTL indicator
+  passwordReuseEnabled?: boolean;
   ui: UIState;
   awaitingPasswordForWallet?: boolean;
   awaitingPasswordForUnlock?: boolean;
+  awaitingPasswordForSnipe?: boolean;
   awaitingPasswordForBuy?: {
     tokenMint: string;
     solAmount: string;
@@ -116,6 +121,9 @@ export interface SessionData {
     type: "buy" | "sell" | "sell_pct" | "swap";
     params: string[];
   }; // Save command to execute after unlock
+  pendingSnipeAction?: {
+    type: "automation";
+  };
   awaitingInput?: {
     type: "token" | "amount" | "password";
     page: Page;
@@ -277,13 +285,15 @@ export async function renderMainPage(ctx: Context): Promise<{
     .text("💸 Sell", "nav:sell")
     .row()
     .text("🔄 Swap", "nav:swap")
+    .text("🎯 Token Sniper", "nav:snipe")
+    .row()
     .text("📊 Balance", "nav:balance")
-    .row()
     .text("💼 Wallet Info", "nav:wallet_info")
-    .text("⚙️ Settings", "nav:settings")
     .row()
-    .text("📊 Session Status", "nav:status")
-    .text("📚 Help", "nav:help");
+    .text("⚙️ Settings", "nav:settings")
+    .text("📚 Help", "nav:help")
+    .row()
+    .text("📊 Session Status", "nav:status");
 
   if (isLocked) {
     keyboard.row().text("🔓 Unlock Wallet", "action:unlock");
@@ -643,23 +653,98 @@ export async function renderWalletInfoPage(ctx: Context): Promise<{
   return { text, keyboard };
 }
 
+export async function renderSnipePage(ctx: Context): Promise<{
+  text: string;
+  keyboard: InlineKeyboard;
+}> {
+  const userContext = await getUserContext(ctx);
+  const config = await getSnipeConfig(userContext.userId);
+  const automationActive = await automationLeaseActive(userContext.userId);
+
+  const buyAmountSol = Number(config.buyAmountLamports) / 1e9;
+  const liquidityMin =
+    config.minLiquidityLamports !== null && config.minLiquidityLamports !== undefined
+      ? `${(Number(config.minLiquidityLamports) / 1e9).toFixed(2)} SOL`
+      : "Any";
+  const liquidityMax =
+    config.maxLiquidityLamports !== null && config.maxLiquidityLamports !== undefined
+      ? `${(Number(config.maxLiquidityLamports) / 1e9).toFixed(2)} SOL`
+      : "Any";
+  const marketMin =
+    config.minMarketCapUsd ?? "Any";
+  const marketMax =
+    config.maxMarketCapUsd ?? "Any";
+
+  const text =
+    `🎯 *Token Sniper*\n\n` +
+    `Status: ${config.enabled ? "🟢 Enabled" : "⚪️ Disabled"}\n` +
+    `Mode: ${config.autoTrading ? "🤖 Auto-Trading" : "⏸ Manual"}\n` +
+    `Buy Amount: ${buyAmountSol.toFixed(3)} SOL\n` +
+    `Max Risk Score: ${config.maxHoneypotRisk}/100\n` +
+    `Hourly Limit: ${config.maxBuysPerHour}\n` +
+    `Daily Limit: ${config.maxBuysPerDay}\n` +
+    `Automation: ${automationActive ? "🔐 Active (15 min)" : "🔒 Locked"}\n\n` +
+    `━━━\n\n` +
+    `*Filters*\n` +
+    `Liquidity: ${liquidityMin} → ${liquidityMax}\n` +
+    `Market Cap: ${marketMin === "Any" ? "Any" : `$${Number(marketMin).toLocaleString()}`} → ${marketMax === "Any" ? "Any" : `$${Number(marketMax).toLocaleString()}`}\n` +
+    `Whitelist: ${config.whitelist.length || 0} tokens\n` +
+    `Blacklist: ${config.blacklist.length || 0} tokens\n\n` +
+    `💡 *Tip:* Use 🔓 Unlock Wallet to enable automation automatically.`;
+
+  // Check if wallet is unlocked
+  const isUnlocked = !!ctx.session.sessionToken;
+
+  const keyboard = new InlineKeyboard();
+  keyboard
+    .text(
+      config.enabled ? "🟢 Disable" : "⚪️ Enable",
+      "snipe:toggle"
+    )
+    .row()
+    .text(
+      config.autoTrading ? "🤖 Pause Auto-Trade" : "🤖 Enable Auto-Trade",
+      "snipe:toggle_auto"
+    )
+    .row()
+    .text("💰 0.05", "snipe:set_amount:0.05")
+    .text("0.10", "snipe:set_amount:0.1")
+    .text("0.25", "snipe:set_amount:0.25")
+    .text("0.50", "snipe:set_amount:0.5")
+    .row()
+    .text("⚠️ 20", "snipe:set_risk:20")
+    .text("30", "snipe:set_risk:30")
+    .text("40", "snipe:set_risk:40")
+    .text("50", "snipe:set_risk:50")
+    .row()
+    .text(
+      isUnlocked ? "🔒 Lock Wallet" : "🔓 Unlock Wallet",
+      isUnlocked ? "action:lock" : "action:unlock"
+    )
+    .row()
+    .text("📜 History", "snipe:history")
+    .text("🔄 Refresh", "snipe:refresh")
+    .row()
+    .text("« Back", "nav:main");
+
+  return { text, keyboard };
+}
+
 /**
  * Settings page
  */
-export function renderSettingsPage(settings?: {
-  slippage: number;
-  autoApprove: boolean;
-}): {
+export async function renderSettingsPage(ctx: Context): Promise<{
   text: string;
   keyboard: InlineKeyboard;
-} {
-  const slippage = settings?.slippage ?? 1;
-  const autoApprove = settings?.autoApprove ?? false;
+}> {
+  const slippage = ctx.session.settings?.slippage ?? 1;
+  const autoApprove = ctx.session.settings?.autoApprove ?? false;
 
   const text =
     `*Settings*\n\n` +
     `Slippage: ${slippage}%\n` +
-    `Auto-approve: ${autoApprove ? "✅ Enabled" : "❌ Disabled"}`;
+    `Auto-approve: ${autoApprove ? "✅ Enabled" : "❌ Disabled"}\n\n` +
+    `💡 *Tip:* Password reuse mode can be toggled on the /unlock page.`;
 
   const keyboard = new InlineKeyboard()
     .text("🎯 Change Slippage", "settings:slippage")
@@ -688,14 +773,36 @@ export async function renderUnlockPage(ctx: Context): Promise<{
   }
 
   const wallet = userContext.activeWallet;
+  const reuseEnabled = userContext.allowPasswordReuse;
+
+  // Build explanation based on current mode
+  const modeExplanation = reuseEnabled
+    ? `🔓 *Reuse Mode* (Convenience)\n` +
+      `• Password valid for 15 minutes\n` +
+      `• Trade freely without re-entering\n` +
+      `• ⚠️ Higher risk if device compromised`
+    : `🔐 *Strict Mode* (Maximum Security)\n` +
+      `• Password valid for 2 minutes\n` +
+      `• Consumed after first trade\n` +
+      `• ✅ Most secure option`;
 
   const text =
-    `*Unlock Wallet*\n\n` +
+    `*🔓 Unlock Wallet*\n\n` +
     `\`${wallet.publicKey}\`\n\n` +
-    `Send your password to unlock for 15 minutes.\n\n` +
-    `⚠️ Your message will be deleted automatically.`;
+    `━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `${modeExplanation}\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `📝 *How to unlock:*\n` +
+    `Send your password in the next message.\n` +
+    `Your message will be auto-deleted.\n\n` +
+    `⚙️ Change mode below before unlocking.`;
 
   const keyboard = new InlineKeyboard()
+    .text(
+      reuseEnabled ? "🔐 Switch to Strict Mode" : "♻️ Switch to Reuse Mode",
+      "unlock:toggle_reuse"
+    )
+    .row()
     .text("« Cancel", "nav:main");
 
   return { text, keyboard };
@@ -836,11 +943,14 @@ export async function navigateToPage(
       case "balance":
         result = await renderBalancePage(ctx);
         break;
+      case "snipe":
+        result = await renderSnipePage(ctx);
+        break;
       case "wallet_info":
         result = await renderWalletInfoPage(ctx);
         break;
       case "settings":
-        result = renderSettingsPage(ctx.session.settings);
+        result = await renderSettingsPage(ctx);
         break;
       case "unlock":
         result = await renderUnlockPage(ctx);

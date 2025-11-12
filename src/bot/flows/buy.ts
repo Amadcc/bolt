@@ -34,7 +34,8 @@ export async function executeBuyFlow(
   });
 
   // ✅ Redis Session Integration: Check if wallet is unlocked
-  if (!ctx.session.sessionToken || !hasActivePassword(ctx.session)) {
+  // We only check sessionToken - password availability will be checked in executor
+  if (!ctx.session.sessionToken) {
     logger.warn("Wallet locked, cannot execute buy", { token, amount, userId: ctx.from?.id });
 
     const msgId = ctx.session.ui.messageId;
@@ -220,17 +221,46 @@ export async function executeBuyFlow(
       });
 
       if (!quoteResult.success) {
+        const error = quoteResult.error as any;
+
+        logger.info("Quote failed, checking error type", {
+          errorType: error?.type,
+          errorMessage: error?.message,
+          fullError: error
+        });
+
+        let errorMessage = "❌ *Quote Failed*\n\n";
+        let buttons = [[
+          { text: "🔄 Try Again", callback_data: `buy:amount:${token}:${amount}` },
+          { text: "« Back", callback_data: "nav:buy" }
+        ]];
+
+        // Check for insufficient balance error
+        if (error?.type === "INSUFFICIENT_BALANCE") {
+          errorMessage =
+            `💰 *Insufficient SOL Balance*\n\n` +
+            `You need at least **${amount} SOL** + gas fees to buy ${token}.\n\n` +
+            `📊 Check your balance in Wallet Info.\n\n` +
+            `💎 *Fund your wallet:*\n` +
+            `Send SOL to:\n` +
+            `\`${wallet.publicKey}\``;
+
+          buttons = [[
+            { text: "💼 Wallet Info", callback_data: "nav:wallet_info" },
+            { text: "« Back", callback_data: "nav:buy" }
+          ]];
+        } else {
+          errorMessage += `Couldn't get price quote for ${token}.\n\nPlease try again or use a different token.`;
+        }
+
         await ctx.api.editMessageText(
           ctx.chat.id,
           msgId,
-          `❌ *Quote Failed*\n\nCouldn't get price quote. Please try again.`,
+          errorMessage,
           {
             parse_mode: "Markdown",
             reply_markup: {
-              inline_keyboard: [[
-                { text: "🔄 Try Again", callback_data: `buy:amount:${token}:${amount}` },
-                { text: "« Back", callback_data: "nav:buy" }
-              ]]
+              inline_keyboard: buttons
             }
           }
         );
@@ -312,9 +342,16 @@ export async function executeBuyFlow(
         slippageBps: 50, // 0.5% slippage
       },
       undefined,
-      ctx.session.sessionToken as any
+      ctx.session.sessionToken as any,
+      { reusePassword: Boolean(ctx.session.passwordReuseEnabled) }
     );
-    clearPasswordState(ctx.session);
+    if (!ctx.session.passwordReuseEnabled) {
+      clearPasswordState(ctx.session);
+      // In strict mode, also clear sessionToken to force unlock on next trade
+      ctx.session.sessionToken = undefined;
+      ctx.session.sessionExpiresAt = undefined;
+      logger.info("Strict mode: cleared session after trade", { userId: userContext.userId });
+    }
 
     // Progress: Step 3 - Completed
     if (tradeResult.success) {

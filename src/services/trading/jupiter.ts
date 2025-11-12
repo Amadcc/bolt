@@ -301,6 +301,11 @@ export class JupiterService {
             type: "INSUFFICIENT_BALANCE",
             message: data.errorMessage || "Insufficient funds",
           });
+        } else if (data.errorCode === 2) {
+          return Err({
+            type: "INSUFFICIENT_BALANCE",
+            message: data.errorMessage || "Insufficient SOL for gas",
+          });
         } else if (data.errorCode === 3) {
           return Err({
             type: "MINIMUM_AMOUNT",

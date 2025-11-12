@@ -216,11 +216,13 @@ export class TradingExecutor {
   async executeTrade(
     params: TradeParams,
     password?: string,
-    sessionToken?: SessionToken // ✅ Optional Redis session token
+    sessionToken?: SessionToken, // ✅ Optional Redis session token
+    options?: { reusePassword?: boolean }
   ): Promise<Result<TradeResult, TradingError>> {
     const { userId, inputMint, outputMint, amount, slippageBps } = params;
     const tradeSide = this.determineSide(inputMint, outputMint);
     const tradeStart = Date.now();
+    const reuseSessionPassword = options?.reusePassword ?? false;
     const recordFailure = (reason: string, errorType?: string) => {
       if (errorType) {
         recordError(errorType);
@@ -236,6 +238,7 @@ export class TradingExecutor {
       slippageBps,
       passwordProvided: !!password,
       hasSession: !!sessionToken,
+      reuseSessionPassword,
     });
 
     recordTradeRequested(tradeSide);
@@ -247,7 +250,9 @@ export class TradingExecutor {
 
       // Prefer Redis session password if session token is provided
       if (sessionToken) {
-        const passwordResult = await getPasswordTemporary(sessionToken);
+        const passwordResult = await getPasswordTemporary(sessionToken, {
+          consume: !reuseSessionPassword,
+        });
 
         if (!passwordResult.success) {
           logger.error("Failed to load password from Redis", {

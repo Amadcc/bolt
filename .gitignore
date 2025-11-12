@@ -175,3 +175,6 @@ dist
 .DS_Store
 
 /src/generated/prisma
+
+# Database backups (contain sensitive data)
+backups/

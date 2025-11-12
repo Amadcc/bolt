@@ -4,6 +4,23 @@
 
 The **Token Sniper** is the core feature that automatically detects and buys newly launched tokens on Solana within milliseconds. This document outlines the complete architecture, implementation plan, and best practices.
 
+### ✅ Current Implementation (2025-11-11)
+
+- **Discovery**: `PumpFunMonitor` (`src/services/snipe/discovery/pumpfun.ts`) plus `RaydiumLogMonitor`/`OrcaLogMonitor` tail program logs for fresh pools and emit typed `NewTokenEvent`s.
+- **Filtering**: `SnipeFilter` enforces per-user liquidity, market-cap, whitelist/blacklist, and honeypot risk policies backed by `prisma.snipeConfig`.
+- **Rate Limiting**: `enforceRateLimits` guards hourly/daily budgets via Redis counters.
+- **Execution**: `SnipeExecutor` orchestrates honeypot analysis, automation-key acquisition, Jupiter swap execution, and `SnipeExecution` auditing.
+- **Automation Vault**: Users explicitly grant 15-minute automation leases (encrypted with `SESSION_MASTER_SECRET`) via `/snipe → Grant Automation`.
+- **Orchestrator**: `snipeOrchestrator` fans out discovery events to all enabled configs, deduplicates per-user pipelines, and streams Prometheus metrics (`snipe_*`).
+- **Telegram UI / Notifications**: `/snipe` renders real-time config state (with automation + password reuse toggles) and background auto-trades generate Telegram alerts on success/failure/skips.
+
+> **Operator Workflow**
+>
+> 1. `/unlock <password>` – establish standard session.
+> 2. `/snipe` → **Grant Automation** – enter password once to mint a lease.
+> 3. Toggle **Enable** and **Auto-Trade**, adjust presets.
+> 4. Leave bot running; auto-trades occur until the lease expires (15 minutes) or you tap **Revoke Automation**.
+
 ---
 
 ## 📊 Architecture Overview

@@ -12,6 +12,7 @@ import { initializeJitoService } from "./services/trading/jito.js";
 import { logger } from "./utils/logger.js";
 import { getMetrics, metricsRegistry } from "./utils/metrics.js";
 import { clearAllIntervals } from "./utils/intervals.js";
+import { initializeSnipe, shutdownSnipe } from "./services/snipe/index.js";
 
 const app = Fastify({
   logger: true,
@@ -210,6 +211,9 @@ const start = async () => {
     });
     logger.info("Jito MEV Protection initialized");
 
+    await initializeSnipe();
+    logger.info("Token Sniper services initialized");
+
     // Start Fastify server
     await app.listen({
       port: Number(process.env.PORT) || 3000,
@@ -245,6 +249,8 @@ process.on("SIGINT", async () => {
     await app.close();
     logger.info("Fastify server closed");
 
+    await shutdownSnipe();
+
     // Close database connection
     await prisma.$disconnect();
     logger.info("Database disconnected");
@@ -270,6 +276,7 @@ process.on("SIGTERM", async () => {
   try {
     await bot.stop();
     await app.close();
+    await shutdownSnipe();
     await prisma.$disconnect();
     await closeRedis();
     clearAllIntervals();

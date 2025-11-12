@@ -145,6 +145,56 @@ const honeypotFallbackChain = new client.Counter({
   registers: [register],
 });
 
+const snipeOpportunities = new client.Counter({
+  name: "snipe_opportunities_total",
+  help: "Auto-snipe opportunities by result",
+  labelNames: ["result"],
+  registers: [register],
+});
+
+const snipeExecutions = new client.Counter({
+  name: "snipe_executions_total",
+  help: "Auto-snipe execution outcomes",
+  labelNames: ["status"],
+  registers: [register],
+});
+
+const snipeAnalysisDuration = new client.Histogram({
+  name: "snipe_analysis_duration_ms",
+  help: "Duration of honeypot analysis for auto-snipe",
+  buckets: [50, 100, 200, 500, 1000, 2000, 4000],
+  registers: [register],
+});
+
+const snipeDiscoveryEvents = new client.Counter({
+  name: "snipe_discovery_events_total",
+  help: "Discovery events emitted by auto-snipe sources",
+  labelNames: ["source", "status"],
+  registers: [register],
+});
+
+const snipeExecutionLatency = new client.Histogram({
+  name: "snipe_execution_latency_ms",
+  help: "Time from token discovery to transaction confirmation (end-to-end)",
+  labelNames: ["status"],
+  buckets: [100, 500, 1000, 2000, 5000, 10000, 30000],
+  registers: [register],
+});
+
+const automationLeaseFailures = new client.Counter({
+  name: "snipe_automation_lease_failures_total",
+  help: "Failed automation lease establishment attempts",
+  labelNames: ["reason"],
+  registers: [register],
+});
+
+const snipeRateLimitHits = new client.Counter({
+  name: "snipe_rate_limit_hits_total",
+  help: "Number of snipes blocked by rate limiting",
+  labelNames: ["limit_type"],
+  registers: [register],
+});
+
 // ---------------------------------------------------------------------------
 // Helper Functions
 // ---------------------------------------------------------------------------
@@ -258,6 +308,48 @@ export function recordHoneypotFallbackChain(
   attempts: number
 ): void {
   honeypotFallbackChain.labels(successfulProvider, attempts.toString()).inc();
+}
+
+export function recordSnipeOpportunity(result: "accepted" | "rejected"): void {
+  snipeOpportunities.labels(result).inc();
+}
+
+export function recordSnipeExecutionOutcome(
+  status: "success" | "failed"
+): void {
+  snipeExecutions.labels(status).inc();
+}
+
+export function recordSnipeAnalysisDuration(durationMs: number): void {
+  if (durationMs > 0) {
+    snipeAnalysisDuration.observe(durationMs);
+  }
+}
+
+export function recordSnipeDiscoveryEvent(
+  source: string,
+  status: "emitted" | "error" | "ignored"
+): void {
+  snipeDiscoveryEvents.labels(source, status).inc();
+}
+
+export function recordSnipeExecutionLatency(
+  durationMs: number,
+  status: "success" | "failed"
+): void {
+  snipeExecutionLatency.labels(status).observe(durationMs);
+}
+
+export function recordAutomationLeaseFailure(
+  reason: "auth_failed" | "storage_error" | "expired"
+): void {
+  automationLeaseFailures.labels(reason).inc();
+}
+
+export function recordSnipeRateLimitHit(
+  limitType: "hourly" | "daily"
+): void {
+  snipeRateLimitHits.labels(limitType).inc();
 }
 
 export async function getMetrics(): Promise<string> {

@@ -13,6 +13,7 @@ export const CONVERSATION_TOPICS = {
   walletPassword: "wallet_password",
   unlockPassword: "unlock_password",
   awaitingInput: "awaiting_input",
+  snipePassword: "snipe_password",
 } as const;
 
 const timeouts = new Map<string, ConversationTimeoutEntry>();

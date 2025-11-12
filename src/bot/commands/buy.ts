@@ -195,6 +195,7 @@ async function executeBuy(
     const canUseSession = Boolean(
       sessionToken && hasActivePassword(ctx.session)
     );
+    const reusePassword = Boolean(ctx.session.passwordReuseEnabled);
 
     if (!canUseSession && !password) {
       await ctx.reply(
@@ -217,10 +218,14 @@ async function executeBuy(
         slippageBps: 50, // 0.5% slippage
       },
       canUseSession ? undefined : password,
-      canUseSession ? (sessionToken as any) : undefined
+      canUseSession ? (sessionToken as any) : undefined,
+      { reusePassword: canUseSession ? reusePassword : false }
     );
-    if (canUseSession) {
+    if (canUseSession && !reusePassword) {
       clearPasswordState(ctx.session);
+      // In strict mode, also clear sessionToken to force unlock on next trade
+      ctx.session.sessionToken = undefined;
+      ctx.session.sessionExpiresAt = undefined;
     }
 
     if (!tradeResult.success) {

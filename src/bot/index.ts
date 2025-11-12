@@ -16,6 +16,7 @@ import {
 import {
   handleNavigationCallback,
   handleActionCallback,
+  handleUnlockCallback,
   handleBuyCallback,
   handleSellCallback,
   handleSwapCallback,
@@ -37,6 +38,10 @@ import {
   invalidateUserContext,
 } from "./utils/userContext.js";
 import type { CachedUserContext } from "./utils/userContext.js";
+import {
+  handleSnipeActionCallback,
+  handleSnipeAutomationPasswordInput,
+} from "./handlers/snipe.js";
 
 type MyContext = ViewContext & {
   state: {
@@ -305,6 +310,15 @@ bot.command("help", async (ctx) => {
   await navigateToPage(ctx, "help");
 });
 
+bot.command("snipe", async (ctx) => {
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    logger.warn("Failed to delete snipe command message", { error });
+  }
+  await navigateToPage(ctx, "snipe");
+});
+
 // ============================================================================
 // Callback Query Handlers (Inline Button Clicks)
 // ============================================================================
@@ -334,6 +348,11 @@ bot.on("callback_query:data", async (ctx) => {
       case "action":
         // Actions: action:action_name:params
         await handleActionCallback(ctx, params[0], params.slice(1));
+        break;
+
+      case "unlock":
+        // Unlock page actions: unlock:toggle_reuse
+        await handleUnlockCallback(ctx, params[0]);
         break;
 
       case "buy":
@@ -366,6 +385,10 @@ bot.on("callback_query:data", async (ctx) => {
         } else {
           await ctx.answerCallbackQuery("❌ Unknown balance action");
         }
+        break;
+
+      case "snipe":
+        await handleSnipeActionCallback(ctx, params[0], params.slice(1));
         break;
 
       default:
@@ -497,6 +520,23 @@ bot.on("message:text", async (ctx, next) => {
       }
     }, 2000);
 
+    return;
+  }
+
+  if (ctx.session.awaitingPasswordForSnipe) {
+    const password = ctx.message?.text;
+    if (!password) {
+      return;
+    }
+
+    // Delete password message
+    try {
+      await ctx.deleteMessage();
+    } catch (error) {
+      logger.warn("Failed to delete automation password message", { error });
+    }
+
+    await handleSnipeAutomationPasswordInput(ctx, password);
     return;
   }
 
