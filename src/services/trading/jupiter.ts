@@ -242,6 +242,25 @@ export class JupiterService {
         queryParams.append("referralAccount", params.referralAccount);
       }
 
+      // ========== 2025 PERFORMANCE OPTIMIZATIONS ==========
+
+      // Restrict to high-liquidity intermediate tokens (default: true for sniping)
+      const restrictIntermediateTokens = params.restrictIntermediateTokens ?? true;
+      if (restrictIntermediateTokens) {
+        queryParams.append("restrictIntermediateTokens", "true");
+      }
+
+      // Dynamic compute unit limit optimization (default: true)
+      const dynamicComputeUnitLimit = params.dynamicComputeUnitLimit ?? true;
+      if (dynamicComputeUnitLimit) {
+        queryParams.append("dynamicComputeUnitLimit", "true");
+      }
+
+      // Dynamic slippage (if provided)
+      if (params.dynamicSlippage) {
+        queryParams.append("dynamicSlippage", JSON.stringify(params.dynamicSlippage));
+      }
+
       // Log platform fee config (for reference, not actually used by Jupiter Lite API)
       if (params.platformFeeBps && params.feeAccount) {
         logger.warn("Platform fee configured but not supported by Jupiter Lite API", {
@@ -640,58 +659,152 @@ export class JupiterService {
       execution = executeResult.value;
     }
 
-    // Step 4: Wait for confirmation (optional but recommended)
-    try {
-      const signature = asTransactionSignature(execution.signature);
+    // Step 4: Wait for confirmation (2025 optimized method)
+    const signature = asTransactionSignature(execution.signature);
 
-      logger.info("Waiting for transaction confirmation", { signature });
+    const confirmResult = await this.confirmTransactionOptimized(signature);
 
-      const confirmation = await this.connection.confirmTransaction(
-        execution.signature,
-        "confirmed"
-      );
-
-      if (confirmation.value.err) {
-        logger.error("Transaction confirmation failed", {
-          signature,
-          error: confirmation.value.err,
-        });
-
-        return Err({
-          type: "TRANSACTION_FAILED",
-          signature: execution.signature,
-          reason: JSON.stringify(confirmation.value.err),
-        });
-      }
-
-      logger.info("Transaction confirmed successfully", {
+    if (!confirmResult.success) {
+      // Confirmation failed or timeout
+      logger.warn("Transaction confirmation failed, but transaction was sent", {
         signature,
-        slot: execution.slot,
-        mevProtection: usedJito ? "Jito Bundle" : "None",
+        error: confirmResult.error,
       });
 
-      // Build result
-      const result: JupiterSwapResult = {
+      // Return partial success - transaction was sent, just not confirmed
+      // User can check manually via signature
+      return Ok({
         signature,
         inputAmount: BigInt(execution.totalInputAmount),
         outputAmount: BigInt(execution.totalOutputAmount),
-        priceImpactPct: quote.priceImpact * 100, // Convert from 0-1 range to percentage
-        slot: Number(execution.slot),
-      };
-
-      return Ok(result);
-    } catch (error) {
-      logger.error("Error confirming transaction", { error });
-
-      // Transaction was sent but confirmation failed - still return partial success
-      return Ok({
-        signature: asTransactionSignature(execution.signature),
-        inputAmount: BigInt(execution.totalInputAmount),
-        outputAmount: BigInt(execution.totalOutputAmount),
-        priceImpactPct: quote.priceImpact * 100, // Convert from 0-1 range to percentage
+        priceImpactPct: quote.priceImpact * 100,
         slot: Number(execution.slot),
       });
     }
+
+    // Success! Transaction confirmed on-chain
+    logger.info("Transaction confirmed successfully", {
+      signature,
+      slot: confirmResult.value.slot,
+      mevProtection: usedJito ? "Jito Bundle" : "None",
+    });
+
+    const result: JupiterSwapResult = {
+      signature,
+      inputAmount: BigInt(execution.totalInputAmount),
+      outputAmount: BigInt(execution.totalOutputAmount),
+      priceImpactPct: quote.priceImpact * 100,
+      slot: confirmResult.value.slot,
+    };
+
+    return Ok(result);
+  }
+
+  // ==========================================================================
+  // Transaction Confirmation (2025 Best Practice)
+  // ==========================================================================
+
+  /**
+   * Optimized transaction confirmation using getSignatureStatuses polling
+   * Replaces deprecated confirmTransaction() method
+   *
+   * Benefits:
+   * - Faster detection of confirmation
+   * - No blockhash expiry issues
+   * - Better error handling
+   *
+   * @see https://www.quicknode.com/docs/solana/jupiter-transactions
+   */
+  private async confirmTransactionOptimized(
+    signature: string,
+    maxAttempts = 30 // 60 seconds with 2s interval
+  ): Promise<Result<{ slot: number }, JupiterError>> {
+    logger.info("Waiting for transaction confirmation (optimized)", {
+      signature,
+      maxAttempts,
+    });
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        // Use getSignatureStatuses instead of deprecated confirmTransaction
+        const statusResponse = await this.connection.getSignatureStatuses([signature]);
+        const status = statusResponse?.value?.[0];
+
+        if (!status) {
+          // Status not available yet, wait and retry
+          logger.debug("Transaction status not available yet", {
+            signature,
+            attempt: attempt + 1,
+          });
+          await this.sleep(2000); // 2 seconds between checks
+          continue;
+        }
+
+        // Check for errors
+        if (status.err) {
+          logger.error("Transaction failed on-chain", {
+            signature,
+            error: status.err,
+            slot: status.slot,
+          });
+
+          return Err({
+            type: "TRANSACTION_FAILED",
+            signature,
+            reason: JSON.stringify(status.err),
+          });
+        }
+
+        // Check confirmation status
+        if (status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized") {
+          logger.info("Transaction confirmed", {
+            signature,
+            slot: status.slot,
+            confirmationStatus: status.confirmationStatus,
+            attempt: attempt + 1,
+          });
+
+          return Ok({ slot: status.slot || 0 });
+        }
+
+        // Still processing, wait and retry
+        logger.debug("Transaction still processing", {
+          signature,
+          confirmationStatus: status.confirmationStatus,
+          attempt: attempt + 1,
+        });
+
+        await this.sleep(2000);
+      } catch (error) {
+        logger.warn("Error checking transaction status", {
+          signature,
+          attempt: attempt + 1,
+          error,
+        });
+
+        // Don't fail on temporary errors, keep retrying
+        await this.sleep(2000);
+      }
+    }
+
+    // Timeout after all attempts
+    logger.error("Transaction confirmation timeout", {
+      signature,
+      attempts: maxAttempts,
+      timeoutSeconds: (maxAttempts * 2),
+    });
+
+    return Err({
+      type: "TIMEOUT",
+      message: `Transaction not confirmed after ${maxAttempts * 2} seconds (blockhash may have expired)`,
+    });
+  }
+
+  /**
+   * Helper: Sleep for specified milliseconds
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   // ==========================================================================

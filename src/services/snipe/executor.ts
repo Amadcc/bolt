@@ -4,7 +4,7 @@ import { logger } from "../../utils/logger.js";
 import { Err, Ok, type Result } from "../../types/common.js";
 import type { NewTokenEvent } from "../../types/snipe.js";
 import { getHoneypotDetector } from "../honeypot/detector.js";
-import { enforceRateLimits } from "./rateLimiter.js";
+import { enforceRateLimits, decrementRateCounters } from "./rateLimiter.js";
 import { getAutomationKeypair } from "./automationService.js";
 import { clearKeypair } from "../wallet/keyManager.js";
 import { getJupiter } from "../trading/jupiter.js";
@@ -22,8 +22,7 @@ import {
   notifyAutoSnipeSkipped,
   notifyAutoSnipeSuccess,
 } from "./notifier.js";
-
-const HONEYPOT_TIMEOUT_MS = 2000;
+import { HONEYPOT_TIMEOUT_MS } from "../../config/snipe.js";
 
 export class SnipeExecutor {
   async execute(
@@ -63,6 +62,7 @@ export class SnipeExecutor {
 
       if (!honeypotResult.success) {
         await this.failExecution(execution.id, honeypotResult.error);
+        await decrementRateCounters(userId, config); // Don't count failed honeypot checks
         await this.notifyFailure(config, event, honeypotResult.error);
         return Err(honeypotResult.error);
       }
@@ -70,6 +70,7 @@ export class SnipeExecutor {
       if (honeypotResult.value.honeypotScore > config.maxHoneypotRisk) {
         const reason = `Risk score ${honeypotResult.value.honeypotScore}/100 exceeds limit`;
         await this.skipExecution(execution.id, reason, honeypotResult.value);
+        await decrementRateCounters(userId, config); // Don't count high-risk tokens
         await this.notifySkip(config, event, reason);
         return Err(reason);
       }
@@ -78,6 +79,7 @@ export class SnipeExecutor {
       if (!keypairResult.success) {
         const failureMessage = `Automation lease unavailable: ${keypairResult.error}`;
         await this.failExecution(execution.id, failureMessage);
+        await decrementRateCounters(userId, config); // Don't count auth failures
         await this.notifyFailure(config, event, keypairResult.error);
 
         // Record lease failure metrics
@@ -170,6 +172,7 @@ export class SnipeExecutor {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await this.failExecution(execution.id, message);
+      await decrementRateCounters(userId, config); // Don't count unexpected errors
       recordSnipeExecutionOutcome("failed");
 
       // Record execution latency even for failures

@@ -76,6 +76,29 @@ export async function enforceRateLimits(
   return Ok(undefined);
 }
 
+/**
+ * Decrement rate limit counters (e.g., when a snipe is rejected before execution).
+ * This prevents failed/skipped snipes from counting against user limits.
+ */
+export async function decrementRateCounters(
+  userId: string,
+  config: SnipeConfig
+): Promise<void> {
+  const promises: Promise<unknown>[] = [];
+
+  if (config.maxBuysPerHour > 0) {
+    const hourKey = `${HOUR_KEY_PREFIX}${userId}`;
+    promises.push(redis.decr(hourKey));
+  }
+
+  if (config.maxBuysPerDay > 0) {
+    const dayKey = `${DAY_KEY_PREFIX}${userId}`;
+    promises.push(redis.decr(dayKey));
+  }
+
+  await Promise.all(promises);
+}
+
 export async function resetRateCounters(userId: string): Promise<void> {
   await redis.del(`${HOUR_KEY_PREFIX}${userId}`);
   await redis.del(`${DAY_KEY_PREFIX}${userId}`);

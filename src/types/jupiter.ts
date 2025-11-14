@@ -200,6 +200,48 @@ export interface JupiterSwapParams {
   referralAccount?: string;
   platformFeeBps?: number;
   feeAccount?: string;
+
+  // ========== 2025 PERFORMANCE OPTIMIZATIONS ==========
+
+  /**
+   * Restrict intermediate tokens to high-liquidity pairs only
+   * Prevents routing through low-liquidity pools that cause failures
+   *
+   * @default true (recommended for sniping)
+   * @see https://www.quicknode.com/docs/solana/jupiter-transactions
+   */
+  restrictIntermediateTokens?: boolean;
+
+  /**
+   * Automatically optimize compute unit limit based on swap complexity
+   * Prevents over-allocation of compute units (saves SOL)
+   *
+   * @default true
+   * @see https://www.quicknode.com/docs/solana/jupiter-transactions
+   */
+  dynamicComputeUnitLimit?: boolean;
+
+  /**
+   * Skip preflight simulation for faster execution
+   * Recommended for high-speed trading (sniping)
+   *
+   * WARNING: Transaction may fail on-chain if there are issues
+   *
+   * @default true for sniper bots
+   * @see https://www.quicknode.com/docs/solana/jupiter-transactions
+   */
+  skipPreflight?: boolean;
+
+  /**
+   * Dynamic slippage optimization
+   * Automatically adjusts slippage based on market conditions
+   *
+   * Example: { minBps: 10, maxBps: 300 } = 0.1% - 3%
+   */
+  dynamicSlippage?: {
+    minBps: number;
+    maxBps: number;
+  };
 }
 
 export interface JupiterSwapResult {

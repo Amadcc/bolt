@@ -21,6 +21,7 @@ import {
   clearRegisteredInterval,
 } from "../../utils/intervals.js";
 import { observeRpcRequest } from "../../utils/metrics.js";
+import { redactUrl } from "../../utils/security.js";
 
 // ============================================================================
 // Types and Interfaces
@@ -314,7 +315,7 @@ export class RPCPool {
 
       logger.debug("Created new Connection instance", {
         name: endpoint.name,
-        url: endpoint.url,
+        url: redactUrl(endpoint.url),
       });
 
       this.instrumentConnection(endpoint.connection, endpoint.name);

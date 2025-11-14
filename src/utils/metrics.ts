@@ -352,6 +352,177 @@ export function recordSnipeRateLimitHit(
   snipeRateLimitHits.labels(limitType).inc();
 }
 
+// ---------------------------------------------------------------------------
+// PumpFun Monitor Metrics (2025 Optimizations)
+// ---------------------------------------------------------------------------
+
+const pumpfunTokensDetected = new client.Counter({
+  name: "pumpfun_tokens_detected_total",
+  help: "Total number of tokens detected from Pump.fun",
+  registers: [register],
+});
+
+const pumpfunMessagesSkipped = new client.Counter({
+  name: "pumpfun_messages_skipped_total",
+  help: "Total messages skipped (subscription messages, invalid mints, rate limited)",
+  labelNames: ["reason"],
+  registers: [register],
+});
+
+const pumpfunParseErrors = new client.Counter({
+  name: "pumpfun_parse_errors_total",
+  help: "Total JSON parse errors from Pump.fun messages",
+  registers: [register],
+});
+
+const pumpfunReconnections = new client.Counter({
+  name: "pumpfun_reconnections_total",
+  help: "Total reconnection attempts to Pump.fun",
+  labelNames: ["reason"],
+  registers: [register],
+});
+
+const pumpfunConnectionState = new client.Gauge({
+  name: "pumpfun_connection_state",
+  help: "Connection state (0=disconnected, 1=connected, 2=reconnecting)",
+  registers: [register],
+});
+
+const pumpfunLastMessageTimestamp = new client.Gauge({
+  name: "pumpfun_last_message_timestamp_seconds",
+  help: "Timestamp of last received message (for staleness detection)",
+  registers: [register],
+});
+
+const pumpfunMessageProcessingDuration = new client.Histogram({
+  name: "pumpfun_message_processing_duration_ms",
+  help: "Duration of message processing",
+  buckets: [1, 5, 10, 25, 50, 100, 250],
+  registers: [register],
+});
+
+export function recordPumpFunTokenDetected(): void {
+  pumpfunTokensDetected.inc();
+}
+
+export function recordPumpFunMessageSkipped(reason: "subscription" | "no_mint" | "invalid_mint" | "rate_limited"): void {
+  pumpfunMessagesSkipped.labels(reason).inc();
+}
+
+export function recordPumpFunParseError(): void {
+  pumpfunParseErrors.inc();
+}
+
+export function recordPumpFunReconnection(reason: "close" | "error" | "stale"): void {
+  pumpfunReconnections.labels(reason).inc();
+}
+
+export function setPumpFunConnectionState(state: "disconnected" | "connected" | "reconnecting"): void {
+  const stateValue = state === "disconnected" ? 0 : state === "connected" ? 1 : 2;
+  pumpfunConnectionState.set(stateValue);
+}
+
+export function updatePumpFunLastMessageTimestamp(): void {
+  pumpfunLastMessageTimestamp.set(Date.now() / 1000);
+}
+
+export function observePumpFunMessageProcessing(durationMs: number): void {
+  pumpfunMessageProcessingDuration.observe(durationMs);
+}
+
+// ---------------------------------------------------------------------------
+// ProgramLog Monitor Metrics (Raydium/Orca) (2025 Optimizations)
+// ---------------------------------------------------------------------------
+
+const programLogSubscriptionsActive = new client.Gauge({
+  name: "program_log_subscriptions_active",
+  help: "Active program log subscriptions",
+  labelNames: ["source"],
+  registers: [register],
+});
+
+const programLogQueueSize = new client.Gauge({
+  name: "program_log_queue_size",
+  help: "Size of processing queue",
+  labelNames: ["source"],
+  registers: [register],
+});
+
+const programLogInFlight = new client.Gauge({
+  name: "program_log_in_flight",
+  help: "Number of transactions currently being processed",
+  labelNames: ["source"],
+  registers: [register],
+});
+
+const programLogFetchDuration = new client.Histogram({
+  name: "program_log_fetch_duration_ms",
+  help: "Duration of transaction fetching and processing",
+  labelNames: ["source"],
+  buckets: [50, 100, 250, 500, 1000, 2000, 5000, 10000],
+  registers: [register],
+});
+
+const programLogReconnections = new client.Counter({
+  name: "program_log_reconnections_total",
+  help: "Total reconnection attempts to program logs",
+  labelNames: ["source", "program_id", "reason"],
+  registers: [register],
+});
+
+const programLogFetchErrors = new client.Counter({
+  name: "program_log_fetch_errors_total",
+  help: "Total transaction fetch errors",
+  labelNames: ["source", "error_type"],
+  registers: [register],
+});
+
+const programLogQueueDropped = new client.Counter({
+  name: "program_log_queue_dropped_total",
+  help: "Total transactions dropped due to queue overflow",
+  labelNames: ["source"],
+  registers: [register],
+});
+
+const programLogLastEventTimestamp = new client.Gauge({
+  name: "program_log_last_event_timestamp_seconds",
+  help: "Timestamp of last received event per program",
+  labelNames: ["source", "program_id"],
+  registers: [register],
+});
+
+export function setProgramLogSubscriptionsActive(source: string, count: number): void {
+  programLogSubscriptionsActive.labels(source).set(count);
+}
+
+export function setProgramLogQueueSize(source: string, size: number): void {
+  programLogQueueSize.labels(source).set(size);
+}
+
+export function setProgramLogInFlight(source: string, count: number): void {
+  programLogInFlight.labels(source).set(count);
+}
+
+export function observeProgramLogFetchDuration(source: string, durationMs: number): void {
+  programLogFetchDuration.labels(source).observe(durationMs);
+}
+
+export function recordProgramLogReconnection(source: string, programId: string, reason: "error" | "stale" | "manual"): void {
+  programLogReconnections.labels(source, programId, reason).inc();
+}
+
+export function recordProgramLogFetchError(source: string, errorType: "timeout" | "rpc_error" | "parse_error"): void {
+  programLogFetchErrors.labels(source, errorType).inc();
+}
+
+export function recordProgramLogQueueDropped(source: string): void {
+  programLogQueueDropped.labels(source).inc();
+}
+
+export function updateProgramLogLastEventTimestamp(source: string, programId: string): void {
+  programLogLastEventTimestamp.labels(source, programId).set(Date.now() / 1000);
+}
+
 export async function getMetrics(): Promise<string> {
   return register.metrics();
 }
