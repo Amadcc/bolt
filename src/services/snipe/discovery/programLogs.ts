@@ -34,6 +34,8 @@ interface ProgramLogMonitorOptions {
   programIds: string[];
   quoteMints?: string[];
   maxConcurrentFetches?: number;
+  maxQueueSize?: number;
+  fetchDelayMs?: number;
 }
 
 const DEFAULT_CONCURRENCY = 4;
@@ -65,10 +67,13 @@ export class ProgramLogMonitor extends EventEmitter {
   private readonly stalenessThresholdMs = 300000; // 5 minutes
 
   // ========== 2025 OPTIMIZATIONS: Queue Overflow Protection ==========
-  private readonly maxQueueSize = 1000;
+  private readonly maxQueueSize: number;
 
   // ========== 2025 OPTIMIZATIONS: Fetch Timeout ==========
   private readonly fetchTimeoutMs = 30000; // 30 seconds
+
+  // ========== 2025 OPTIMIZATIONS: Fetch Delay (for rate limiting) ==========
+  private readonly fetchDelayMs: number;
 
   constructor(options: ProgramLogMonitorOptions) {
     super();
@@ -82,6 +87,8 @@ export class ProgramLogMonitor extends EventEmitter {
     ]);
     this.maxConcurrentFetches =
       options.maxConcurrentFetches ?? DEFAULT_CONCURRENCY;
+    this.maxQueueSize = options.maxQueueSize ?? 1000;
+    this.fetchDelayMs = options.fetchDelayMs ?? 0;
 
     // Initialize last event times
     const now = Date.now();
@@ -231,6 +238,11 @@ export class ProgramLogMonitor extends EventEmitter {
       return;
     }
 
+    // ========== 2025 OPTIMIZATION: Rate limiting delay ==========
+    if (this.fetchDelayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, this.fetchDelayMs));
+    }
+
     const startTime = Date.now();
 
     // ========== 2025 OPTIMIZATION: Timeout protection ==========
@@ -351,7 +363,9 @@ export class ProgramLogMonitor extends EventEmitter {
           timestamp,
         });
       } catch (error) {
-        logger.warn("Failed to create new token event from program logs", {
+        // Token mint validation errors are common (not all addresses are valid token mints)
+        // Log as debug instead of warn to reduce noise
+        logger.debug("Failed to create new token event from program logs", {
           source: this.source,
           mint: result.candidate.mint,
           signature,

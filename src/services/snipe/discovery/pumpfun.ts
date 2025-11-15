@@ -220,8 +220,8 @@ export class PumpFunMonitor extends EventEmitter {
       const event: NewTokenEvent = {
         source: "pumpfun",
         mint: tokenMint,
-        name: payload.name || "Unknown",
-        symbol: payload.symbol || "UNKNOWN",
+        name: payload.name || payload.mint,
+        symbol: payload.symbol || payload.mint.slice(0, 8),
         creator: payload.creator || payload.traderPublicKey,
         liquidityLamports: asLamports(BigInt(Math.max(0, payload.liquidity ?? (payload.initialBuyAmountSol ? Math.floor(payload.initialBuyAmountSol * 1e9) : 0)))),
         marketCapUsd: payload.usd_market_cap ?? (payload.marketCapSol ? payload.marketCapSol * 150 : undefined),

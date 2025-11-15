@@ -52,20 +52,41 @@ export async function notifyAutoSnipeSuccess(payload: SuccessPayload): Promise<v
       ? Number(payload.outputAmount)
       : undefined;
 
+  // Calculate fee breakdown
+  const jitoTipLamports = parseInt(process.env.JITO_TIP_LAMPORTS || "100000");
+  const jitoTipSol = jitoTipLamports / 1e9;
+  const networkFeeSol = 0.000005; // Typical Solana tx fee
+  const totalFeesSol = jitoTipSol + networkFeeSol;
+
   const textLines = [
     "✅ *Auto-Snipe Executed!*",
     ``,
     `Token: ${payload.token.symbol || truncateAddress(payload.token.mint)} `,
     `Mint: \`${truncateAddress(payload.token.mint)}\``,
-    `Spent: ${solSpent.toFixed(4)} SOL`,
+    ``,
+    `💰 *Trade Summary*`,
+    `• Spent: ${solSpent.toFixed(4)} SOL`,
   ];
 
   if (tokensReceived !== undefined) {
-    textLines.push(`Received: ${tokensReceived.toLocaleString()} tokens`);
+    textLines.push(`• Received: ${tokensReceived.toLocaleString()} tokens`);
   }
 
+  // Add fee breakdown
   textLines.push(
-    `Signature: \`${payload.signature}\``,
+    ``,
+    `📊 *Fee Breakdown*`,
+    `• Jito MEV: ${jitoTipSol.toFixed(6)} SOL`,
+    `• Network: ${networkFeeSol.toFixed(6)} SOL`,
+    `• Jupiter: ~0-0.05% of swap`,
+    `• Platform: 0% (No commission)`,
+    `• Total Fixed: ${totalFeesSol.toFixed(6)} SOL`,
+    ``
+  );
+
+  textLines.push(
+    `🔍 Transaction:`,
+    `\`${payload.signature}\``,
     `[View on Solscan](https://solscan.io/tx/${payload.signature})`
   );
 

@@ -246,8 +246,7 @@ export function renderCreateWalletPage(): {
     `━━━\n\n` +
     `Your message will be deleted automatically for security.`;
 
-  const keyboard = new InlineKeyboard()
-    .text("« Cancel", "nav:main");
+  const keyboard = new InlineKeyboard().text("« Cancel", "nav:main");
 
   return { text, keyboard };
 }
@@ -267,13 +266,14 @@ export async function renderMainPage(ctx: Context): Promise<{
 
   const wallet = userContext.activeWallet;
   // ✅ Redis Session Integration: Check Redis session + password TTL
-  const isLocked =
-    !ctx.session.sessionToken || !hasActivePassword(ctx.session);
+  const isLocked = !ctx.session.sessionToken || !hasActivePassword(ctx.session);
 
   const text =
     `*Dashboard*\n\n` +
     `\`${wallet.publicKey}\`\n\n` +
-    `${isLocked ? "🔒 Locked — unlock to trade" : "🔓 Unlocked — ready to trade"}\n\n` +
+    `${
+      isLocked ? "🔒 Locked — unlock to trade" : "🔓 Unlocked — ready to trade"
+    }\n\n` +
     `━━━\n\n` +
     `*Quick Commands*\n\n` +
     `\`/buy <token> <amount>\`\n` +
@@ -424,9 +424,7 @@ export function renderSwapPage(data?: {
   }
   // Step 2: Select output token
   else if (!data?.outputToken) {
-    text +=
-      `From: *${data.inputToken}*\n\n` +
-      `Select output token:`;
+    text += `From: *${data.inputToken}*\n\n` + `Select output token:`;
 
     // Build keyboard, excluding the input token
     const tokens = [
@@ -438,18 +436,27 @@ export function renderSwapPage(data?: {
     ];
 
     // Filter out input token to prevent swapping token to itself
-    const availableTokens = tokens.filter(t => t.value !== data.inputToken);
+    const availableTokens = tokens.filter((t) => t.value !== data.inputToken);
 
     // Add buttons in rows of 2
     for (let i = 0; i < availableTokens.length; i += 2) {
       if (i + 1 < availableTokens.length) {
         keyboard
-          .text(availableTokens[i].label, `swap:output:${data.inputToken}:${availableTokens[i].value}`)
-          .text(availableTokens[i + 1].label, `swap:output:${data.inputToken}:${availableTokens[i + 1].value}`)
+          .text(
+            availableTokens[i].label,
+            `swap:output:${data.inputToken}:${availableTokens[i].value}`
+          )
+          .text(
+            availableTokens[i + 1].label,
+            `swap:output:${data.inputToken}:${availableTokens[i + 1].value}`
+          )
           .row();
       } else {
         keyboard
-          .text(availableTokens[i].label, `swap:output:${data.inputToken}:${availableTokens[i].value}`)
+          .text(
+            availableTokens[i].label,
+            `swap:output:${data.inputToken}:${availableTokens[i].value}`
+          )
           .row();
       }
     }
@@ -470,22 +477,46 @@ export function renderSwapPage(data?: {
     // Show different amounts based on input token
     if (data.inputToken === "SOL") {
       keyboard
-        .text("0.1 SOL", `swap:amount:${data.inputToken}:${data.outputToken}:0.1`)
-        .text("0.5 SOL", `swap:amount:${data.inputToken}:${data.outputToken}:0.5`)
+        .text(
+          "0.1 SOL",
+          `swap:amount:${data.inputToken}:${data.outputToken}:0.1`
+        )
+        .text(
+          "0.5 SOL",
+          `swap:amount:${data.inputToken}:${data.outputToken}:0.5`
+        )
         .row()
         .text("1 SOL", `swap:amount:${data.inputToken}:${data.outputToken}:1`)
         .text("5 SOL", `swap:amount:${data.inputToken}:${data.outputToken}:5`)
         .row()
-        .text("✏️ Custom", `swap:amount:${data.inputToken}:${data.outputToken}:custom`);
+        .text(
+          "✏️ Custom",
+          `swap:amount:${data.inputToken}:${data.outputToken}:custom`
+        );
     } else if (data.inputToken === "USDC" || data.inputToken === "USDT") {
       keyboard
-        .text("10 " + data.inputToken, `swap:amount:${data.inputToken}:${data.outputToken}:10`)
-        .text("50 " + data.inputToken, `swap:amount:${data.inputToken}:${data.outputToken}:50`)
+        .text(
+          "10 " + data.inputToken,
+          `swap:amount:${data.inputToken}:${data.outputToken}:10`
+        )
+        .text(
+          "50 " + data.inputToken,
+          `swap:amount:${data.inputToken}:${data.outputToken}:50`
+        )
         .row()
-        .text("100 " + data.inputToken, `swap:amount:${data.inputToken}:${data.outputToken}:100`)
-        .text("500 " + data.inputToken, `swap:amount:${data.inputToken}:${data.outputToken}:500`)
+        .text(
+          "100 " + data.inputToken,
+          `swap:amount:${data.inputToken}:${data.outputToken}:100`
+        )
+        .text(
+          "500 " + data.inputToken,
+          `swap:amount:${data.inputToken}:${data.outputToken}:500`
+        )
         .row()
-        .text("✏️ Custom", `swap:amount:${data.inputToken}:${data.outputToken}:custom`);
+        .text(
+          "✏️ Custom",
+          `swap:amount:${data.inputToken}:${data.outputToken}:custom`
+        );
     } else {
       // For other tokens, show percentage options
       keyboard
@@ -495,7 +526,10 @@ export function renderSwapPage(data?: {
         .text("75%", `swap:amount:${data.inputToken}:${data.outputToken}:75%`)
         .text("100%", `swap:amount:${data.inputToken}:${data.outputToken}:100%`)
         .row()
-        .text("✏️ Custom", `swap:amount:${data.inputToken}:${data.outputToken}:custom`);
+        .text(
+          "✏️ Custom",
+          `swap:amount:${data.inputToken}:${data.outputToken}:custom`
+        );
     }
 
     keyboard
@@ -548,12 +582,14 @@ export async function renderBalancePage(
       cacheAge < 10
         ? "just now"
         : cacheAge < 60
-          ? `${cacheAge}s ago`
-          : `${Math.floor(cacheAge / 60)}m ago`;
+        ? `${cacheAge}s ago`
+        : `${Math.floor(cacheAge / 60)}m ago`;
 
     // Build text
     let text = `*Balance* 💰\n\n`;
-    text += `\`${wallet.publicKey.slice(0, 4)}...${wallet.publicKey.slice(-4)}\`\n\n`;
+    text += `\`${wallet.publicKey.slice(0, 4)}...${wallet.publicKey.slice(
+      -4
+    )}\`\n\n`;
     text += `━━━\n\n`;
     text += `**SOL:** ${balance.solAmount.toFixed(4)} SOL\n`;
 
@@ -647,8 +683,7 @@ export async function renderWalletInfoPage(ctx: Context): Promise<{
     `[View on Solscan](https://solscan.io/account/${wallet.publicKey})\n` +
     `[View on Explorer](https://explorer.solana.com/address/${wallet.publicKey})`;
 
-  const keyboard = new InlineKeyboard()
-    .text("« Back to Dashboard", "nav:main");
+  const keyboard = new InlineKeyboard().text("« Back to Dashboard", "nav:main");
 
   return { text, keyboard };
 }
@@ -663,17 +698,37 @@ export async function renderSnipePage(ctx: Context): Promise<{
 
   const buyAmountSol = Number(config.buyAmountLamports) / 1e9;
   const liquidityMin =
-    config.minLiquidityLamports !== null && config.minLiquidityLamports !== undefined
+    config.minLiquidityLamports !== null &&
+    config.minLiquidityLamports !== undefined
       ? `${(Number(config.minLiquidityLamports) / 1e9).toFixed(2)} SOL`
       : "Any";
   const liquidityMax =
-    config.maxLiquidityLamports !== null && config.maxLiquidityLamports !== undefined
+    config.maxLiquidityLamports !== null &&
+    config.maxLiquidityLamports !== undefined
       ? `${(Number(config.maxLiquidityLamports) / 1e9).toFixed(2)} SOL`
       : "Any";
-  const marketMin =
-    config.minMarketCapUsd ?? "Any";
-  const marketMax =
-    config.maxMarketCapUsd ?? "Any";
+  const marketMin = config.minMarketCapUsd ?? "Any";
+  const marketMax = config.maxMarketCapUsd ?? "Any";
+
+  // Discovery sources status
+  const enabledSources = config.enabledSources || [
+    "pumpfun",
+    "raydium",
+    "orca",
+  ];
+  const sourceIcons = {
+    pumpfun: enabledSources.includes("pumpfun") ? "🚀" : "⚪️",
+    raydium: enabledSources.includes("raydium") ? "🔵" : "⚪️",
+    orca: enabledSources.includes("orca") ? "🐋" : "⚪️",
+    meteora: enabledSources.includes("meteora") ? "☄️" : "⚪️",
+  };
+
+  // Calculate estimated fees
+  // const jitoTipLamports = parseInt(process.env.JITO_TIP_LAMPORTS || "100000");
+  // const jitoTipSol = jitoTipLamports / 1e9;
+  // const networkFeeSol = 0.000005; // Typical Solana tx fee
+  // const totalFeesSol = jitoTipSol + networkFeeSol;
+  // const estimatedNetSol = buyAmountSol - totalFeesSol;
 
   const text =
     `🎯 *Token Sniper*\n\n` +
@@ -685,11 +740,26 @@ export async function renderSnipePage(ctx: Context): Promise<{
     `Daily Limit: ${config.maxBuysPerDay}\n` +
     `Automation: ${automationActive ? "🔐 Active (15 min)" : "🔒 Locked"}\n\n` +
     `━━━\n\n` +
+    `*Discovery Sources*\n` +
+    `${sourceIcons.pumpfun} PumpFun  ${sourceIcons.raydium} Raydium\n` +
+    `${sourceIcons.orca} Orca  ${sourceIcons.meteora} Meteora\n\n` +
+    `━━━\n\n` +
     `*Filters*\n` +
     `Liquidity: ${liquidityMin} → ${liquidityMax}\n` +
-    `Market Cap: ${marketMin === "Any" ? "Any" : `$${Number(marketMin).toLocaleString()}`} → ${marketMax === "Any" ? "Any" : `$${Number(marketMax).toLocaleString()}`}\n` +
+    `Market Cap: ${
+      marketMin === "Any" ? "Any" : `$${Number(marketMin).toLocaleString()}`
+    } → ${
+      marketMax === "Any" ? "Any" : `$${Number(marketMax).toLocaleString()}`
+    }\n` +
     `Whitelist: ${config.whitelist.length || 0} tokens\n` +
     `Blacklist: ${config.blacklist.length || 0} tokens\n\n` +
+    // `━━━\n\n` +
+    // `💰 *Est. Cost per Snipe*\n` +
+    // `• Jito MEV: ${jitoTipSol.toFixed(6)} SOL\n` +
+    // `• Network: ${networkFeeSol.toFixed(6)} SOL\n` +
+    // `• Jupiter: ~0-0.05% of ${buyAmountSol.toFixed(3)} SOL\n` +
+    // `• Platform: 0 SOL (No commission)\n` +
+    // `• Net trade: ~${estimatedNetSol.toFixed(6)} SOL\n\n` +
     `💡 *Tip:* Use 🔓 Unlock Wallet to enable automation automatically.`;
 
   // Check if wallet is unlocked
@@ -697,15 +767,18 @@ export async function renderSnipePage(ctx: Context): Promise<{
 
   const keyboard = new InlineKeyboard();
   keyboard
-    .text(
-      config.enabled ? "🟢 Disable" : "⚪️ Enable",
-      "snipe:toggle"
-    )
+    .text(config.enabled ? "🟢 Disable" : "⚪️ Enable", "snipe:toggle")
     .row()
     .text(
       config.autoTrading ? "🤖 Pause Auto-Trade" : "🤖 Enable Auto-Trade",
       "snipe:toggle_auto"
     )
+    .row()
+    .text(`${sourceIcons.pumpfun} PumpFun`, "snipe:toggle_source:pumpfun")
+    .text(`${sourceIcons.raydium} Raydium`, "snipe:toggle_source:raydium")
+    .row()
+    .text(`${sourceIcons.orca} Orca`, "snipe:toggle_source:orca")
+    .text(`${sourceIcons.meteora} Meteora`, "snipe:toggle_source:meteora")
     .row()
     .text("💰 0.05", "snipe:set_amount:0.05")
     .text("0.10", "snipe:set_amount:0.1")
@@ -836,9 +909,7 @@ export async function renderStatusPage(ctx: Context): Promise<{
 
   if (isActive) {
     const timeLeft = Math.floor((sessionExpiresAt - now) / 1000 / 60);
-    text +=
-      `🟢 Active\n\n` +
-      `Time remaining: ${timeLeft} minutes`;
+    text += `🟢 Active\n\n` + `Time remaining: ${timeLeft} minutes`;
 
     keyboard
       .text("🔒 Lock Wallet", "action:lock")
@@ -847,9 +918,7 @@ export async function renderStatusPage(ctx: Context): Promise<{
       .row()
       .text("« Back to Dashboard", "nav:main");
   } else {
-    text +=
-      `🔴 Locked\n\n` +
-      `Unlock to start trading.`;
+    text += `🔴 Locked\n\n` + `Unlock to start trading.`;
 
     keyboard
       .text("🔓 Unlock Wallet", "action:unlock")

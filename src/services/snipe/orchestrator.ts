@@ -1,6 +1,7 @@
 import { PumpFunMonitor } from "./discovery/pumpfun.js";
 import { RaydiumLogMonitor } from "./discovery/raydium.js";
 import { OrcaLogMonitor } from "./discovery/orca.js";
+import { MeteoraLogMonitor } from "./discovery/meteora.js";
 import { listActiveConfigs } from "./configService.js";
 import { snipeFilter } from "./filter.js";
 import { snipeExecutor } from "./executor.js";
@@ -52,6 +53,18 @@ export class SnipeOrchestrator {
       const monitor = new OrcaLogMonitor();
       this.monitors.push({
         name: "orca",
+        enabled: true,
+        start: () => monitor.start(),
+        stop: () => monitor.stop(),
+        on: (event, listener) => monitor.on(event, listener),
+        onError: (listener) => monitor.on("error", listener),
+      });
+    }
+
+    if (process.env.SNIPE_SOURCE_METEORA_ENABLED !== "false") {
+      const monitor = new MeteoraLogMonitor();
+      this.monitors.push({
+        name: "meteora",
         enabled: true,
         start: () => monitor.start(),
         stop: () => monitor.stop(),
@@ -135,6 +148,17 @@ export class SnipeOrchestrator {
 
         const hasLease = leaseMap.get(config.userId) ?? false;
         if (!hasLease) {
+          return;
+        }
+
+        // Check if user has enabled this source
+        const enabledSources = config.enabledSources || ["pumpfun", "raydium", "orca"];
+        if (!enabledSources.includes(event.source)) {
+          logger.debug("Token skipped - source not enabled by user", {
+            userId: config.userId,
+            source: event.source,
+            enabledSources,
+          });
           return;
         }
 

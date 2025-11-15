@@ -157,8 +157,8 @@ const start = async () => {
     // Initialize Trading Executor
     logger.info("Initializing Trading Executor...");
     initializeTradingExecutor({
-      commissionBps: 85, // 0.85%
-      minCommissionUsd: 0.01, // $0.01
+      commissionBps: 0, // No commission
+      minCommissionUsd: 0, // No minimum
     });
     logger.info("Trading Executor initialized");
 

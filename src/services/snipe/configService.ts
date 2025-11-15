@@ -71,6 +71,14 @@ export async function listActiveConfigs(): Promise<SnipeConfig[]> {
     where: { enabled: true },
   });
 
+  console.log("[DEBUG] listActiveConfigs: Found", configs.length, "configs");
+  console.log("[DEBUG] Configs:", JSON.stringify(configs.map(c => ({
+    userId: c.userId,
+    enabled: c.enabled,
+    autoTrading: c.autoTrading,
+    enabledSources: c.enabledSources
+  })), null, 2));
+
   configs.forEach(setCache);
   return configs;
 }

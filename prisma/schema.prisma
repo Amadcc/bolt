@@ -85,6 +85,9 @@ model SnipeConfig {
   buyAmountLamports BigInt @default(100000000) // 0.1 SOL
   slippageBps       Int    @default(500) // 5%
 
+  // Discovery Sources
+  enabledSources String[] @default(["pumpfun", "raydium", "orca", "meteora"])
+
   // Filters
   minLiquidityLamports BigInt?
   maxLiquidityLamports BigInt?

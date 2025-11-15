@@ -42,8 +42,8 @@ interface TradingExecutorConfig {
 }
 
 const DEFAULT_CONFIG: TradingExecutorConfig = {
-  commissionBps: 85, // 0.85% (for calculation/logging only)
-  minCommissionUsd: 0.01, // $0.01 minimum
+  commissionBps: 0, // No commission
+  minCommissionUsd: 0, // No minimum
   platformFeeBps: parseInt(process.env.PLATFORM_FEE_BPS || "50"), // 0.5% default
   feeAccount: process.env.PLATFORM_FEE_ACCOUNT, // Fee collection wallet
 };

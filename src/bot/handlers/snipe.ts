@@ -44,6 +44,51 @@ export async function handleSnipeActionCallback(
       await navigateToPage(ctx, "snipe");
       return;
 
+    case "toggle_source": {
+      const sourceName = params[0];
+      const validSources = ["pumpfun", "raydium", "orca", "meteora"];
+
+      if (!validSources.includes(sourceName)) {
+        await ctx.answerCallbackQuery("Invalid source");
+        return;
+      }
+
+      const currentSources = config.enabledSources || ["pumpfun", "raydium", "orca"];
+      let newSources: string[];
+
+      if (currentSources.includes(sourceName)) {
+        // Prevent disabling all sources
+        if (currentSources.length === 1) {
+          await ctx.answerCallbackQuery("Cannot disable all sources");
+          return;
+        }
+        // Remove source
+        newSources = currentSources.filter(s => s !== sourceName);
+      } else {
+        // Add source
+        newSources = [...currentSources, sourceName];
+      }
+
+      await updateSnipeConfig(userContext.userId, {
+        enabledSources: newSources,
+      });
+
+      const sourceLabels: Record<string, string> = {
+        pumpfun: "PumpFun",
+        raydium: "Raydium",
+        orca: "Orca",
+        meteora: "Meteora",
+      };
+
+      await ctx.answerCallbackQuery(
+        newSources.includes(sourceName)
+          ? `${sourceLabels[sourceName]} enabled`
+          : `${sourceLabels[sourceName]} disabled`
+      );
+      await navigateToPage(ctx, "snipe");
+      return;
+    }
+
     case "set_amount": {
       const solValue = Number(params[0]);
       if (!Number.isFinite(solValue) || solValue <= 0) {

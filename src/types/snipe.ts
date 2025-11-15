@@ -1,7 +1,7 @@
 import type { SnipeConfig, SnipeExecution } from "@prisma/client";
 import type { Lamports, Result, TokenMint } from "./common.js";
 
-export type DiscoverySource = "pumpfun" | "jupiter" | "raydium" | "orca";
+export type DiscoverySource = "pumpfun" | "jupiter" | "raydium" | "orca" | "meteora";
 
 export interface NewTokenEvent {
   source: DiscoverySource;

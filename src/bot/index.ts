@@ -42,6 +42,7 @@ import {
   handleSnipeActionCallback,
   handleSnipeAutomationPasswordInput,
 } from "./handlers/snipe.js";
+import { handleFees } from "./commands/fees.js";
 
 type MyContext = ViewContext & {
   state: {
@@ -309,6 +310,8 @@ bot.command("help", async (ctx) => {
   // Navigate to help page (single-page UI)
   await navigateToPage(ctx, "help");
 });
+
+bot.command("fees", handleFees);
 
 bot.command("snipe", async (ctx) => {
   try {
