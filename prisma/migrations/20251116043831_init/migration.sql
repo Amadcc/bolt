@@ -29,7 +29,7 @@ CREATE TABLE "Order" (
     "userId" TEXT NOT NULL,
     "tokenMint" TEXT NOT NULL,
     "side" TEXT NOT NULL,
-    "amount" DECIMAL(20,8) NOT NULL,
+    "amount" DECIMAL(30,0) NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'pending',
     "transactionSignature" TEXT,
     "commissionUsd" DECIMAL(10,2),
