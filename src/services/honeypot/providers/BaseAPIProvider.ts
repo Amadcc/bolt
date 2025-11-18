@@ -10,7 +10,7 @@
  * Each provider (GoPlus, RugCheck, TokenSniffer) extends this class.
  */
 
-import axios, { type AxiosInstance, type AxiosError } from "axios";
+import axios, { type AxiosInstance, type AxiosError, type InternalAxiosRequestConfig } from "axios";
 import { CircuitBreaker } from "../circuitBreaker.js";
 import { logger } from "../../../utils/logger.js";
 import {
@@ -18,6 +18,13 @@ import {
   setCircuitBreakerState,
   recordCircuitBreakerTransition,
 } from "../../../utils/metrics.js";
+
+/**
+ * Extended Axios config with retry counter
+ */
+interface AxiosConfigWithRetry extends InternalAxiosRequestConfig {
+  retry?: number;
+}
 import { registerInterval } from "../../../utils/intervals.js";
 import type {
   APIProvider,
@@ -56,9 +63,13 @@ export abstract class BaseAPIProvider implements APIProvider {
     this.axiosClient.interceptors.response.use(
       (response) => response,
       async (error: AxiosError) => {
-        const requestConfig = error.config as any;
+        const requestConfig = error.config as AxiosConfigWithRetry | undefined;
 
-        if (!requestConfig || !requestConfig.retry) {
+        if (!requestConfig) {
+          return Promise.reject(error);
+        }
+
+        if (!requestConfig.retry) {
           requestConfig.retry = 0;
         }
 

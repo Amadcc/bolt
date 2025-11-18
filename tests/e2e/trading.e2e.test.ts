@@ -141,7 +141,6 @@ tradingDescribe("Trading Executor E2E (devnet)", () => {
 
   it(
     "swaps SOL to USDC and confirms transaction",
-    { timeout: 180_000 },
     async () => {
       const executor = getTradingExecutor();
 

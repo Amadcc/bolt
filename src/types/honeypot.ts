@@ -73,6 +73,7 @@ export interface HoneypotCheckResult {
   layers: {
     api?: APILayerResult;
     onchain?: OnChainLayerResult;
+    simulation?: SimulationLayerResult;
   };
 }
 
@@ -334,6 +335,7 @@ export interface HoneypotDetectorConfig {
 
   // Feature flags
   enableOnChainChecks: boolean; // Default: true
+  enableSimulation: boolean;    // Default: true, enable simulation layer (Day 4)
 }
 
 export type HoneypotDetectorOverrides =
@@ -352,4 +354,71 @@ export interface CachedHoneypotResult {
   result: HoneypotCheckResult;
   cachedAt: number;             // Unix timestamp
   expiresAt: number;            // Unix timestamp
+}
+
+// ============================================================================
+// Simulation Layer Types (Day 4)
+// ============================================================================
+
+/**
+ * Simulation configuration for honeypot detection
+ */
+export interface SimulationConfig {
+  /** Amount in lamports for buy simulation (default: 0.1 SOL) */
+  buyAmount: bigint;
+  /** Amount in tokens for sell simulation (calculated from buy quote) */
+  sellAmount?: bigint;
+  /** Max time for simulation in ms (default: 3000) */
+  timeout: number;
+  /** Slippage tolerance in basis points (default: 50 = 0.5%) */
+  slippageBps: number;
+  /** Skip holder analysis (for faster checks, default: false) */
+  skipHolderAnalysis?: boolean;
+}
+
+/**
+ * Simulation result from buy/sell transactions
+ */
+export interface SimulationResult {
+  // Transaction simulation
+  canBuy: boolean;
+  canSell: boolean;
+  buyTax: number;              // Percentage (0-100)
+  sellTax: number;             // Percentage (0-100)
+  buyPriceImpact: number;      // Percentage (0-100)
+  sellPriceImpact: number;     // Percentage (0-100)
+
+  // Honeypot detection
+  isHoneypot: boolean;
+  honeypotReason?: string;
+
+  // Holder analysis
+  top10HoldersPct: number;     // Top 10 holders % of supply
+  developerHoldingsPct: number; // Developer/team holdings %
+  totalHolders: number;        // Total number of holders
+
+  // Liquidity lock (optional)
+  hasLiquidityLock?: boolean;
+  liquidityLockPct?: number;
+
+  // Metadata
+  simulationTimeMs: number;
+}
+
+/**
+ * Simulation layer result (added to HoneypotCheckResult.layers)
+ */
+export interface SimulationLayerResult {
+  canBuy: boolean;
+  canSell: boolean;
+  buyTax: number;
+  sellTax: number;
+  buyPriceImpact: number;
+  sellPriceImpact: number;
+  top10HoldersPct: number;
+  developerHoldingsPct: number;
+  totalHolders: number;
+  score: number;               // 0-100 risk score from simulation
+  flags: HoneypotFlag[];
+  timeMs: number;
 }

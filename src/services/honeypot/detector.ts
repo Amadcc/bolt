@@ -17,14 +17,15 @@ import { redis } from "../../utils/redis.js";
 import { getSolana } from "../blockchain/solana.js";
 import { recordHoneypotDetection } from "../../utils/metrics.js";
 import { FallbackChain } from "./fallbackChain.js";
-import type { Result } from "../../types/common.js";
-import { Ok, Err } from "../../types/common.js";
+import type { Result, TokenMint } from "../../types/common.js";
+import { Ok, Err, asTokenMint } from "../../types/common.js";
 import type {
   HoneypotCheckResult,
   HoneypotError,
   HoneypotDetectorConfig,
   APILayerResult,
   OnChainLayerResult,
+  SimulationLayerResult,
   HoneypotFlag,
   RiskScore,
   CachedHoneypotResult,
@@ -34,6 +35,7 @@ import type {
   HoneypotProviderName,
 } from "../../types/honeypot.js";
 import { asRiskScore } from "../../types/honeypot.js";
+import { SimulationService } from "./simulation.js";
 
 // ============================================================================
 // Configuration
@@ -79,6 +81,7 @@ const DEFAULT_CONFIG: HoneypotDetectorConfig = {
   cacheTTL: 3600, // 1 hour
   cacheEnabled: true,
   enableOnChainChecks: true,
+  enableSimulation: true, // Enable simulation layer (Day 4)
 };
 
 // ============================================================================
@@ -88,18 +91,28 @@ const DEFAULT_CONFIG: HoneypotDetectorConfig = {
 export class HoneypotDetector {
   private config: HoneypotDetectorConfig;
   private fallbackChain: FallbackChain;
+  private simulationService: SimulationService | null = null;
 
-  constructor(config: HoneypotDetectorOverrides = {}) {
+  constructor(
+    config: HoneypotDetectorOverrides = {},
+    simulationService?: SimulationService
+  ) {
     // Deep merge config
     this.config = this.mergeConfig(DEFAULT_CONFIG, config);
 
     // Initialize fallback chain
     this.fallbackChain = new FallbackChain(this.config);
 
+    // Store simulation service if provided
+    if (simulationService) {
+      this.simulationService = simulationService;
+    }
+
     logger.info("Honeypot detector initialized", {
       cacheEnabled: this.config.cacheEnabled,
       cacheTTL: this.config.cacheTTL,
       onChainEnabled: this.config.enableOnChainChecks,
+      simulationEnabled: this.config.enableSimulation && !!this.simulationService,
       fallbackEnabled: this.config.fallbackChain.enabled,
       enabledProviders: this.getEnabledProviderNames(),
     });
@@ -139,32 +152,37 @@ export class HoneypotDetector {
       logger.info("Honeypot check: starting analysis", { tokenMint });
 
       // Perform multi-layer analysis
-      const [apiResult, onChainResult] = await Promise.all([
+      const [apiResult, onChainResult, simulationResult] = await Promise.all([
         this.config.fallbackChain.enabled
           ? this.fallbackChain.execute(tokenMint)
           : Promise.resolve(null),
         this.config.enableOnChainChecks
           ? this.checkOnChainLayer(tokenMint)
           : Promise.resolve(null),
+        this.config.enableSimulation && this.simulationService
+          ? this.checkSimulationLayer(asTokenMint(tokenMint))
+          : Promise.resolve(null),
       ]);
 
       // Calculate weighted risk score
       const { riskScore, flags } = this.calculateRiskScore(
         apiResult,
-        onChainResult
+        onChainResult,
+        simulationResult
       );
 
       const result: HoneypotCheckResult = {
         tokenMint,
         isHoneypot: riskScore >= this.config.highRiskThreshold,
         riskScore,
-        confidence: this.calculateConfidence(apiResult, onChainResult),
+        confidence: this.calculateConfidence(apiResult, onChainResult, simulationResult),
         flags,
         checkedAt: new Date(),
         analysisTimeMs: Date.now() - startTime,
         layers: {
           api: apiResult || undefined,
           onchain: onChainResult || undefined,
+          simulation: simulationResult || undefined,
         },
       };
 
@@ -297,6 +315,56 @@ export class HoneypotDetector {
   }
 
   /**
+   * Layer 3: Simulation layer (Day 4)
+   * Simulate buy/sell transactions and analyze holders
+   */
+  private async checkSimulationLayer(
+    tokenMint: TokenMint
+  ): Promise<SimulationLayerResult | null> {
+    if (!this.simulationService) {
+      logger.warn("Simulation service not available, skipping simulation layer");
+      return null;
+    }
+
+    const startTime = Date.now();
+
+    try {
+      logger.debug("Starting simulation layer", { tokenMint });
+
+      const simulationResult = await this.simulationService.simulate(tokenMint);
+
+      if (!simulationResult.success) {
+        logger.warn("Simulation failed", {
+          tokenMint,
+        });
+        return null;
+      }
+
+      // Convert simulation result to layer result
+      const layerResult = this.simulationService.toLayerResult(
+        simulationResult.value
+      );
+
+      logger.info("Simulation layer completed", {
+        tokenMint,
+        canBuy: layerResult.canBuy,
+        canSell: layerResult.canSell,
+        score: layerResult.score,
+        flags: layerResult.flags,
+        timeMs: Date.now() - startTime,
+      });
+
+      return layerResult;
+    } catch (error) {
+      logger.error("Simulation layer error", {
+        tokenMint,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  /**
    * Check if token has Metaplex metadata
    */
   private async checkMetadata(mintPublicKey: PublicKey): Promise<boolean> {
@@ -327,26 +395,39 @@ export class HoneypotDetector {
 
   /**
    * Calculate weighted risk score from all layers
+   *
+   * Weights:
+   * - Simulation layer: 0.5 (highest, most accurate)
+   * - API layer: 0.3 (fast, broad coverage)
+   * - On-chain layer: 0.2 (basic authority checks)
    */
   private calculateRiskScore(
     apiResult: APILayerResult | null,
-    onChainResult: OnChainLayerResult | null
+    onChainResult: OnChainLayerResult | null,
+    simulationResult: SimulationLayerResult | null
   ): { riskScore: RiskScore; flags: HoneypotFlag[] } {
     let totalScore = 0;
     let totalWeight = 0;
     const allFlags = new Set<HoneypotFlag>();
 
-    // API layer weight: 0.6
+    // Simulation layer weight: 0.5 (highest priority)
+    if (simulationResult) {
+      totalScore += simulationResult.score * 0.5;
+      totalWeight += 0.5;
+      simulationResult.flags.forEach((flag) => allFlags.add(flag));
+    }
+
+    // API layer weight: 0.3
     if (apiResult) {
-      totalScore += apiResult.score * 0.6;
-      totalWeight += 0.6;
+      totalScore += apiResult.score * 0.3;
+      totalWeight += 0.3;
       apiResult.flags.forEach((flag) => allFlags.add(flag));
     }
 
-    // On-chain layer weight: 0.4
+    // On-chain layer weight: 0.2
     if (onChainResult) {
-      totalScore += onChainResult.score * 0.4;
-      totalWeight += 0.4;
+      totalScore += onChainResult.score * 0.2;
+      totalWeight += 0.2;
       onChainResult.flags.forEach((flag) => allFlags.add(flag));
     }
 
@@ -361,22 +442,38 @@ export class HoneypotDetector {
 
   /**
    * Calculate confidence in result (0-100)
+   *
+   * Confidence increases with:
+   * - More layers checked
+   * - Agreement between layers
    */
   private calculateConfidence(
     apiResult: APILayerResult | null,
-    onChainResult: OnChainLayerResult | null
+    onChainResult: OnChainLayerResult | null,
+    simulationResult: SimulationLayerResult | null
   ): number {
     let confidence = 0;
 
     // Base confidence from successful checks
-    if (apiResult) confidence += 60;
-    if (onChainResult) confidence += 40;
+    if (simulationResult) confidence += 50; // Simulation most reliable
+    if (apiResult) confidence += 30;
+    if (onChainResult) confidence += 20;
 
     // Reduce confidence if results disagree significantly
-    if (apiResult && onChainResult) {
-      const scoreDiff = Math.abs(apiResult.score - onChainResult.score);
-      if (scoreDiff > 40) {
-        confidence -= 20; // Low agreement
+    const scores: number[] = [];
+    if (simulationResult) scores.push(simulationResult.score);
+    if (apiResult) scores.push(apiResult.score);
+    if (onChainResult) scores.push(onChainResult.score);
+
+    if (scores.length >= 2) {
+      const maxScore = Math.max(...scores);
+      const minScore = Math.min(...scores);
+      const scoreDiff = maxScore - minScore;
+
+      if (scoreDiff > 50) {
+        confidence -= 30; // Very low agreement
+      } else if (scoreDiff > 30) {
+        confidence -= 15; // Low agreement
       }
     }
 
@@ -480,6 +577,8 @@ export class HoneypotDetector {
       cacheEnabled: userConfig.cacheEnabled ?? defaultConfig.cacheEnabled,
       enableOnChainChecks:
         userConfig.enableOnChainChecks ?? defaultConfig.enableOnChainChecks,
+      enableSimulation:
+        userConfig.enableSimulation ?? defaultConfig.enableSimulation,
     };
   }
 

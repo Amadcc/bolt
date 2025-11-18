@@ -33,9 +33,21 @@ import type {
   JitoRpcResponse,
   BundleStatusResponse,
   InflightBundleStatusResponse,
+  SmartRoutingOptions,
+  SmartRoutingResult,
 } from "../../types/jito.js";
 // AUDIT FIX: Import SolanaService for RPCPool integration
 import type { SolanaService } from "../blockchain/solana.js";
+// DAY 8: Import metrics for smart routing
+import {
+  recordJitoBundleSubmission,
+  recordJitoBundleSuccess,
+  recordJitoBundleFailure,
+  recordJitoTip,
+  recordSmartRoutingWinner,
+  recordAntiSandwich,
+  recordJitoRpcFallback,
+} from "../../utils/metrics.js";
 
 // ============================================================================
 // Configuration
@@ -58,6 +70,19 @@ const JITO_TIP_ACCOUNTS = [
   "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
   "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
 ];
+
+/**
+ * DAY 8: Anti-sandwich protection account
+ * Source: https://www.jito.network/blog/jito-bundles-101-a-step-by-step-guide-on-how-to-use-jito-bundles/
+ *
+ * Adding this account as a read-only account prevents the transaction from being
+ * included in the public mempool, protecting against sandwich attacks from other MEV bots.
+ *
+ * NOTE: This account is specifically for mainnet-beta. Do NOT use on devnet/testnet.
+ */
+const JITO_DONT_FRONT_ADDRESS = new PublicKey(
+  "DittoGuaQBso9A4UbUjH2c6D7w6LKkKSkYSdg87fBjPB"
+);
 
 // AUDIT FIX: Multiple Block Engine endpoints for failover
 const DEFAULT_BLOCK_ENGINE_URLS = [
@@ -266,7 +291,8 @@ export class JitoService {
       const tipTx = await this.createTipTransaction(
         payer,
         tipLevel,
-        blockhashFromUserTx
+        blockhashFromUserTx,
+        this.config.useAntiSandwich || false // DAY 8: Anti-sandwich protection
       );
       if (!tipTx.success) {
         return tipTx;
@@ -415,9 +441,12 @@ export class JitoService {
           errorDetails.errorMessage = axiosError.message;
 
           if (axiosError.response?.data) {
-            const responseData = axiosError.response.data as any;
-            errorDetails.jitoError =
-              responseData.error?.message || responseData.message;
+            const responseData = axiosError.response.data as unknown;
+            // Safe type narrowing for error response
+            if (responseData && typeof responseData === "object") {
+              const data = responseData as { error?: { message?: string }; message?: string };
+              errorDetails.jitoError = data.error?.message || data.message;
+            }
           }
         } else if (error instanceof Error) {
           errorDetails.errorMessage = error.message;
@@ -540,7 +569,12 @@ export class JitoService {
       });
 
       // Create tip transaction with SAME blockhash as user transactions
-      const tipTx = await this.createTipTransaction(payer, tipLevel, blockhash);
+      const tipTx = await this.createTipTransaction(
+        payer,
+        tipLevel,
+        blockhash,
+        this.config.useAntiSandwich || false // DAY 8: Anti-sandwich protection
+      );
       if (!tipTx.success) {
         return tipTx;
       }
@@ -612,15 +646,19 @@ export class JitoService {
    * CRITICAL FIX: Now accepts blockhash parameter to ensure all transactions
    * in bundle share the same blockhash (Jito requirement)
    *
+   * DAY 8: Added support for anti-sandwich protection with jitodontfront account
+   *
    * @param payer - Keypair to pay the tip
    * @param tipLevel - Tip level (base, competitive, high)
    * @param blockhash - Recent blockhash (must match user transactions)
+   * @param useAntiSandwich - Enable anti-sandwich protection with jitodontfront
    * @returns Signed tip transaction
    */
   private async createTipTransaction(
     payer: Keypair,
     tipLevel: TipLevel,
-    blockhash: string
+    blockhash: string,
+    useAntiSandwich = false
   ): Promise<Result<VersionedTransaction, JitoError>> {
     try {
       const tipAmount = this.tipAmounts[tipLevel];
@@ -637,16 +675,47 @@ export class JitoService {
         tipLamports: tipAmount.toString(),
         tipLevel,
         blockhash, // Log shared blockhash for verification
+        useAntiSandwich,
       });
 
       // Create legacy transaction (Jito requires legacy format for tip)
-      const transaction = new Transaction().add(
-        SystemProgram.transfer({
+      const transaction = new Transaction();
+
+      // DAY 8: Add anti-sandwich protection if enabled
+      // The jitodontfront account signals to Jito validators to NOT include
+      // this transaction in the public mempool, preventing sandwich attacks.
+      // We add it as a read-only account key in the tip transfer instruction.
+      if (useAntiSandwich) {
+        logger.debug("Adding jitodontfront account for anti-sandwich protection");
+
+        // DAY 8: Record anti-sandwich metric
+        recordAntiSandwich();
+
+        // Create transfer instruction with jitodontfront as additional key
+        const transferIx = SystemProgram.transfer({
           fromPubkey: payer.publicKey,
           toPubkey: tipAccount,
           lamports: Number(tipAmount),
-        })
-      );
+        });
+
+        // Add jitodontfront as read-only, non-signer account
+        transferIx.keys.push({
+          pubkey: JITO_DONT_FRONT_ADDRESS,
+          isSigner: false,
+          isWritable: false,
+        });
+
+        transaction.add(transferIx);
+      } else {
+        // Standard tip transfer without anti-sandwich protection
+        transaction.add(
+          SystemProgram.transfer({
+            fromPubkey: payer.publicKey,
+            toPubkey: tipAccount,
+            lamports: Number(tipAmount),
+          })
+        );
+      }
 
       // CRITICAL: Use provided blockhash (same as user transactions)
       transaction.recentBlockhash = blockhash;
@@ -866,6 +935,25 @@ export class JitoService {
   }
 
   /**
+   * Get current Jito configuration
+   *
+   * @returns Current Jito config
+   */
+  getConfig(): JitoConfig {
+    return { ...this.config };
+  }
+
+  /**
+   * Get bundle status by bundle ID
+   *
+   * @param bundleId - Bundle UUID
+   * @returns Bundle status result
+   */
+  async getBundleStatus(bundleId: string): Promise<Result<BundleResult, JitoError>> {
+    return await this.getConfirmedBundleStatus(bundleId);
+  }
+
+  /**
    * Get tip amount for a given level
    *
    * @param level - Tip level
@@ -873,6 +961,382 @@ export class JitoService {
    */
   getTipAmount(level: TipLevel): bigint {
     return this.tipAmounts[level];
+  }
+
+  /**
+   * DAY 8: Calculate optimal tip based on trade size
+   *
+   * Tip scaling strategy:
+   * - Small trades (<0.1 SOL): 10k lamports (0.00001 SOL)
+   * - Medium trades (0.1-1 SOL): 50k lamports (0.00005 SOL)
+   * - Large trades (1-5 SOL): 100k lamports (0.0001 SOL)
+   * - Very large trades (>5 SOL): 200k lamports (0.0002 SOL)
+   *
+   * This ensures:
+   * 1. Cost-effective for small snipes
+   * 2. Competitive for medium trades
+   * 3. High priority for large trades where MEV matters most
+   *
+   * @param tradeSizeSol - Trade size in SOL
+   * @returns Optimal tip in lamports
+   */
+  calculateOptimalTip(tradeSizeSol: number): bigint {
+    let tipLamports: bigint;
+
+    if (tradeSizeSol < 0.1) {
+      // Small trades: minimal tip
+      tipLamports = BigInt(10_000);
+    } else if (tradeSizeSol < 1.0) {
+      // Medium trades: moderate tip
+      tipLamports = BigInt(50_000);
+    } else if (tradeSizeSol < 5.0) {
+      // Large trades: competitive tip
+      tipLamports = BigInt(100_000);
+    } else {
+      // Very large trades: high priority tip
+      tipLamports = BigInt(200_000);
+    }
+
+    // P0 SECURITY: Enforce maximum tip limit
+    if (tipLamports > MAX_TIP_LAMPORTS) {
+      logger.warn("Calculated tip exceeds maximum, capping to MAX_TIP_LAMPORTS", {
+        calculated: tipLamports.toString(),
+        max: MAX_TIP_LAMPORTS.toString(),
+        tradeSizeSol,
+      });
+      return MAX_TIP_LAMPORTS;
+    }
+
+    // Enforce minimum tip (Jito requirement)
+    if (tipLamports < MIN_TIP_LAMPORTS) {
+      logger.warn("Calculated tip below minimum, raising to MIN_TIP_LAMPORTS", {
+        calculated: tipLamports.toString(),
+        min: MIN_TIP_LAMPORTS.toString(),
+        tradeSizeSol,
+      });
+      return MIN_TIP_LAMPORTS;
+    }
+
+    logger.debug("Calculated optimal Jito tip", {
+      tradeSizeSol,
+      tipLamports: tipLamports.toString(),
+    });
+
+    return tipLamports;
+  }
+
+  /**
+   * DAY 8: Smart routing with dual-mode execution
+   *
+   * Executes transaction with optimal strategy based on mode:
+   *
+   * MEV_TURBO:
+   * - Jito-only submission (fastest, best MEV protection)
+   * - Uses dynamic tip based on trade size
+   * - Anti-sandwich protection if enabled
+   * - 5s bundle timeout for sniper speed
+   *
+   * MEV_SECURE:
+   * - Race condition: Jito + direct RPC simultaneously
+   * - Whichever confirms first wins
+   * - Redundancy for critical transactions
+   * - Fallback if one method fails
+   *
+   * @param signedTransaction - Base64-encoded signed transaction
+   * @param payer - Keypair for tip transaction
+   * @param options - Smart routing options
+   * @returns Smart routing result with method used and timing
+   */
+  async executeSmartRouting(
+    signedTransaction: string,
+    payer: Keypair,
+    options: SmartRoutingOptions
+  ): Promise<Result<SmartRoutingResult, JitoError>> {
+    const startTime = Date.now();
+
+    // DAY 8: Record metrics
+    recordJitoBundleSubmission(options.mode);
+
+    logger.info("Executing smart routing", {
+      mode: options.mode,
+      tradeSizeSol: options.tradeSizeSol,
+      antiSandwich: options.antiSandwich || false,
+      bundleTimeout: options.bundleTimeout || 5000,
+    });
+
+    // Calculate optimal tip based on trade size
+    const optimalTip = this.calculateOptimalTip(options.tradeSizeSol);
+
+    // Determine tip level from calculated amount
+    const tipLevel = this.getTipLevelFromAmount(optimalTip);
+
+    // DAY 8: Record tip amount
+    recordJitoTip(optimalTip, "dynamic");
+
+    if (options.mode === "MEV_TURBO") {
+      // TURBO mode: Jito-only with optimized settings
+      const bundleTimeout = options.bundleTimeout || 5000; // Default 5s for snipers
+
+      // Temporarily override confirmation timeout for this submission
+      const originalTimeout = this.config.confirmationTimeout;
+      this.config.confirmationTimeout = bundleTimeout;
+
+      try {
+        const bundleResult = await this.submitBundleFromBase64(
+          [signedTransaction],
+          payer,
+          tipLevel
+        );
+
+        // Restore original timeout
+        this.config.confirmationTimeout = originalTimeout;
+
+        if (!bundleResult.success) {
+          // DAY 8: Record failure
+          recordJitoBundleFailure(options.mode, bundleResult.error.type);
+          return bundleResult;
+        }
+
+        const result = bundleResult.value;
+
+        // Extract signature from bundle result
+        const signature = result.signatures?.[0] || asTransactionSignature("unknown");
+
+        // DAY 8: Record success
+        const confirmationTime = Date.now() - startTime;
+        recordJitoBundleSuccess(options.mode, confirmationTime);
+        recordSmartRoutingWinner("jito");
+
+        return Ok({
+          method: "jito",
+          signature,
+          slot: result.slot || 0,
+          bundleId: result.bundleId,
+          confirmationTimeMs: confirmationTime,
+        });
+      } finally {
+        // Ensure timeout is always restored
+        this.config.confirmationTimeout = originalTimeout;
+      }
+    } else {
+      // SECURE mode: Race condition between Jito and direct RPC
+      return await this.executeRaceCondition(
+        signedTransaction,
+        payer,
+        tipLevel,
+        options.bundleTimeout || 5000,
+        startTime
+      );
+    }
+  }
+
+  /**
+   * DAY 8: Execute race condition between Jito and direct RPC
+   *
+   * Submits transaction via both methods simultaneously and uses whichever
+   * confirms first. Provides redundancy and ensures fastest confirmation.
+   *
+   * @param signedTransaction - Base64-encoded signed transaction
+   * @param payer - Keypair for tip transaction
+   * @param tipLevel - Tip level for Jito
+   * @param bundleTimeout - Bundle confirmation timeout
+   * @param startTime - Start timestamp for timing
+   * @returns Smart routing result
+   */
+  private async executeRaceCondition(
+    signedTransaction: string,
+    payer: Keypair,
+    tipLevel: TipLevel,
+    bundleTimeout: number,
+    startTime: number
+  ): Promise<Result<SmartRoutingResult, JitoError>> {
+    logger.info("Starting race condition: Jito vs direct RPC");
+
+    // Temporarily override confirmation timeout for Jito
+    const originalTimeout = this.config.confirmationTimeout;
+    this.config.confirmationTimeout = bundleTimeout;
+
+    try {
+      // Start both submissions simultaneously
+      const jitoPromise = this.submitBundleFromBase64(
+        [signedTransaction],
+        payer,
+        tipLevel
+      ).then((result): { method: "jito" | "rpc"; result: Result<BundleResult, JitoError> } => ({
+        method: "jito",
+        result,
+      }));
+
+      const rpcPromise = this.sendViaDirectRPC(signedTransaction).then(
+        (result): { method: "jito" | "rpc"; result: Result<BundleResult, JitoError> } => ({
+          method: "rpc",
+          result,
+        })
+      );
+
+      // Race: whichever confirms first wins
+      const winner = await Promise.race([jitoPromise, rpcPromise]);
+
+      // Restore original timeout
+      this.config.confirmationTimeout = originalTimeout;
+
+      if (!winner.result.success) {
+        logger.warn("Winner method failed, trying fallback", {
+          method: winner.method,
+          error: winner.result.error,
+        });
+
+        // DAY 8: Record fallback
+        if (winner.method === "jito") {
+          recordJitoRpcFallback();
+        }
+
+        // If winner failed, try the other method
+        const fallback = winner.method === "jito"
+          ? await this.sendViaDirectRPC(signedTransaction).then(r => ({ method: "rpc" as const, result: r }))
+          : await this.submitBundleFromBase64([signedTransaction], payer, tipLevel).then(r => ({ method: "jito" as const, result: r }));
+
+        if (!fallback.result.success) {
+          return fallback.result;
+        }
+
+        const fallbackBundleResult = fallback.result.value;
+        const fallbackSignature = fallbackBundleResult.signatures?.[0] || asTransactionSignature("unknown");
+
+        logger.info("Fallback method succeeded", {
+          method: fallback.method,
+          signature: fallbackSignature,
+        });
+
+        return Ok({
+          method: fallback.method,
+          signature: fallbackSignature,
+          slot: fallbackBundleResult.slot || 0,
+          bundleId: fallback.method === "jito" ? fallbackBundleResult.bundleId : undefined,
+          confirmationTimeMs: Date.now() - startTime,
+        });
+      }
+
+      const bundleResult = winner.result.value;
+      const signature = bundleResult.signatures?.[0] || asTransactionSignature("unknown");
+
+      const confirmationTime = Date.now() - startTime;
+
+      logger.info("Race condition winner", {
+        method: winner.method,
+        signature,
+        timeMs: confirmationTime,
+      });
+
+      // DAY 8: Record winner method
+      recordSmartRoutingWinner(winner.method);
+
+      return Ok({
+        method: winner.method,
+        signature,
+        slot: bundleResult.slot || 0,
+        bundleId: winner.method === "jito" ? bundleResult.bundleId : undefined,
+        confirmationTimeMs: confirmationTime,
+      });
+    } catch (error) {
+      // Restore timeout on error
+      this.config.confirmationTimeout = originalTimeout;
+
+      logger.error("Race condition failed", {
+        errorType: error instanceof Error ? error.constructor.name : "Unknown",
+      });
+
+      return Err({
+        type: "UNKNOWN",
+        message: "Both Jito and RPC methods failed",
+      });
+    }
+  }
+
+  /**
+   * DAY 8: Send transaction via direct RPC (fallback method)
+   *
+   * @param signedTransaction - Base64-encoded signed transaction
+   * @returns Bundle result format for consistency
+   */
+  private async sendViaDirectRPC(
+    signedTransaction: string
+  ): Promise<Result<BundleResult, JitoError>> {
+    try {
+      logger.debug("Sending transaction via direct RPC");
+
+      // Await connection from SolanaService
+      const connection = await this.solanaService.getConnection();
+      const transactionBuffer = Buffer.from(signedTransaction, "base64");
+      const transaction = VersionedTransaction.deserialize(transactionBuffer);
+
+      // Send transaction
+      const signature = await connection.sendRawTransaction(transaction.serialize(), {
+        skipPreflight: true,
+        maxRetries: 0,
+      });
+
+      logger.info("Transaction sent via RPC", { signature });
+
+      // Wait for confirmation
+      const confirmation = await connection.confirmTransaction(
+        signature,
+        "confirmed"
+      );
+
+      if (confirmation.value.err) {
+        logger.error("RPC transaction failed", {
+          signature,
+          error: confirmation.value.err,
+        });
+
+        return Err({
+          type: "BUNDLE_SUBMISSION_FAILED",
+          message: "Transaction failed on-chain",
+        });
+      }
+
+      logger.info("RPC transaction confirmed", { signature });
+
+      // Get slot from recent blockhash
+      const slot = await connection.getSlot();
+
+      return Ok({
+        bundleId: "rpc-direct",
+        status: "Landed",
+        signatures: [asTransactionSignature(signature)],
+        slot,
+      });
+    } catch (error) {
+      logger.error("Direct RPC submission failed", {
+        errorType: error instanceof Error ? error.constructor.name : "Unknown",
+      });
+
+      return Err({
+        type: "NETWORK_ERROR",
+        message: "Direct RPC submission failed",
+      });
+    }
+  }
+
+  /**
+   * DAY 8: Get tip level from calculated tip amount
+   *
+   * Maps calculated tip amount back to TipLevel for existing API
+   *
+   * @param tipLamports - Calculated tip in lamports
+   * @returns Corresponding tip level
+   */
+  private getTipLevelFromAmount(tipLamports: bigint): TipLevel {
+    if (tipLamports <= BigInt(10_000)) {
+      return "base";
+    } else if (tipLamports <= BigInt(50_000)) {
+      return "base";
+    } else if (tipLamports <= BigInt(100_000)) {
+      return "competitive";
+    } else {
+      return "high";
+    }
   }
 
   /**

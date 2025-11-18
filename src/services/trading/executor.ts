@@ -13,11 +13,10 @@ import { getJupiter } from "./jupiter.js";
 import { getSolanaConnection } from "../blockchain/solana.js";
 import { PublicKey } from "@solana/web3.js";
 import type { Result, SessionToken } from "../../types/common.js";
-import { Ok, Err } from "../../types/common.js";
+import { Ok, Err, asTransactionSignature, asTokenMint, asSolanaAddress } from "../../types/common.js";
 import type { TradeParams, TradeResult, TradingError } from "../../types/trading.js";
 import type { JupiterError } from "../../types/jupiter.js";
 import type { WalletError } from "../../types/solana.js";
-import { asTransactionSignature } from "../../types/common.js";
 import {
   incrementWalletUnlockFailures,
   recordError,
@@ -182,11 +181,11 @@ export class TradingExecutor {
     try {
       const jupiter = getJupiter();
       const quoteResult = await jupiter.getQuote({
-        inputMint: params.inputMint as any,
-        outputMint: params.outputMint as any,
+        inputMint: asTokenMint(params.inputMint),
+        outputMint: asTokenMint(params.outputMint),
         amount: params.amount,
         slippageBps: params.slippageBps || 50,
-        userPublicKey: params.userPublicKey as any,
+        userPublicKey: asSolanaAddress(params.userPublicKey),
       });
 
       if (!quoteResult.success) {
@@ -299,7 +298,7 @@ export class TradingExecutor {
         }
 
         keypair = keypairResult.value;
-        publicKey = keypair.publicKey.toBase58() as any;
+        publicKey = asSolanaAddress(keypair.publicKey.toBase58());
 
         logger.info("Keypair retrieved from Redis session", { userId, publicKey });
       } else {
@@ -569,7 +568,7 @@ export class TradingExecutor {
       const divisor = Math.pow(10, decimals);
 
       // Get token price in USD
-      const priceResult = await jupiter.getTokenPrice(tokenMint as any);
+      const priceResult = await jupiter.getTokenPrice(asTokenMint(tokenMint));
 
       if (!priceResult.success) {
         return Err({

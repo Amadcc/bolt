@@ -15,6 +15,7 @@ import type { Context } from "../views/index.js";
 import { createWallet, hasWallet } from "../../services/wallet/keyManager.js";
 import { logger } from "../../utils/logger.js";
 import { getUserContext, invalidateUserContext } from "../utils/userContext.js";
+import { getUIMessageId } from "../utils/typeHelpers.js";
 
 // ============================================================================
 // Command Handler
@@ -88,7 +89,7 @@ export async function handlePasswordInput(
     const userContext = await getUserContext(ctx);
 
     // Update UI message to show processing
-    const messageId = (ctx as any).session?.ui?.messageId;
+    const messageId = getUIMessageId(ctx);
     if (messageId) {
       try {
         await ctx.api.editMessageText(

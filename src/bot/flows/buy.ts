@@ -12,6 +12,7 @@ import type { TradingError } from "../../types/trading.js";
 import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
 import { performHoneypotAnalysis } from "../utils/honeypot.js";
 import { getUserContext } from "../utils/userContext.js";
+import { getSessionToken } from "../utils/typeHelpers.js";
 
 /**
  * Execute buy flow with honeypot check and real Jupiter execution
@@ -303,6 +304,7 @@ export async function executeBuyFlow(
     const outputMint = asTokenMint(tokenMint);
 
     const executor = getTradingExecutor();
+    const sessionToken = getSessionToken(ctx);
     const tradeResult = await executor.executeTrade(
       {
         userId: userContext.userId,
@@ -312,7 +314,7 @@ export async function executeBuyFlow(
         slippageBps: 50, // 0.5% slippage
       },
       undefined,
-      ctx.session.sessionToken as any
+      sessionToken
     );
     clearPasswordState(ctx.session);
 

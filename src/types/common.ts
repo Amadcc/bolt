@@ -72,10 +72,10 @@ export type UsdCents = number & { readonly __brand: "UsdCents" };
 
 export function asSolanaAddress(value: string): SolanaAddress {
   try {
-    const pubkey = new PublicKey(value);
-    if (!PublicKey.isOnCurve(pubkey.toBytes())) {
-      throw new TypeError(`Address not on curve: ${value}`);
-    }
+    // Validate it's a valid base58 public key
+    // NOTE: We don't check isOnCurve() because PDAs (Program Derived Addresses)
+    // are intentionally NOT on the Ed25519 curve - this is by design in Solana
+    new PublicKey(value);
     return value as SolanaAddress;
   } catch (error) {
     throw new TypeError(
@@ -86,10 +86,9 @@ export function asSolanaAddress(value: string): SolanaAddress {
 
 export function asTokenMint(value: string): TokenMint {
   try {
-    const pubkey = new PublicKey(value);
-    if (!PublicKey.isOnCurve(pubkey.toBytes())) {
-      throw new TypeError(`Token mint not on curve: ${value}`);
-    }
+    // Validate it's a valid base58 public key
+    // NOTE: Token mint addresses can be PDAs (off-curve), so we don't check isOnCurve()
+    new PublicKey(value);
     return value as TokenMint;
   } catch (error) {
     throw new TypeError(

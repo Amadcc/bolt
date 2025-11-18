@@ -12,6 +12,7 @@ import { initializeJitoService } from "./services/trading/jito.js";
 import { logger } from "./utils/logger.js";
 import { getMetrics, metricsRegistry } from "./utils/metrics.js";
 import { clearAllIntervals } from "./utils/intervals.js";
+import { initializeAlertService } from "./services/monitoring/alerts.js";
 
 const app = Fastify({
   logger: true,
@@ -67,7 +68,7 @@ await app.register(cors, {
   maxAge: 3600,
 });
 
-// Health check
+// Health check (Liveness probe) - Returns status even if degraded
 app.get("/health", async () => {
   // Run all health checks in parallel for faster response
   const [database, redisHealth, solana] = await Promise.all([
@@ -98,6 +99,70 @@ app.get("/health", async () => {
       },
     },
   };
+});
+
+// Readiness check (Kubernetes readiness probe) - Returns 503 if not ready
+app.get("/ready", async (_, reply) => {
+  try {
+    // SPRINT 2.4: Comprehensive readiness check for production deployment
+    // Run all health checks in parallel for faster response
+    const [database, redisHealth, solana] = await Promise.all([
+      checkDatabase(),
+      checkRedisHealth(),
+      checkSolana(),
+    ]);
+
+    // Strict check - ALL services must be healthy for readiness
+    const allHealthy = database && redisHealth.healthy && solana;
+
+    if (!allHealthy) {
+      // Return 503 Service Unavailable if any service is down
+      reply.status(503);
+      return {
+        status: "not ready",
+        timestamp: new Date().toISOString(),
+        services: {
+          database: {
+            healthy: database,
+          },
+          redis: {
+            healthy: redisHealth.healthy,
+            latencyMs: redisHealth.latencyMs,
+            error: redisHealth.error,
+          },
+          solana: {
+            healthy: solana,
+          },
+        },
+      };
+    }
+
+    // All services healthy - ready to accept traffic
+    return {
+      status: "ready",
+      timestamp: new Date().toISOString(),
+      services: {
+        database: {
+          healthy: database,
+        },
+        redis: {
+          healthy: redisHealth.healthy,
+          latencyMs: redisHealth.latencyMs,
+        },
+        solana: {
+          healthy: solana,
+        },
+      },
+    };
+  } catch (error) {
+    // Unhandled error - return 503
+    reply.status(503);
+    return {
+      status: "not ready",
+      timestamp: new Date().toISOString(),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 });
 
 app.get("/metrics", async (_, reply) => {
@@ -209,6 +274,19 @@ const start = async () => {
       enabled: process.env.JITO_ENABLED !== "false",
     });
     logger.info("Jito MEV Protection initialized");
+
+    // Initialize Alert Service (Sprint 4 - Optional)
+    logger.info("Initializing Alert Service...");
+    const alertBotToken = process.env.ALERT_BOT_TOKEN;
+    const alertChannelId = process.env.ALERT_CHANNEL_ID;
+
+    if (alertBotToken && alertChannelId) {
+      initializeAlertService(alertBotToken, alertChannelId);
+      logger.info("Alert Service initialized - alerts enabled");
+    } else {
+      initializeAlertService(); // Initialize disabled service
+      logger.warn("Alert Service disabled - ALERT_BOT_TOKEN or ALERT_CHANNEL_ID not set");
+    }
 
     // Start Fastify server
     await app.listen({

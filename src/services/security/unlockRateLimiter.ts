@@ -36,29 +36,51 @@ export async function isUnlockRateLimited(
   };
 }
 
+/**
+ * Atomically increments unlock failure counter and checks if rate limited.
+ * MUST be called BEFORE attempting unlock to prevent race conditions.
+ *
+ * @returns attempts count and whether blocked (true if >= MAX_UNLOCK_ATTEMPTS)
+ */
 export async function recordUnlockFailure(
   userId: string
-): Promise<{ attempts: number; retryAfterSeconds: number }> {
+): Promise<{ attempts: number; retryAfterSeconds: number; blocked: boolean }> {
   const key = buildKey(userId);
+
+  // Atomic INCR - prevents race conditions on concurrent requests
   const attempts = await redis.incr(key);
 
+  // Set TTL only on first attempt
   if (attempts === 1) {
     await redis.expire(key, WINDOW_SECONDS);
   }
 
+  // Get remaining TTL
   let ttl = await redis.ttl(key);
   if (ttl < 0) {
+    // Fallback: if TTL was lost somehow, reset it
     await redis.expire(key, WINDOW_SECONDS);
     ttl = WINDOW_SECONDS;
   }
 
-  logger.warn("Recorded unlock failure", {
-    userId,
-    attempts,
-    retryAfterSeconds: ttl,
-  });
+  const blocked = attempts >= MAX_UNLOCK_ATTEMPTS;
 
-  return { attempts, retryAfterSeconds: ttl };
+  if (blocked) {
+    logger.warn("Unlock blocked due to rate limit", {
+      userId,
+      attempts,
+      retryAfterSeconds: ttl,
+    });
+  } else {
+    logger.warn("Recorded unlock failure", {
+      userId,
+      attempts,
+      remainingAttempts: MAX_UNLOCK_ATTEMPTS - attempts,
+      retryAfterSeconds: ttl,
+    });
+  }
+
+  return { attempts, retryAfterSeconds: ttl, blocked };
 }
 
 export async function clearUnlockFailures(userId: string): Promise<void> {

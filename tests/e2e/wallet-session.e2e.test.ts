@@ -88,7 +88,6 @@ describe("Wallet + Session E2E (devnet)", () => {
 
   it(
     "creates sessions that only store encrypted private keys in Redis",
-    { timeout: 20000 },
     async () => {
       const sessionResult = await createSession({
         userId,
@@ -121,7 +120,6 @@ describe("Wallet + Session E2E (devnet)", () => {
 
   it(
     "destroys all active sessions via destroyAllUserSessions",
-    { timeout: 20000 },
     async () => {
       const sessionTokens: string[] = [];
       for (let i = 0; i < 2; i++) {

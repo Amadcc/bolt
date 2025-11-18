@@ -200,6 +200,11 @@ export interface JupiterSwapParams {
   referralAccount?: string;
   platformFeeBps?: number;
   feeAccount?: string;
+  /** Priority fee configuration (optional, overrides Jupiter's default) */
+  priorityFee?: {
+    computeUnitPrice: number;
+    computeUnitLimit: number;
+  };
 }
 
 export interface JupiterSwapResult {
@@ -215,6 +220,7 @@ export type JupiterError =
   | { type: "INSUFFICIENT_BALANCE"; message: string }
   | { type: "MINIMUM_AMOUNT"; message: string }
   | { type: "SLIPPAGE_EXCEEDED"; message: string }
+  | { type: "SIMULATION_FAILED"; message: string }
   | { type: "TRANSACTION_FAILED"; signature?: string; reason: string }
   | { type: "API_ERROR"; statusCode: number; message: string }
   | { type: "NETWORK_ERROR"; message: string }

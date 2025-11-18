@@ -170,7 +170,6 @@ errorDescribe("Error Handling E2E (devnet)", () => {
   // ============================================================================
   it(
     "should show user-friendly error for invalid password",
-    { timeout: 30_000 },
     async () => {
       // Attempt to create session with wrong password
       const sessionResult = await createSession({
@@ -196,7 +195,6 @@ errorDescribe("Error Handling E2E (devnet)", () => {
   // ============================================================================
   it(
     "should show user-friendly error for insufficient balance",
-    { timeout: 60_000 },
     async () => {
       const executor = getTradingExecutor();
 
@@ -247,7 +245,6 @@ errorDescribe("Error Handling E2E (devnet)", () => {
   // ============================================================================
   it(
     "should show user-friendly error for invalid token address",
-    { timeout: 30_000 },
     async () => {
       const invalidAddresses = [
         "INVALID_ADDRESS_123", // Random string
@@ -280,7 +277,6 @@ errorDescribe("Error Handling E2E (devnet)", () => {
   // ============================================================================
   it(
     "should retry on network timeout and fail gracefully",
-    { timeout: 90_000 },
     async () => {
       const executor = getTradingExecutor();
       const failingBaseUrl = `https://offline-${Date.now()}.jup.ag.invalid`;
@@ -320,7 +316,6 @@ errorDescribe("Error Handling E2E (devnet)", () => {
   // ============================================================================
   it(
     "should show user-friendly error when session expires",
-    { timeout: 30_000 },
     async () => {
       const sessionResult = await createSession({
         userId,
@@ -377,7 +372,6 @@ errorDescribe("Error Handling E2E (devnet)", () => {
   // ============================================================================
   it(
     "should block high-risk tokens with clear warning",
-    { timeout: 30_000 },
     async () => {
       const suspiciousToken = "FAKE_HONEYPOT_TOKEN_ADDRESS";
       const detector = getHoneypotDetector();
@@ -425,7 +419,6 @@ errorDescribe("Error Handling E2E (devnet)", () => {
   // ============================================================================
   it(
     "should show user-friendly error when rate limited",
-    { timeout: 30_000 },
     async () => {
       // Simulate rate limiting by tracking unlock attempts
       const tooManyAttempts = 6; // Assume rate limit is 5 attempts per 15 min

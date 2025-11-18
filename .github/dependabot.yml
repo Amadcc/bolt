@@ -1,0 +1,93 @@
+# GitHub Dependabot Configuration
+# Automatically creates PRs for dependency updates
+# See: https://docs.github.com/en/code-security/dependabot
+
+version: 2
+updates:
+  # Monitor npm dependencies (works with Bun via package.json)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+
+    # Security updates (auto-merge patches)
+    reviewers:
+      - "security-team"  # Replace with actual GitHub username/team
+    assignees:
+      - "maintainer"     # Replace with actual GitHub username
+
+    labels:
+      - "dependencies"
+      - "security"
+      - "automated"
+
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+    # Auto-merge patch updates (x.x.1 -> x.x.2)
+    # Requires GitHub Auto-merge enabled in repo settings
+    # PR will auto-merge if all checks pass
+    versioning-strategy: increase
+
+    # Group updates by type
+    groups:
+      # Security patches (high priority)
+      security-patches:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+
+      # Production dependencies (weekly batch)
+      production-dependencies:
+        patterns:
+          - "@solana/*"
+          - "@jup-ag/*"
+          - "@prisma/*"
+          - "argon2"
+          - "axios"
+          - "fastify"
+          - "grammy"
+          - "ioredis"
+          - "pino"
+        update-types:
+          - "minor"
+          - "patch"
+
+      # Development dependencies (separate batch)
+      development-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+
+    # Ignore specific dependencies (if needed)
+    ignore:
+      # Example: Pin to specific version
+      # - dependency-name: "axios"
+      #   versions: ["2.x"]
+
+    # Allow both direct and indirect updates
+    allow:
+      - dependency-type: "direct"
+      - dependency-type: "indirect"
+
+  # Monitor GitHub Actions (workflow security)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "automated"
+    commit-message:
+      prefix: "chore(ci)"

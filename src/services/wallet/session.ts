@@ -62,11 +62,13 @@ interface SessionData {
 export interface CreateSessionParams {
   userId: string;
   password: string;
+  walletId?: string; // DAY 11: Optional wallet ID for multi-wallet support
 }
 
 export interface CreateSessionResult {
   sessionToken: SessionToken;
   expiresAt: Date;
+  walletId: string; // DAY 11: Include walletId in response
 }
 
 export interface SessionInfo {
@@ -83,6 +85,10 @@ export interface SessionInfo {
 /**
  * Create new session for user
  *
+ * DAY 11: Enhanced for multi-wallet support
+ * - If walletId is provided, unlock that specific wallet
+ * - If not provided, unlock primary/first wallet (backward compatible)
+ *
  * Flow:
  * 1. Unlock wallet with password (validates password only)
  * 2. Get wallet from DB to retrieve encrypted key
@@ -93,35 +99,67 @@ export interface SessionInfo {
 export async function createSession(
   params: CreateSessionParams
 ): Promise<Result<CreateSessionResult, SessionError>> {
-  const { userId, password } = params;
+  const { userId, password, walletId: requestedWalletId } = params;
 
   try {
-    // Unlock wallet to verify password is correct
-    const unlockResult = await unlockWallet({ userId, password });
+    let wallet;
 
-    if (!unlockResult.success) {
-      const walletError = unlockResult.error;
-      if (walletError && walletError.type === "INVALID_PASSWORD") {
-        incrementWalletUnlockFailures();
+    if (requestedWalletId) {
+      // DAY 11: Unlock specific wallet
+      wallet = await prisma.wallet.findUnique({
+        where: { id: requestedWalletId, userId }, // Verify ownership
+      });
+
+      if (!wallet) {
+        return Err(new SessionError("Wallet not found or access denied"));
       }
-      return Err(
-        new SessionError(
-          `Failed to create session: ${unlockResult.error.type}`
-        )
+
+      // Verify password by decrypting
+      const decryptResult = await decryptPrivateKey(
+        asEncryptedPrivateKey(wallet.encryptedPrivateKey),
+        password
       );
-    }
 
-    const { walletId, keypair } = unlockResult.value;
+      if (!decryptResult.success) {
+        incrementWalletUnlockFailures();
+        return Err(new SessionError("Invalid password"));
+      }
 
-    // ✅ SECURITY FIX: Get wallet from DB to retrieve ENCRYPTED private key
-    const wallet = await prisma.wallet.findUnique({
-      where: { id: walletId },
-    });
+      // Clear decrypted key from memory
+      decryptResult.value.fill(0);
+    } else {
+      // Original flow: unlock primary/first wallet
+      const unlockResult = await unlockWallet({ userId, password });
 
-    if (!wallet) {
+      if (!unlockResult.success) {
+        const walletError = unlockResult.error;
+        if (walletError && walletError.type === "INVALID_PASSWORD") {
+          incrementWalletUnlockFailures();
+        }
+        return Err(
+          new SessionError(
+            `Failed to create session: ${unlockResult.error.type}`
+          )
+        );
+      }
+
+      const { walletId, keypair } = unlockResult.value;
+
+      // Get wallet from DB to retrieve ENCRYPTED private key
+      wallet = await prisma.wallet.findUnique({
+        where: { id: walletId },
+      });
+
+      if (!wallet) {
+        clearKeypair(keypair);
+        return Err(new SessionError("Wallet not found in database"));
+      }
+
+      // Clear plaintext keypair from memory
       clearKeypair(keypair);
-      return Err(new SessionError("Wallet not found in database"));
     }
+
+    const walletId = wallet.id;
 
     // Generate cryptographically secure session token
     const sessionToken = asSessionToken(generateRandomHex(TOKEN_LENGTH));
@@ -130,9 +168,6 @@ export async function createSession(
     // Old (UNSAFE): Buffer.from(keypair.secretKey).toString("base64")
     // New (SAFE): wallet.encryptedPrivateKey (already encrypted with Argon2id+AES-256-GCM)
     const encryptedPrivateKey = wallet.encryptedPrivateKey;
-
-    // Clear plaintext keypair from memory immediately
-    clearKeypair(keypair);
 
     // Create session data
     const now = Date.now();
@@ -146,20 +181,22 @@ export async function createSession(
       expiresAt,
     };
 
-  // Store in Redis with TTL
-  const key = getSessionKey(sessionToken);
-  await redis.setex(key, SESSION_TTL, JSON.stringify(sessionData));
-  incrementActiveSessions();
+    // Store in Redis with TTL
+    const key = getSessionKey(sessionToken);
+    await redis.setex(key, SESSION_TTL, JSON.stringify(sessionData));
+    incrementActiveSessions();
 
     logger.info("Session created securely", {
       userId,
       walletId,
+      label: wallet.label,
       expiresAt: new Date(expiresAt).toISOString(),
     });
 
     return Ok({
       sessionToken,
       expiresAt: new Date(expiresAt),
+      walletId, // DAY 11: Include walletId in response
     });
   } catch (error) {
     logger.error("Failed to create session", { userId, error });

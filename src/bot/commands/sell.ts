@@ -11,6 +11,7 @@ import { resolveTokenSymbol, SOL_MINT, getTokenDecimals, toMinimalUnits } from "
 import { hasActivePassword, clearPasswordState } from "../utils/passwordState.js";
 import { invalidateBalanceCache } from "../utils/balanceCache.js";
 import { getUserContext } from "../utils/userContext.js";
+import { getSessionToken } from "../utils/typeHelpers.js";
 import type { Context } from "../views/index.js";
 
 /**
@@ -170,7 +171,7 @@ async function executeSell(
       return;
     }
 
-    const sessionToken = ctx.session.sessionToken;
+    const sessionToken = getSessionToken(ctx);
     const canUseSession = Boolean(
       sessionToken && hasActivePassword(ctx.session)
     );
@@ -196,7 +197,7 @@ async function executeSell(
         slippageBps: 50, // 0.5% slippage
       },
       canUseSession ? undefined : password,
-      canUseSession ? (sessionToken as any) : undefined
+      canUseSession ? sessionToken : undefined
     );
     if (canUseSession) {
       clearPasswordState(ctx.session);

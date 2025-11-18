@@ -21,21 +21,32 @@ model User {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  wallets Wallet[]
-  orders  Order[]
+  wallets                Wallet[]
+  orders                 Order[]
+  sniperFilterPreference SniperFilterPreference?
+  sniperOrders           SniperOrder[]
+  sniperPositions        SniperPosition[]
 }
 
 model Wallet {
-  id                  String   @id @default(uuid())
+  id                  String    @id @default(uuid())
   userId              String
-  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  publicKey           String   @unique
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publicKey           String    @unique
   encryptedPrivateKey String
-  chain               String   @default("solana")
-  isActive            Boolean  @default(true)
-  createdAt           DateTime @default(now())
+  chain               String    @default("solana")
+  label               String?   // User-friendly wallet name (e.g., "Main", "Trading", "Sniper 1")
+  isPrimary           Boolean   @default(false) // Only one primary wallet per user
+  isActive            Boolean   @default(true)
+  lastUsedAt          DateTime? // Track wallet usage for rotation
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
+  @@unique([userId, label]) // Prevent duplicate labels per user
   @@index([userId])
+  @@index([userId, isPrimary])
+  @@index([userId, lastUsedAt])
+  @@index([userId, isActive, lastUsedAt]) // SPRINT 2.2: Optimize wallet rotation queries
 }
 
 model Order {
@@ -62,4 +73,106 @@ model HoneypotCheck {
   details    Json?
 
   @@index([checkedAt])
+}
+
+model SniperFilterPreference {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  preset            String   @default("BALANCED") // CONSERVATIVE, BALANCED, AGGRESSIVE, CUSTOM
+  customFilters     Json?    // SniperFilters JSON (if preset = CUSTOM)
+  tokenOverrides    Json?    // Record<tokenMint, Partial<SniperFilters>>
+  autoSniperEnabled Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model SniperOrder {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenMint       String
+  amountIn        Decimal  @db.Decimal(30, 0) // Amount to spend in lamports
+  slippageBps     Int // Slippage in basis points
+  priorityFee     String // NONE, LOW, MEDIUM, HIGH, TURBO, ULTRA
+  useJito         Boolean  @default(false)
+  maxRetries      Int      @default(3)
+  timeoutMs       Int      @default(30000)
+  takeProfitPct   Decimal? @db.Decimal(10, 2)
+  stopLossPct     Decimal? @db.Decimal(10, 2)
+  status          String // PENDING, VALIDATED, SIMULATING, SIGNING, BROADCASTING, CONFIRMING, CONFIRMED, FAILED
+  stateData       Json // SniperOrderState JSON (discriminated union)
+  retryCount      Int      @default(0)
+  executionTimeMs Int? // Total execution time (null if not completed)
+  signature       String?  @unique // Transaction signature (if broadcasted)
+  slot            BigInt? // Slot number (if confirmed)
+  inputAmount     Decimal? @db.Decimal(30, 0) // Actual input amount (if confirmed)
+  outputAmount    Decimal? @db.Decimal(30, 0) // Actual output amount (if confirmed)
+  priceImpactPct  Decimal? @db.Decimal(10, 4) // Price impact percentage (if confirmed)
+  error           Json? // SniperOrderError JSON (if failed)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+  @@index([tokenMint])
+  @@index([signature])
+  @@index([userId, status, createdAt]) // SPRINT 2.2: Optimize user order queries with time sorting
+}
+
+model SniperPosition {
+  id                    String   @id @default(uuid())
+  userId                String
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orderId               String   @unique
+  tokenMint             String
+  entrySignature        String   @unique
+  amountIn              Decimal  @db.Decimal(30, 0) // SOL spent in lamports
+  amountOut             Decimal  @db.Decimal(30, 0) // Tokens received
+  entryPriceImpactPct   Decimal  @db.Decimal(10, 4)
+  currentBalance        Decimal  @db.Decimal(30, 0) // Current token balance
+  takeProfitPct         Decimal? @db.Decimal(10, 2)
+  stopLossPct           Decimal? @db.Decimal(10, 2)
+  trailingStopLoss      Boolean  @default(false)
+  highestPriceSeen      Decimal? @db.Decimal(20, 10) // Highest price in SOL
+  status                String   @default("OPEN") // OPEN, CLOSED_PROFIT, CLOSED_LOSS, CLOSED_MANUAL
+  exitSignature         String?  @unique
+  realizedPnlLamports   Decimal? @db.Decimal(30, 0) // Realized P&L in lamports (signed)
+  openedAt              DateTime @default(now())
+  closedAt              DateTime?
+  updatedAt             DateTime @updatedAt
+
+  monitor PositionMonitor?
+
+  @@index([userId, status])
+  @@index([tokenMint, status])
+  @@index([status, openedAt])
+  @@index([userId, status, tokenMint]) // SPRINT 2.2: Optimize position lookup by user and token
+}
+
+model PositionMonitor {
+  id                String   @id @default(uuid())
+  positionId        String   @unique
+  position          SniperPosition @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  tokenMint         String
+  userId            String
+  entryPrice        Decimal  @db.Decimal(20, 10) // SOL per token at entry
+  currentPrice      Decimal? @db.Decimal(20, 10) // Latest fetched price
+  lastPriceUpdate   DateTime?
+  takeProfitPrice   Decimal? @db.Decimal(20, 10) // Calculated TP trigger price
+  stopLossPrice     Decimal? @db.Decimal(20, 10) // Calculated SL trigger price
+  trailingStopLoss  Boolean  @default(false)
+  highestPriceSeen  Decimal? @db.Decimal(20, 10) // For trailing stop
+  priceCheckCount   Int      @default(0)
+  exitAttempts      Int      @default(0)
+  lastCheckAt       DateTime @default(now())
+  status            String   @default("ACTIVE") // ACTIVE, EXITING, COMPLETED, FAILED
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([status, lastCheckAt])
+  @@index([tokenMint, status])
+  @@index([userId, status])
 }

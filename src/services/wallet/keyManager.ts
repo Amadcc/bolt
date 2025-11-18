@@ -15,6 +15,8 @@
  */
 
 import { Keypair } from "@solana/web3.js";
+import { generateMnemonic, mnemonicToSeedSync } from "@scure/bip39";
+import { wordlist } from "@scure/bip39/wordlists/english";
 import { prisma } from "../../utils/db.js";
 import {
   encryptPrivateKey,
@@ -40,12 +42,16 @@ import { logger } from "../../utils/logger.js";
 export interface CreateWalletParams {
   userId: string;
   password: string;
+  label?: string | null;
+  isPrimary?: boolean;
 }
 
 export interface CreateWalletResult {
+  id: string; // Alias for walletId
   walletId: string;
   publicKey: SolanaAddress;
   encryptedPrivateKey: EncryptedPrivateKey;
+  mnemonic: string; // DAY 11: Return mnemonic for user backup
 }
 
 export interface UnlockWalletParams {
@@ -76,7 +82,7 @@ export interface UnlockedWallet {
 export async function createWallet(
   params: CreateWalletParams
 ): Promise<Result<CreateWalletResult, WalletError>> {
-  const { userId, password } = params;
+  const { userId, password, label = null, isPrimary = false } = params;
 
   try {
     // Validate password
@@ -88,28 +94,19 @@ export async function createWallet(
       });
     }
 
-    // Check if user already has a wallet
-    const existingWallet = await prisma.wallet.findFirst({
-      where: {
-        userId,
-        isActive: true,
-      },
-    });
+    // DAY 11: Removed single wallet check - now supports multi-wallet
+    // WalletManager enforces the 10 wallet limit
 
-    if (existingWallet) {
-      logger.warn("User already has an active wallet", { userId });
-      return Err({
-        type: "UNKNOWN",
-        message: "User already has an active wallet",
-      });
-    }
+    // DAY 11: Generate mnemonic first
+    const mnemonic = generateMnemonic(wordlist);
+    const seed = mnemonicToSeedSync(mnemonic);
 
-    // Generate new Solana keypair
-    const keypair = Keypair.generate();
+    // Generate keypair from seed (use first 32 bytes as secret key)
+    const keypair = Keypair.fromSeed(seed.slice(0, 32));
     const publicKey = keypair.publicKey.toBase58();
     const privateKey = keypair.secretKey; // Uint8Array(64)
 
-    logger.info("Generated new keypair", {
+    logger.info("Generated new keypair from mnemonic", {
       userId,
       publicKey,
       privateKeyLength: privateKey.length,
@@ -134,6 +131,8 @@ export async function createWallet(
         publicKey,
         encryptedPrivateKey: encryptedData,
         chain: "solana",
+        label,
+        isPrimary,
         isActive: true,
       },
     });
@@ -148,9 +147,11 @@ export async function createWallet(
     keypair.secretKey.fill(0);
 
     return Ok({
+      id: wallet.id, // Alias for walletId
       walletId: wallet.id,
       publicKey: asSolanaAddress(wallet.publicKey),
       encryptedPrivateKey: asEncryptedPrivateKey(wallet.encryptedPrivateKey),
+      mnemonic, // DAY 11: Return for user backup
     });
   } catch (error) {
     logger.error("Failed to create wallet", { userId, error });
@@ -268,10 +269,11 @@ export async function unlockWallet(
 
 /**
  * Get wallet info (public data only)
+ * Note: Does not return mnemonic (not stored)
  */
 export async function getWalletInfo(
   userId: string
-): Promise<Result<CreateWalletResult | null, WalletError>> {
+): Promise<Result<Omit<CreateWalletResult, "mnemonic"> | null, WalletError>> {
   try {
     const wallet = await prisma.wallet.findFirst({
       where: {
@@ -285,6 +287,7 @@ export async function getWalletInfo(
     }
 
     return Ok({
+      id: wallet.id,
       walletId: wallet.id,
       publicKey: asSolanaAddress(wallet.publicKey),
       encryptedPrivateKey: asEncryptedPrivateKey(wallet.encryptedPrivateKey),
@@ -363,6 +366,61 @@ export function clearKeypair(keypair: Keypair): void {
 }
 
 /**
+ * Get keypair for specific wallet by public key
+ * DAY 11: Used by WalletRotator to get keypair for rotated wallet
+ */
+export async function getKeypair(
+  userId: string,
+  password: string,
+  publicKey: string
+): Promise<Result<Keypair, WalletError>> {
+  try {
+    // Get wallet by public key
+    const wallet = await prisma.wallet.findFirst({
+      where: { userId, publicKey },
+    });
+
+    if (!wallet) {
+      return Err({
+        type: "WALLET_NOT_FOUND",
+        userId,
+      });
+    }
+
+    // Decrypt private key
+    const decryptResult = await decryptPrivateKey(
+      asEncryptedPrivateKey(wallet.encryptedPrivateKey),
+      password
+    );
+
+    if (!decryptResult.success) {
+      return Err({
+        type: "DECRYPTION_FAILED",
+        message: "Invalid password",
+      });
+    }
+
+    const privateKey = decryptResult.value;
+
+    // Reconstruct keypair
+    const keypair = Keypair.fromSecretKey(privateKey);
+
+    logger.debug("Keypair retrieved for wallet", {
+      userId,
+      publicKey,
+    });
+
+    return Ok(keypair);
+  } catch (error) {
+    logger.error("Failed to get keypair", { userId, publicKey, error });
+    return Err({
+      type: "UNKNOWN",
+      message: `Failed to get keypair: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+}
+
+/**
  * Verify password for wallet without unlocking
  * Useful for re-authentication
  */
@@ -383,6 +441,16 @@ export async function verifyWalletPassword(
   clearKeypair(result.value.keypair);
 
   return Ok(true);
+}
+
+/**
+ * Generate wallet label for multi-wallet rotation
+ *
+ * @param walletNumber - Wallet number (1-indexed)
+ * @returns Wallet label (e.g., "Wallet 1", "Wallet 2")
+ */
+export function generateWalletLabel(walletNumber: number): string {
+  return `Wallet ${walletNumber}`;
 }
 
 // ============================================================================

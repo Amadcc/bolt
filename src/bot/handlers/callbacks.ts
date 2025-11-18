@@ -37,9 +37,26 @@ import {
 } from "../utils/conversationTimeouts.js";
 import { createSwapConfirmationKeyboard } from "../keyboards/swap.js";
 import { getUserContext } from "../utils/userContext.js";
+import { asSessionToken, type SessionToken } from "../../types/common.js";
 
 const BALANCE_PAGE_SIZE = 10;
 const SESSION_METADATA_CACHE_TTL_MS = 5 * 60 * 1000;
+
+// ============================================================================
+// Type Guards & Helpers
+// ============================================================================
+
+/**
+ * Safely get SessionToken from context
+ * Returns undefined if session token is not available
+ */
+function getSessionToken(ctx: Context): SessionToken | undefined {
+  const token = ctx.session.sessionToken;
+  if (!token || typeof token !== "string") {
+    return undefined;
+  }
+  return asSessionToken(token);
+}
 
 const KNOWN_TOKENS: Record<string, string> = {
   EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: "USDC",
@@ -54,15 +71,10 @@ const KNOWN_TOKENS: Record<string, string> = {
 // ============================================================================
 
 /**
- * Handle navigation callbacks (nav:page_name)
+ * Type guard to check if string is valid Page
  */
-export async function handleNavigationCallback(
-  ctx: Context,
-  page: string
-): Promise<void> {
-  await ctx.answerCallbackQuery();
-
-  const validPages = [
+function isValidPage(page: string): page is Page {
+  const validPages: Page[] = [
     "create_wallet",
     "main",
     "buy",
@@ -75,14 +87,26 @@ export async function handleNavigationCallback(
     "status",
     "help",
   ];
+  return validPages.includes(page as Page);
+}
 
-  if (!validPages.includes(page)) {
+/**
+ * Handle navigation callbacks (nav:page_name)
+ */
+export async function handleNavigationCallback(
+  ctx: Context,
+  page: string
+): Promise<void> {
+  await ctx.answerCallbackQuery();
+
+  if (!isValidPage(page)) {
     logger.warn("Invalid navigation page", { page, userId: ctx.from?.id });
     await ctx.answerCallbackQuery("❌ Invalid page");
     return;
   }
 
-  await navigateToPage(ctx, page as any);
+  // TypeScript now knows 'page' is Page type
+  await navigateToPage(ctx, page);
 }
 
 // ============================================================================
@@ -143,8 +167,9 @@ async function handleUnlockAction(ctx: Context): Promise<void> {
  */
 async function handleLockAction(ctx: Context): Promise<void> {
   // 🔐 Destroy Redis session if exists (CRITICAL-3 fix)
-  if (ctx.session.sessionToken) {
-    await destroySession(ctx.session.sessionToken as any);
+  const sessionToken = getSessionToken(ctx);
+  if (sessionToken) {
+    await destroySession(sessionToken);
   }
 
   // Clear Grammy session
@@ -1151,7 +1176,7 @@ export async function executeSellFlow(
         slippageBps: 50, // 0.5% slippage
       },
       undefined,
-      ctx.session.sessionToken as any
+      getSessionToken(ctx)
     );
     clearPasswordState(ctx.session);
 
@@ -1741,7 +1766,7 @@ export async function executeSwapFlow(
         slippageBps: 50, // 0.5% slippage
       },
       undefined,
-      ctx.session.sessionToken as any
+      getSessionToken(ctx)
     );
     clearPasswordState(ctx.session);
 
@@ -2000,7 +2025,7 @@ export async function executeSellWithAbsoluteAmount(
         slippageBps: 50, // 0.5% slippage
       },
       undefined,
-      ctx.session.sessionToken as any
+      getSessionToken(ctx)
     );
     clearPasswordState(ctx.session);
 

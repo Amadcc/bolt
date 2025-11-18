@@ -24,6 +24,11 @@ import { asTransactionSignature, type TokenMint } from "../../types/common.js";
 // AUDIT FIX: Import Jito service for MEV protection
 import { getJitoService } from "./jito.js";
 import { registerInterval } from "../../utils/intervals.js";
+// DAY 7: Import transaction builder for priority fees
+import { addPriorityFeeToDeserializedTransaction } from "../sniper/transactionBuilder.js";
+// SPRINT 1.1.4: Import circuit breaker for API protection
+import { createCircuitBreaker } from "../shared/circuitBreaker.js";
+import type { CircuitBreaker } from "../shared/circuitBreaker.js";
 
 // ============================================================================
 // Quote Cache (in-memory, 2s TTL)
@@ -46,11 +51,28 @@ export class JupiterService {
   private quoteCache: Map<string, CachedQuote> = new Map();
   private readonly QUOTE_CACHE_TTL = 2000; // 2 seconds
   private readonly clusterQueryParams: Record<string, string>;
+  private jupiterApiCircuitBreaker: CircuitBreaker;
+  private jitoCircuitBreaker: CircuitBreaker;
 
   constructor(connection: Connection, config: Partial<JupiterConfig> = {}) {
     this.config = { ...DEFAULT_JUPITER_CONFIG, ...config };
     this.connection = connection;
     this.clusterQueryParams = this.buildClusterQueryParams();
+
+    // Initialize circuit breakers for API protection
+    this.jupiterApiCircuitBreaker = createCircuitBreaker("jupiter_api", {
+      failureThreshold: 5,
+      successThreshold: 2,
+      timeout: 60000,
+      monitoringPeriod: 120000,
+    });
+
+    this.jitoCircuitBreaker = createCircuitBreaker("jito_block_engine", {
+      failureThreshold: 5,
+      successThreshold: 2,
+      timeout: 60000,
+      monitoringPeriod: 120000,
+    });
 
     logger.info("Jupiter service initialized", {
       baseUrl: this.config.baseUrl,
@@ -255,22 +277,34 @@ export class JupiterService {
 
       logger.debug("Jupiter quote URL", { url });
 
-      const response = await retry(
-        () =>
-          fetch(url, {
-            method: "GET",
-            headers: {
-              "Content-Type": "application/json",
-              Accept: "application/json",
-            },
-            signal: AbortSignal.timeout(this.config.timeout),
-          }),
-        {
-          maxRetries: this.config.maxRetries,
-          backoff: "exponential",
-          baseDelay: 1000,
-        }
-      );
+      // Wrap Jupiter API call with circuit breaker
+      const response = await this.jupiterApiCircuitBreaker.execute(async () => {
+        return retry(
+          () =>
+            fetch(url, {
+              method: "GET",
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json",
+              },
+              signal: AbortSignal.timeout(this.config.timeout),
+            }),
+          {
+            maxRetries: this.config.maxRetries,
+            backoff: "exponential",
+            baseDelay: 1000,
+          }
+        );
+      });
+
+      if (response === null) {
+        // Circuit breaker is OPEN
+        logger.warn("Jupiter API circuit breaker OPEN");
+        return Err({
+          type: "NETWORK_ERROR",
+          message: "Jupiter API temporarily unavailable (circuit breaker OPEN)",
+        });
+      }
 
       if (!response.ok) {
         const errorData = (await response.json().catch(() => ({}))) as JupiterErrorResponse;
@@ -374,19 +408,42 @@ export class JupiterService {
 
   /**
    * Deserialize and sign the transaction from Jupiter quote
+   *
+   * DAY 7: Now supports priority fee optimization via ComputeBudget instructions
    */
   signTransaction(
     transactionBase64: string,
-    keypair: Keypair
+    keypair: Keypair,
+    priorityFee?: { computeUnitPrice: number; computeUnitLimit: number }
   ): Result<VersionedTransaction, JupiterError> {
     try {
-      logger.debug("Signing Jupiter transaction");
+      logger.debug("Signing Jupiter transaction", { priorityFee });
 
       // Decode base64 transaction
       const transactionBuffer = Buffer.from(transactionBase64, "base64");
 
       // Deserialize versioned transaction
-      const transaction = VersionedTransaction.deserialize(transactionBuffer);
+      let transaction = VersionedTransaction.deserialize(transactionBuffer);
+
+      // DAY 7: Add priority fee if specified
+      if (priorityFee) {
+        logger.debug("Adding priority fee to transaction", priorityFee);
+
+        const modifyResult = addPriorityFeeToDeserializedTransaction(
+          transaction,
+          priorityFee
+        );
+
+        if (!modifyResult.success) {
+          logger.warn("Failed to add priority fee, using original transaction", {
+            error: modifyResult.error,
+          });
+          // Continue with original transaction if modification fails
+        } else {
+          transaction = modifyResult.value;
+          logger.debug("Priority fee added successfully");
+        }
+      }
 
       // Sign transaction
       transaction.sign([keypair]);
@@ -534,6 +591,8 @@ export class JupiterService {
 
   /**
    * Complete swap flow: quote -> sign -> execute -> confirm
+   *
+   * DAY 7: Now supports priority fee optimization
    */
   async swap(
     params: JupiterSwapParams,
@@ -543,6 +602,7 @@ export class JupiterService {
       inputMint: params.inputMint,
       outputMint: params.outputMint,
       amount: params.amount,
+      priorityFee: params.priorityFee,
     });
 
     // Step 1: Get quote
@@ -553,8 +613,12 @@ export class JupiterService {
 
     const quote = quoteResult.value;
 
-    // Step 2: Sign transaction
-    const signResult = this.signTransaction(quote.transaction!, keypair);
+    // Step 2: Sign transaction (with optional priority fee)
+    const signResult = this.signTransaction(
+      quote.transaction!,
+      keypair,
+      params.priorityFee
+    );
     if (!signResult.success) {
       return Err(signResult.error);
     }
@@ -572,13 +636,28 @@ export class JupiterService {
 
       logger.info("Attempting Jito bundle submission for MEV protection");
 
-      const bundleResult = await jitoService.submitBundle(
-        [signedTransaction],
-        keypair,
-        "base" // Start with base tip level
-      );
+      // Wrap Jito bundle submission with circuit breaker
+      const bundleResult = await this.jitoCircuitBreaker.execute(async () => {
+        return jitoService.submitBundle(
+          [signedTransaction],
+          keypair,
+          "base" // Start with base tip level
+        );
+      });
 
-      if (bundleResult.success) {
+      if (bundleResult === null) {
+        // Jito circuit breaker is OPEN - fall back to regular RPC
+        logger.warn("Jito circuit breaker OPEN, falling back to regular RPC");
+
+        // Serialize VersionedTransaction to base64 for executeSwap
+        const signedTransactionBase64 = Buffer.from(signedTransaction.serialize()).toString("base64");
+
+        const executeResult = await this.executeSwap(signedTransactionBase64, quote.requestId);
+        if (!executeResult.success) {
+          return Err(executeResult.error);
+        }
+        execution = executeResult.value;
+      } else if (bundleResult.success) {
         usedJito = true;
         logger.info("Jito bundle submitted successfully", {
           bundleId: bundleResult.value.bundleId,
@@ -685,6 +764,98 @@ export class JupiterService {
         outputAmount: BigInt(execution.totalOutputAmount),
         priceImpactPct: quote.priceImpact * 100, // Convert from 0-1 range to percentage
         slot: Number(execution.slot),
+      });
+    }
+  }
+
+  /**
+   * Simulate swap transaction before execution (Sprint 4 - Transaction Simulation)
+   *
+   * This method simulates the swap transaction to verify:
+   * - Transaction will succeed
+   * - Expected output amount
+   * - Slippage is within acceptable range
+   *
+   * Use this BEFORE calling swap() to prevent failed transactions and save gas fees.
+   */
+  async simulateSwap(
+    params: JupiterSwapParams,
+    keypair: Keypair
+  ): Promise<Result<{
+    expectedOutputAmount: string;
+    priceImpactPct: number;
+    simulationSuccess: boolean;
+    logs: string[];
+  }, JupiterError>> {
+    logger.info("Simulating Jupiter swap", {
+      inputMint: params.inputMint,
+      outputMint: params.outputMint,
+      amount: params.amount,
+    });
+
+    try {
+      // Step 1: Get quote
+      const quoteResult = await this.getQuote(params);
+      if (!quoteResult.success) {
+        return Err(quoteResult.error);
+      }
+
+      const quote = quoteResult.value;
+
+      // Step 2: Sign transaction (without sending)
+      const signResult = this.signTransaction(
+        quote.transaction!,
+        keypair,
+        params.priorityFee
+      );
+      if (!signResult.success) {
+        return Err(signResult.error);
+      }
+
+      const signedTransaction = signResult.value;
+
+      // Step 3: Simulate transaction
+      logger.debug("Simulating transaction on-chain");
+
+      const simulation = await this.connection.simulateTransaction(
+        signedTransaction,
+        {
+          commitment: "confirmed",
+          replaceRecentBlockhash: true, // Use latest blockhash for simulation
+          sigVerify: false, // Skip signature verification for speed
+        }
+      );
+
+      if (simulation.value.err) {
+        logger.warn("Simulation failed", {
+          error: simulation.value.err,
+          logs: simulation.value.logs,
+        });
+
+        return Err({
+          type: "SIMULATION_FAILED",
+          message: `Transaction simulation failed: ${JSON.stringify(simulation.value.err)}`,
+        });
+      }
+
+      logger.info("Simulation successful", {
+        expectedOutput: quote.outAmount,
+        priceImpact: quote.priceImpact * 100,
+        logsCount: simulation.value.logs?.length || 0,
+      });
+
+      return Ok({
+        expectedOutputAmount: quote.outAmount,
+        priceImpactPct: quote.priceImpact * 100,
+        simulationSuccess: true,
+        logs: simulation.value.logs || [],
+      });
+    } catch (error) {
+      logger.error("Error during swap simulation", { error });
+
+      return Err({
+        type: "UNKNOWN",
+        message: `Simulation error: ${error instanceof Error ? error.message : String(error)}`,
       });
     }
   }

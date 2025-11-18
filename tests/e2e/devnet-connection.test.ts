@@ -12,19 +12,18 @@ const connection = createDevnetConnection(devnetConfig);
 describe("Devnet RPC smoke tests", () => {
   it(
     "connects to devnet RPC and fetches slot height",
-    { timeout: 30000 },
     async () => {
       const slot = await connection.getSlot("confirmed");
       expect(slot).toBeGreaterThan(0);
 
       const version = await connection.getVersion();
       expect(version["solana-core"]).toBeDefined();
-    }
+    },
+    { timeout: 30000 }
   );
 
   it(
     "funds a disposable keypair via airdrop",
-    { timeout: 60000 },
     async () => {
       const keypair = Keypair.generate();
 
@@ -37,6 +36,7 @@ describe("Devnet RPC smoke tests", () => {
       expect(lamports).toBeGreaterThanOrEqual(
         devnetConfig.minAirdropLamports
       );
-    }
+    },
+    { timeout: 60000 }
   );
 });

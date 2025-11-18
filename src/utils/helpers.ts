@@ -19,6 +19,7 @@ export function sleep(ms: number): Promise<void> {
 
 /**
  * Retry function with exponential backoff
+ * @deprecated Use retryWithBackoff from utils/retry.ts for enhanced features (jitter, circuit breaker, metrics)
  */
 export async function retry<T>(
   fn: () => Promise<T>,
@@ -55,6 +56,10 @@ export async function retry<T>(
 
   throw lastError;
 }
+
+// Re-export enhanced retry utilities
+export { retryWithBackoff, defaultRetryPolicy, aggressiveRetryPolicy, conservativeRetryPolicy } from "./retry.js";
+export type { RetryOptions, RetryResult, RetryError, RetryPolicy } from "./retry.js";
 
 /**
  * Truncate address for display

@@ -25,6 +25,7 @@ import {
   MAX_UNLOCK_ATTEMPTS,
 } from "../../services/security/unlockRateLimiter.js";
 import { getUserContext } from "../utils/userContext.js";
+import { getSessionToken, getUIMessageId } from "../utils/typeHelpers.js";
 
 /**
  * Handle /unlock command
@@ -58,7 +59,7 @@ async function executeUnlock(
 ): Promise<void> {
   try {
     // Get UI message ID
-    const uiMessageId = (ctx as any).session?.ui?.messageId;
+    const uiMessageId = getUIMessageId(ctx);
 
     const rateLimitStatus = await isUnlockRateLimited(userId);
     if (rateLimitStatus.blocked) {
@@ -120,18 +121,29 @@ async function executeUnlock(
       } else if (error.message.includes("password")) {
         errorMessage += "Invalid password.\n\nPlease try again.";
 
+        // Record failure atomically and check if blocked
         try {
           const failureInfo = await recordUnlockFailure(userId);
-          const attemptsLeft = Math.max(
-            MAX_UNLOCK_ATTEMPTS - failureInfo.attempts,
-            0
-          );
-          rateLimitNotice =
-            attemptsLeft > 0
-              ? `Attempts remaining: ${attemptsLeft}`
-              : `Cooldown: ${Math.ceil(
-                  failureInfo.retryAfterSeconds / 60
-                )} minute(s).`;
+
+          if (failureInfo.blocked) {
+            // User is now rate limited - show blocking message
+            const cooldownMinutes = Math.max(
+              1,
+              Math.ceil(failureInfo.retryAfterSeconds / 60)
+            );
+            errorMessage = `🚫 *Too Many Attempts*\n\n` +
+              `Please wait ${cooldownMinutes} minute(s) before trying again.\n` +
+              `This protects your wallet from brute-force attacks.\n\n` +
+              `_If this wasn't you, contact support for manual verification._`;
+            rateLimitNotice = ""; // Already included in main message
+          } else {
+            // Still have attempts left
+            const attemptsLeft = Math.max(
+              MAX_UNLOCK_ATTEMPTS - failureInfo.attempts,
+              0
+            );
+            rateLimitNotice = `Attempts remaining: ${attemptsLeft}`;
+          }
         } catch (rateError) {
           logger.error("Failed to record unlock failure", {
             userId,
@@ -256,7 +268,7 @@ async function executeUnlock(
   } catch (error) {
     logger.error("Error executing unlock", { userId, error });
 
-    const uiMessageId = (ctx as any).session?.ui?.messageId;
+    const uiMessageId = getUIMessageId(ctx);
     const errorMsg = "❌ An unexpected error occurred.\n\nPlease try again with /start";
 
     if (uiMessageId) {
@@ -297,10 +309,9 @@ export async function handleUnlockPasswordInput(
  */
 export async function lockSession(ctx: Context): Promise<void> {
   // Attempt to wipe temporary password from Redis
-  if (ctx.session.sessionToken) {
-    const deleteResult = await deletePasswordTemporary(
-      ctx.session.sessionToken as any
-    );
+  const sessionToken = getSessionToken(ctx);
+  if (sessionToken) {
+    const deleteResult = await deletePasswordTemporary(sessionToken);
 
     if (!deleteResult.success) {
       logger.warn("Failed to delete temporary password during lock", {
@@ -345,8 +356,9 @@ export async function handleLock(ctx: Context): Promise<void> {
     }
 
     // ✅ Destroy Redis session if exists
-    if (ctx.session.sessionToken) {
-      await destroySession(ctx.session.sessionToken as any);
+    const sessionToken = getSessionToken(ctx);
+    if (sessionToken) {
+      await destroySession(sessionToken);
     }
 
     // Also clear Grammy session
