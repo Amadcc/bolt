@@ -21,11 +21,12 @@ model User {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  wallets                Wallet[]
-  orders                 Order[]
-  sniperFilterPreference SniperFilterPreference?
-  sniperOrders           SniperOrder[]
-  sniperPositions        SniperPosition[]
+  wallets                        Wallet[]
+  orders                         Order[]
+  sniperFilterPreference         SniperFilterPreference?
+  sniperOrders                   SniperOrder[]
+  sniperPositions                SniperPosition[]
+  copyTradeProtectionSettings    CopyTradeProtectionSettings?
 }
 
 model Wallet {
@@ -87,6 +88,54 @@ model SniperFilterPreference {
   updatedAt         DateTime @updatedAt
 
   @@index([userId])
+}
+
+model CopyTradeProtectionSettings {
+  id                    String   @id @default(uuid())
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  privacyMode           String   @default("OFF") // OFF, BASIC, ADVANCED
+
+  // Timing randomization settings
+  timingEnabled         Boolean  @default(false)
+  baseDelayMs           Int      @default(0)
+  jitterPercent         Int      @default(0)
+  minDelayMs            Int      @default(0)
+  maxDelayMs            Int      @default(0)
+
+  // Fee pattern settings
+  feePatternStrategy    String   @default("FIXED") // FIXED, RANDOM, GRADUAL_INCREASE, SPIKE_PATTERN, ADAPTIVE
+  allowedFeeModes       String[] @default(["MEDIUM"]) // Array of PriorityFeeMode values
+  addMicroJitter        Boolean  @default(false)
+  microJitterPercent    Int      @default(0)
+
+  // Wallet rotation settings
+  walletRotationStrategy String  @default("ROUND_ROBIN") // ROUND_ROBIN, RANDOM, FRESH_ONLY, FRESH_THRESHOLD
+  freshThreshold        Int?
+  autoFundFreshWallets  Boolean  @default(false)
+  freshWalletFunding    Decimal  @default(0) @db.Decimal(20, 0) // Lamports
+  walletIds             String[] @default([]) // Wallet IDs for rotation
+
+  // Jito MEV protection settings
+  forceJitoRouting      Boolean  @default(false)
+  useAntiSandwich       Boolean  @default(false)
+  minTipLamports        Decimal  @default(10000) @db.Decimal(20, 0)
+  maxTipLamports        Decimal  @default(50000) @db.Decimal(20, 0)
+  randomizeTips         Boolean  @default(false)
+
+  // Obfuscation settings
+  obfuscationPattern    String   @default("NONE") // NONE, MEMO_RANDOM, DUMMY_INSTRUCTIONS, SPLIT_AMOUNT, FULL
+  obfuscationStrength   Int      @default(0)
+  addRandomMemos        Boolean  @default(false)
+  maxMemoLength         Int      @default(0)
+  addDummyInstructions  Boolean  @default(false)
+  maxDummyInstructions  Int      @default(0)
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([userId])
+  @@index([privacyMode])
 }
 
 model SniperOrder {

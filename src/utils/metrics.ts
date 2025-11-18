@@ -465,6 +465,51 @@ const walletDeletions = new client.Counter({
   registers: [register],
 });
 
+// DAY 12: Copy-Trade Protection (Privacy Layer) Metrics
+
+const privacyLayerDuration = new client.Histogram({
+  name: "privacy_layer_duration_ms",
+  help: "Duration of privacy layer application",
+  buckets: [1, 5, 10, 25, 50, 100, 250],
+  registers: [register],
+});
+
+const privacyScore = new client.Gauge({
+  name: "privacy_score",
+  help: "Current privacy score for user (0-100)",
+  labelNames: ["userId"],
+  registers: [register],
+});
+
+const privacyLayerApplied = new client.Counter({
+  name: "privacy_layer_applied_total",
+  help: "Total privacy layer applications",
+  labelNames: ["mode", "userId"], // mode: OFF, BASIC, ADVANCED
+  registers: [register],
+});
+
+const privacyTiming = new client.Histogram({
+  name: "privacy_timing_delay_ms",
+  help: "Randomized timing delays applied",
+  labelNames: ["mode"],
+  buckets: [0, 500, 1000, 2000, 3000, 5000, 8000, 10000],
+  registers: [register],
+});
+
+const privacyWalletRotations = new client.Counter({
+  name: "privacy_wallet_rotations_total",
+  help: "Wallet rotations for privacy",
+  labelNames: ["strategy"], // ROUND_ROBIN, RANDOM, FRESH_ONLY, FRESH_THRESHOLD
+  registers: [register],
+});
+
+const privacyObfuscationApplied = new client.Counter({
+  name: "privacy_obfuscation_applied_total",
+  help: "Obfuscation techniques applied",
+  labelNames: ["pattern"], // NONE, MEMO_RANDOM, DUMMY_INSTRUCTIONS, SPLIT_AMOUNT, FULL
+  registers: [register],
+});
+
 // ---------------------------------------------------------------------------
 // Helper Functions
 // ---------------------------------------------------------------------------
@@ -811,6 +856,49 @@ export function recordWalletCreation(status: "success" | "error"): void {
 export function recordWalletDeletion(status: "success" | "error"): void {
   walletDeletions.labels(status).inc();
 }
+
+// DAY 12: Copy-Trade Protection Metrics
+
+export function recordPrivacyLayerDuration(durationMs: number): void {
+  privacyLayerDuration.observe(durationMs);
+}
+
+export function setPrivacyScore(userId: string, score: number): void {
+  privacyScore.labels(userId).set(score);
+}
+
+export function recordPrivacyLayerApplied(
+  mode: "OFF" | "BASIC" | "ADVANCED",
+  userId: string
+): void {
+  privacyLayerApplied.labels(mode, userId).inc();
+}
+
+export function recordPrivacyTiming(mode: string, delayMs: number): void {
+  privacyTiming.labels(mode).observe(delayMs);
+}
+
+export function recordPrivacyWalletRotation(
+  strategy: "ROUND_ROBIN" | "RANDOM" | "FRESH_ONLY" | "FRESH_THRESHOLD"
+): void {
+  privacyWalletRotations.labels(strategy).inc();
+}
+
+export function recordPrivacyObfuscation(
+  pattern: "NONE" | "MEMO_RANDOM" | "DUMMY_INSTRUCTIONS" | "SPLIT_AMOUNT" | "FULL"
+): void {
+  privacyObfuscationApplied.labels(pattern).inc();
+}
+
+// Metrics object for direct access (used by privacy layer)
+export const metrics = {
+  privacyLayerDuration,
+  privacyScore,
+  privacyLayerApplied,
+  privacyTiming,
+  privacyWalletRotations,
+  privacyObfuscationApplied,
+};
 
 export async function getMetrics(): Promise<string> {
   return register.metrics();

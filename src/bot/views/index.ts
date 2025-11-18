@@ -32,7 +32,11 @@ export type Page =
   | "wallet_info"
   | "unlock"
   | "status"
-  | "help";
+  | "help"
+  | "sniper"
+  | "sniper_config"
+  | "positions"
+  | "position_details";
 
 export interface UIState {
   currentPage: Page;
@@ -50,6 +54,10 @@ export interface UIState {
     inputMint?: string;
     outputMint?: string;
     amount?: string;
+  };
+  sniperData?: {
+    selectedPositionId?: string;
+    positionsPage?: number;
   };
 }
 
@@ -270,14 +278,20 @@ export async function renderMainPage(ctx: Context): Promise<{
     `*Quick Commands*\n\n` +
     `\`/buy <token> <amount>\`\n` +
     `\`/sell <token> <amount>\`\n` +
-    `\`/swap <from> <to> <amount>\``;
+    `\`/swap <from> <to> <amount>\`\n\n` +
+    `\`/sniper\` - Auto-sniper bot\n` +
+    `\`/positions\` - View positions`;
 
   const keyboard = new InlineKeyboard()
+    .text("🎯 Sniper", "nav:sniper")
+    .row()
     .text("🛒 Buy", "nav:buy")
     .text("💸 Sell", "nav:sell")
     .row()
     .text("🔄 Swap", "nav:swap")
     .text("📊 Balance", "nav:balance")
+    .row()
+    .text("📊 Positions", "nav:positions")
     .row()
     .text("💼 Wallet Info", "nav:wallet_info")
     .text("⚙️ Settings", "nav:settings")
@@ -854,6 +868,32 @@ export async function navigateToPage(
       case "help":
         result = renderHelpPage();
         break;
+      case "sniper": {
+        const { renderSniperMainPage } = await import("./sniper.js");
+        result = await renderSniperMainPage(ctx);
+        break;
+      }
+      case "sniper_config": {
+        const { renderSniperConfigPage } = await import("./sniper.js");
+        result = await renderSniperConfigPage(ctx);
+        break;
+      }
+      case "positions": {
+        const { renderPositionsPage } = await import("./sniper.js");
+        const page = data?.page ?? ctx.session.ui.sniperData?.positionsPage ?? 0;
+        result = await renderPositionsPage(ctx, page);
+        break;
+      }
+      case "position_details": {
+        const { renderPositionDetailsPage } = await import("./sniper.js");
+        const positionId = data?.positionId ?? ctx.session.ui.sniperData?.selectedPositionId;
+        if (!positionId) {
+          result = await renderMainPage(ctx);
+        } else {
+          result = await renderPositionDetailsPage(ctx, positionId);
+        }
+        break;
+      }
       default:
         result = await renderMainPage(ctx);
     }

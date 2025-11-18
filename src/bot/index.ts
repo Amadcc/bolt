@@ -25,6 +25,12 @@ import {
   executeSellWithAbsoluteAmount,
   executeSellFlow,
 } from "./handlers/callbacks.js";
+import {
+  handleSniperCallback,
+  handleSniperConfigCallback,
+  handlePositionCallback,
+  handlePositionsCallback,
+} from "./handlers/sniperCallbacks.js";
 import { executeBuyFlow } from "./flows/buy.js";
 import { hasActivePassword } from "./utils/passwordState.js";
 import {
@@ -37,6 +43,14 @@ import {
   invalidateUserContext,
 } from "./utils/userContext.js";
 import type { CachedUserContext } from "./utils/userContext.js";
+import {
+  handleSniperCommand,
+  handlePositionsCommand,
+  handleSetTakeProfitCommand,
+  handleSetStopLossCommand,
+  handleExitAllCommand,
+  executeExitAll,
+} from "./commands/sniper/index.js";
 
 type MyContext = ViewContext & {
   state: {
@@ -293,6 +307,48 @@ bot.command("unlock", handleUnlock);
 bot.command("lock", handleLock);
 bot.command("status", handleStatus);
 
+// ============================================================================
+// Sniper Commands
+// ============================================================================
+
+bot.command("sniper", async (ctx) => {
+  // Delete the command message
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    logger.warn("Failed to delete sniper command message", { error });
+  }
+
+  await handleSniperCommand(ctx);
+});
+
+bot.command("positions", async (ctx) => {
+  // Delete the command message
+  try {
+    await ctx.deleteMessage();
+  } catch (error) {
+    logger.warn("Failed to delete positions command message", { error });
+  }
+
+  await handlePositionsCommand(ctx);
+});
+
+bot.command("settp", handleSetTakeProfitCommand);
+bot.command("setsl", handleSetStopLossCommand);
+
+bot.command("exitall", async (ctx) => {
+  const text = ctx.message?.text;
+  const parts = text?.split(" ").filter(Boolean) ?? [];
+
+  if (parts.length > 1 && parts[1] === "confirm") {
+    // User confirmed - execute exit all
+    await executeExitAll(ctx);
+  } else {
+    // Show confirmation warning
+    await handleExitAllCommand(ctx);
+  }
+});
+
 bot.command("help", async (ctx) => {
   // Delete the command message
   try {
@@ -366,6 +422,26 @@ bot.on("callback_query:data", async (ctx) => {
         } else {
           await ctx.answerCallbackQuery("❌ Unknown balance action");
         }
+        break;
+
+      case "sniper":
+        // Sniper: sniper:start, sniper:stop, sniper:exitall_confirm
+        await handleSniperCallback(ctx, params[0]);
+        break;
+
+      case "sniper_config":
+        // Sniper config: sniper_config:preset:BALANCED
+        await handleSniperConfigCallback(ctx, params[0], params.slice(1));
+        break;
+
+      case "position":
+        // Position management: position:details:id, position:settp:id
+        await handlePositionCallback(ctx, params[0], params.slice(1));
+        break;
+
+      case "positions":
+        // Positions pagination: positions:page:N
+        await handlePositionsCallback(ctx, params[0], params.slice(1));
         break;
 
       default:
