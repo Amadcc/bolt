@@ -16,6 +16,8 @@
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
     "test:e2e": "cross-env TEST_ENV_FILE=.env.e2e vitest run tests/e2e",
+    "test:visual": "npx tsx tests/manual/test-integration-visual.ts",
+    "show:architecture": "npx tsx tests/manual/show-architecture.ts",
     "prisma:generate": "bunx prisma generate",
     "prisma:migrate": "bunx prisma migrate dev",
     "prisma:studio": "bunx prisma studio",

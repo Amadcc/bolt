@@ -156,15 +156,144 @@ export async function renderAdvancedSniperConfigPage(): Promise<{
 }> {
   const text =
     `🔧 *Advanced Settings*\n\n` +
-    `Configure sniper execution parameters:\n\n` +
-    `• Buy amount per snipe\n` +
-    `• Slippage tolerance\n` +
-    `• Priority fee tier\n` +
-    `• Take-profit / Stop-loss defaults\n\n` +
-    `⚠️ Coming soon...`;
+    `Configure advanced sniper parameters:\n\n` +
+    `📊 *Filter Settings*\n` +
+    `   • Min/Max Liquidity\n` +
+    `   • Max Buy/Sell Tax\n` +
+    `   • Holder Distribution\n` +
+    `   • Risk Scores\n\n` +
+    `⚙️ *Execution Settings*\n` +
+    `   • Buy Amount per Snipe\n` +
+    `   • Slippage Tolerance\n` +
+    `   • Priority Fee Tier\n` +
+    `   • Default TP/SL Levels`;
 
   const keyboard = new InlineKeyboard()
+    .text("📊 Filter Settings", "adv_settings:filters").row()
+    .text("⚙️ Execution Settings", "adv_settings:execution").row()
     .text("« Back", "nav:sniper_config");
+
+  return { text, keyboard };
+}
+
+/**
+ * Filter Settings page - configure liquidity, taxes, holders, risk
+ */
+export async function renderFilterSettingsPage(userId: string): Promise<{
+  text: string;
+  keyboard: InlineKeyboard;
+}> {
+  const { prisma: db } = await import("../../utils/db.js");
+  const {
+    CONSERVATIVE_FILTERS,
+    BALANCED_FILTERS,
+    AGGRESSIVE_FILTERS
+  } = await import("../../types/sniperFilters.js");
+
+  // Load user preferences
+  const prefs = await db.sniperFilterPreference.findUnique({
+    where: { userId },
+  });
+
+  // Get active filters based on preset or custom
+  let filters = BALANCED_FILTERS; // default
+
+  if (prefs) {
+    if (prefs.preset === "CONSERVATIVE") {
+      filters = CONSERVATIVE_FILTERS;
+    } else if (prefs.preset === "AGGRESSIVE") {
+      filters = AGGRESSIVE_FILTERS;
+    } else if (prefs.preset === "CUSTOM" && prefs.customFilters) {
+      filters = prefs.customFilters as any;
+    }
+  }
+
+  const text =
+    `📊 *Filter Settings*\n\n` +
+    `Current Preset: *${prefs?.preset || "BALANCED"}*\n\n` +
+    `*Liquidity Filters*\n` +
+    `• Min Liquidity: ${filters.minLiquiditySol || 0} SOL\n` +
+    `• Max Liquidity: ${filters.maxLiquiditySol ? `${filters.maxLiquiditySol} SOL` : "No limit"}\n\n` +
+    `*Tax Filters*\n` +
+    `• Max Buy Tax: ${filters.maxBuyTax || 0}%\n` +
+    `• Max Sell Tax: ${filters.maxSellTax || 0}%\n\n` +
+    `*Holder Distribution*\n` +
+    `• Max Top 10 Holders: ${filters.maxTop10HoldersPct || 0}%\n` +
+    `• Min Holders Count: ${filters.minHolders || 0}\n\n` +
+    `*Risk Scoring*\n` +
+    `• Max Risk Score: ${filters.maxRiskScore || 100}\n` +
+    `• Min Confidence: ${filters.minConfidence || 0}%\n\n` +
+    `💡 *Tip:* These filters control which tokens the auto-sniper targets.`;
+
+  const keyboard = new InlineKeyboard()
+    .text("💧 Min Liquidity", "filter_edit:liquidity:min")
+    .text("💧 Max Liquidity", "filter_edit:liquidity:max").row()
+    .text("💸 Max Buy Tax", "filter_edit:tax:buy")
+    .text("💸 Max Sell Tax", "filter_edit:tax:sell").row()
+    .text("👥 Max Top 10%", "filter_edit:holders:top10")
+    .text("👥 Min Holders", "filter_edit:holders:min").row()
+    .text("⚠️ Max Risk", "filter_edit:risk:max_score")
+    .text("⚠️ Min Confidence", "filter_edit:risk:min_confidence").row()
+    .text("🔄 Reset to Preset", "filter_edit:reset").row()
+    .text("« Back", "nav:sniper_advanced");
+
+  return { text, keyboard };
+}
+
+/**
+ * Execution Settings page - configure buy amount, slippage, priority fee, TP/SL
+ */
+export async function renderExecutionSettingsPage(userId: string): Promise<{
+  text: string;
+  keyboard: InlineKeyboard;
+}> {
+  const { prisma: db } = await import("../../utils/db.js");
+  const {
+    DEFAULT_EXECUTION_SETTINGS
+  } = await import("../../types/sniperFilters.js");
+
+  // Load user preferences
+  const prefs = await db.sniperFilterPreference.findUnique({
+    where: { userId },
+  });
+
+  // Get execution settings (or use defaults)
+  let settings = DEFAULT_EXECUTION_SETTINGS;
+
+  if (prefs?.executionSettings) {
+    settings = prefs.executionSettings as any;
+  }
+
+  // Format priority fee for display
+  const priorityFeeMap: Record<string, string> = {
+    NONE: "None (0 SOL)",
+    LOW: "Low (~0.00001 SOL)",
+    MEDIUM: "Medium (~0.00005 SOL)",
+    HIGH: "High (~0.0001 SOL)",
+    VERY_HIGH: "Very High (~0.0005 SOL)",
+  };
+
+  const text =
+    `⚙️ *Execution Settings*\n\n` +
+    `*Trade Execution*\n` +
+    `• Buy Amount: ${settings.buyAmountSol} SOL per snipe\n` +
+    `• Slippage: ${(settings.slippageBps / 100).toFixed(2)}%\n` +
+    `• Priority Fee: ${priorityFeeMap[settings.priorityFee] || settings.priorityFee}\n\n` +
+    `*Position Management*\n` +
+    `• Default Take-Profit: ${settings.defaultTakeProfitPct}% (${(1 + settings.defaultTakeProfitPct / 100).toFixed(1)}x)\n` +
+    `• Default Stop-Loss: ${settings.defaultStopLossPct}%\n` +
+    `• Trailing SL: ${settings.enableTrailingStopLoss ? "✅ Enabled" : "❌ Disabled"}\n\n` +
+    `💡 *Tip:* These settings control how trades are executed.`;
+
+  const keyboard = new InlineKeyboard()
+    .text("💰 Edit Buy Amount", "exec_edit:buy_amount").row()
+    .text("📉 Edit Slippage", "exec_edit:slippage").row()
+    .text("⚡ Edit Priority Fee", "exec_edit:priority").row()
+    .text("📈 Edit Take-Profit", "exec_edit:tp").row()
+    .text("🛑 Edit Stop-Loss", "exec_edit:sl").row()
+    .text(`${settings.enableTrailingStopLoss ? "❌" : "✅"} Toggle Trailing SL`, "exec_edit:toggle_trailing").row()
+    .text("🔄 Reset to Defaults", "exec_edit:reset").row()
+    .text("« Back", "nav:sniper_advanced");
 
   return { text, keyboard };
 }

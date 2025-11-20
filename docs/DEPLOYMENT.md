@@ -1246,6 +1246,257 @@ Set up alerts for:
 
 ---
 
+## Performance Monitoring & Benchmarking
+
+### Performance Targets
+
+The sniper bot has specific performance targets that should be monitored:
+
+| Component | Target | Critical Threshold |
+|-----------|--------|-------------------|
+| **Pool Detection** | <500ms (p95) | >1000ms |
+| **Honeypot Check** | <2s (p95) | >3s |
+| **Trade Execution** | <1.5s (p95) | >2.5s |
+| **Full Sniper Flow** | <4s (p95) | >6s |
+| **Position Monitor** | <500ms (p95) | >1s |
+| **Rug Detection** | <500ms (p95) | >1s |
+| **Memory Usage** | <500MB peak | >1GB |
+| **CPU Usage** | <80% average | >90% |
+
+### Running Performance Benchmarks
+
+**Comprehensive Benchmarks (all components):**
+```bash
+# Run all performance benchmarks
+bun test tests/performance/comprehensive.test.ts
+
+# Expected output:
+# ✓ Detection latency <500ms
+# ✓ Honeypot check <2s
+# ✓ Execution time <1.5s
+# ✓ Full flow <4s
+# ✓ All 13 components within targets
+```
+
+**Load Testing (concurrent capacity):**
+```bash
+# Test with 100 concurrent snipes (target capacity)
+bun test tests/load/concurrent-snipes.test.ts
+
+# Scenarios tested:
+# - BASELINE: 10 concurrent (30s)
+# - MODERATE: 50 concurrent (60s)
+# - HEAVY: 100 concurrent (90s) ← Target capacity
+# - STRESS: 200 concurrent (60s)
+# - SPIKE: 0→100 rapid spike
+```
+
+### Grafana Performance Dashboard
+
+Import the performance dashboard located at `grafana/dashboards/performance.json`:
+
+```bash
+# Using Grafana API
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -d @grafana/dashboards/performance.json \
+  http://admin:admin@localhost:3000/api/dashboards/db
+
+# Or manually import via Grafana UI:
+# 1. Login to Grafana (http://localhost:3000)
+# 2. Go to Dashboards → Import
+# 3. Upload grafana/dashboards/performance.json
+```
+
+**Dashboard Features:**
+- Real-time latency tracking (p50, p75, p95, p99)
+- Success rate monitoring
+- Memory and CPU usage
+- Throughput metrics (ops/second)
+- Load test concurrency visualization
+- Performance target compliance table
+
+### Key Metrics to Monitor
+
+**Prometheus Metrics (available at /metrics):**
+
+1. **Latency Metrics:**
+   ```promql
+   # p95 latency by component
+   histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket[5m])) by (component, le))
+
+   # Full sniper flow latency
+   histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket{component="FULL_FLOW"}[5m])) by (le))
+   ```
+
+2. **Success Rate:**
+   ```promql
+   # Success rate by component
+   benchmark_success_rate{component="EXECUTION"}
+
+   # Overall success rate
+   avg(benchmark_success_rate)
+   ```
+
+3. **Throughput:**
+   ```promql
+   # Operations per second
+   benchmark_throughput_ops{component="EXECUTION"}
+   ```
+
+4. **Resource Usage:**
+   ```promql
+   # Peak memory usage
+   benchmark_memory_mb
+
+   # CPU utilization
+   benchmark_cpu_percent
+   ```
+
+5. **Load Test Metrics:**
+   ```promql
+   # Concurrent request count
+   load_test_concurrency{scenario="HEAVY"}
+
+   # Request rate by status
+   sum(rate(load_test_requests_total[5m])) by (scenario, status)
+   ```
+
+### Alerting Rules
+
+**Prometheus Alert Rules (create alerts.yml):**
+
+```yaml
+groups:
+  - name: performance
+    interval: 30s
+    rules:
+      # Detection latency alert
+      - alert: HighDetectionLatency
+        expr: histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket{component="DETECTION"}[5m])) by (le)) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pool detection latency above target"
+          description: "p95 latency is {{ $value }}ms (target: <500ms)"
+
+      # Honeypot check latency alert
+      - alert: HighHoneypotCheckLatency
+        expr: histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket{component="HONEYPOT"}[5m])) by (le)) > 3000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Honeypot check latency above target"
+          description: "p95 latency is {{ $value }}ms (target: <2000ms)"
+
+      # Execution latency alert
+      - alert: HighExecutionLatency
+        expr: histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket{component="EXECUTION"}[5m])) by (le)) > 2500
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Trade execution latency critical"
+          description: "p95 latency is {{ $value }}ms (target: <1500ms)"
+
+      # Full flow latency alert
+      - alert: HighFullFlowLatency
+        expr: histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket{component="FULL_FLOW"}[5m])) by (le)) > 6000
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "End-to-end sniper flow too slow"
+          description: "p95 latency is {{ $value }}ms (target: <4000ms)"
+
+      # Success rate alert
+      - alert: LowSuccessRate
+        expr: benchmark_success_rate < 70
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.component }} success rate below 70%"
+          description: "Success rate is {{ $value }}%"
+
+      # Memory usage alert
+      - alert: HighMemoryUsage
+        expr: benchmark_memory_mb > 800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory usage approaching limit"
+          description: "Peak memory is {{ $value }}MB (limit: 500MB)"
+
+      # CPU usage alert
+      - alert: HighCPUUsage
+        expr: benchmark_cpu_percent > 90
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CPU usage critical"
+          description: "CPU usage is {{ $value }}%"
+```
+
+### Performance Optimization Checklist
+
+Before production deployment, verify:
+
+- [ ] All performance benchmarks passing
+- [ ] Load tests complete successfully at 100+ concurrent
+- [ ] p95 latency within targets for all components
+- [ ] Success rate >90% for critical components
+- [ ] Memory usage <500MB peak under load
+- [ ] CPU usage <80% average under load
+- [ ] Grafana dashboard configured
+- [ ] Prometheus alerts set up
+- [ ] Performance baselines documented
+
+### Continuous Performance Monitoring
+
+**Daily Performance Reports:**
+```bash
+# Run benchmarks daily and save results
+bun test tests/performance/comprehensive.test.ts > performance_$(date +%Y%m%d).log
+
+# Compare against baseline
+diff performance_baseline.log performance_$(date +%Y%m%d).log
+```
+
+**Weekly Load Testing:**
+```bash
+# Run load tests weekly to verify capacity
+bun test tests/load/concurrent-snipes.test.ts
+
+# Monitor for performance degradation over time
+```
+
+### Troubleshooting Performance Issues
+
+**If latency is high:**
+1. Check RPC endpoint latency: `bunx ts-node scripts/test-rpc-latency.ts`
+2. Verify Redis cache hit rate in logs
+3. Check database query performance: `psql -c "SELECT * FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;"`
+4. Review circuit breaker states: `curl http://localhost:3000/metrics | grep circuit_breaker_state`
+
+**If success rate is low:**
+1. Check honeypot API availability
+2. Review filter configurations (may be too strict)
+3. Verify Jito bundle success rate
+4. Check for RPC rate limiting
+
+**If memory usage is high:**
+1. Review Redis cache size
+2. Check for memory leaks: `bunx --inspect dist/index.js`
+3. Verify proper cleanup in WebSocket connections
+4. Monitor heap usage over time
+
+---
+
 ## Backup Strategy
 
 ### Database Backups

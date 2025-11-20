@@ -75,6 +75,7 @@ const KNOWN_TOKENS: Record<string, string> = {
  */
 function isValidPage(page: string): page is Page {
   const validPages: Page[] = [
+    "welcome",
     "create_wallet",
     "main",
     "buy",
@@ -86,6 +87,13 @@ function isValidPage(page: string): page is Page {
     "unlock",
     "status",
     "help",
+    "sniper",
+    "sniper_config",
+    "sniper_advanced",
+    "filter_settings",
+    "execution_settings",
+    "positions",
+    "position_details",
   ];
   return validPages.includes(page as Page);
 }
@@ -511,8 +519,11 @@ async function updateBalanceMessage(
       reply_markup: payload.keyboard,
     });
     ctx.session.balanceView = state;
-  } catch (error: any) {
-    if (error?.description?.includes("message is not modified")) {
+  } catch (error: unknown) {
+    const errorDesc = typeof error === "object" && error !== null && "description" in error
+      ? String((error as { description: unknown }).description)
+      : "";
+    if (errorDesc.includes("message is not modified")) {
       logger.debug("Balance message unchanged", {
         userId: ctx.from?.id,
         page: state.currentPage,

@@ -462,3 +462,101 @@ export interface FilterValidationResult {
   errors: FilterValidationError[];
   warnings: string[];
 }
+
+// ============================================================================
+// Execution Settings (Trade Execution Parameters)
+// ============================================================================
+
+/**
+ * Priority fee tier for transactions
+ * Maps to actual microlamports values in executor
+ */
+export enum PriorityFeeTier {
+  NONE = "NONE",           // 0 microlamports (no priority)
+  LOW = "LOW",             // 10,000 microlamports (~0.00001 SOL)
+  MEDIUM = "MEDIUM",       // 50,000 microlamports (~0.00005 SOL)
+  HIGH = "HIGH",           // 100,000 microlamports (~0.0001 SOL)
+  VERY_HIGH = "VERY_HIGH", // 500,000 microlamports (~0.0005 SOL)
+}
+
+/**
+ * Execution settings for sniper trades
+ * Separate from filter criteria - these control HOW trades execute
+ */
+export interface ExecutionSettings {
+  /**
+   * Buy amount per snipe in SOL
+   * Default: 0.1 SOL
+   * Range: 0.01 - 100 SOL
+   */
+  buyAmountSol: number;
+
+  /**
+   * Slippage tolerance in basis points (1 bps = 0.01%)
+   * Default: 100 bps (1%)
+   * Range: 10 bps (0.1%) - 5000 bps (50%)
+   */
+  slippageBps: number;
+
+  /**
+   * Priority fee tier for transaction priority
+   * Default: MEDIUM
+   */
+  priorityFee: PriorityFeeTier;
+
+  /**
+   * Default take-profit percentage
+   * Default: 100 (100% = 2x)
+   * Range: 10 - 10000 (0.1x - 100x)
+   */
+  defaultTakeProfitPct: number;
+
+  /**
+   * Default stop-loss percentage
+   * Default: 50 (50% loss)
+   * Range: 5 - 95
+   */
+  defaultStopLossPct: number;
+
+  /**
+   * Enable trailing stop-loss by default
+   * Default: false
+   */
+  enableTrailingStopLoss: boolean;
+}
+
+/**
+ * Default execution settings (moderate risk)
+ */
+export const DEFAULT_EXECUTION_SETTINGS: ExecutionSettings = {
+  buyAmountSol: 0.1,
+  slippageBps: 100, // 1%
+  priorityFee: PriorityFeeTier.MEDIUM,
+  defaultTakeProfitPct: 100, // 100% = 2x
+  defaultStopLossPct: 50, // 50% loss
+  enableTrailingStopLoss: false,
+};
+
+/**
+ * Conservative execution settings (lower risk, smaller positions)
+ */
+export const CONSERVATIVE_EXECUTION_SETTINGS: ExecutionSettings = {
+  buyAmountSol: 0.05,
+  slippageBps: 50, // 0.5%
+  priorityFee: PriorityFeeTier.HIGH,
+  defaultTakeProfitPct: 50, // 50% = 1.5x
+  defaultStopLossPct: 30, // 30% loss
+  enableTrailingStopLoss: true,
+};
+
+/**
+ * Aggressive execution settings (higher risk, larger positions)
+ */
+export const AGGRESSIVE_EXECUTION_SETTINGS: ExecutionSettings = {
+  buyAmountSol: 0.5,
+  slippageBps: 300, // 3%
+  priorityFee: PriorityFeeTier.VERY_HIGH,
+  defaultTakeProfitPct: 200, // 200% = 3x
+  defaultStopLossPct: 70, // 70% loss
+  enableTrailingStopLoss: false,
+};

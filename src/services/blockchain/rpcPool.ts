@@ -23,6 +23,38 @@ import {
 import { observeRpcRequest } from "../../utils/metrics.js";
 
 // ============================================================================
+// HTTP Basic Auth Helper
+// ============================================================================
+
+/**
+ * Extract HTTP Basic Auth credentials from URL
+ * Supports format: https://username:password@host/path
+ */
+function extractBasicAuth(urlString: string): {
+  url: string;
+  headers?: Record<string, string>;
+} {
+  try {
+    const url = new URL(urlString);
+    if (url.username && url.password) {
+      // Remove credentials from URL
+      const cleanUrl = `${url.protocol}//${url.host}${url.pathname}${url.search}`;
+      // Create Basic Auth header
+      const credentials = Buffer.from(`${url.username}:${url.password}`).toString('base64');
+      return {
+        url: cleanUrl,
+        headers: {
+          'Authorization': `Basic ${credentials}`,
+        },
+      };
+    }
+  } catch {
+    // Invalid URL, return as-is
+  }
+  return { url: urlString };
+}
+
+// ============================================================================
 // Types and Interfaces
 // ============================================================================
 
@@ -307,14 +339,19 @@ export class RPCPool {
 
     // Lazy-load connection
     if (!endpoint.connection) {
-      endpoint.connection = new Connection(endpoint.url, {
+      // Extract Basic Auth credentials if present in URL
+      const { url: cleanUrl, headers } = extractBasicAuth(endpoint.url);
+
+      endpoint.connection = new Connection(cleanUrl, {
         commitment: this.config.commitment,
         confirmTransactionInitialTimeout: 60000,
+        httpHeaders: headers,
       });
 
       logger.debug("Created new Connection instance", {
         name: endpoint.name,
-        url: endpoint.url,
+        url: cleanUrl,
+        hasAuth: !!headers,
       });
 
       this.instrumentConnection(endpoint.connection, endpoint.name);
@@ -791,8 +828,10 @@ export class RPCPool {
     try {
       // Lazy-load connection if needed
       if (!endpoint.connection) {
-        endpoint.connection = new Connection(endpoint.url, {
+        const { url: cleanUrl, headers } = extractBasicAuth(endpoint.url);
+        endpoint.connection = new Connection(cleanUrl, {
           commitment: this.config.commitment,
+          httpHeaders: headers,
         });
       }
 

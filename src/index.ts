@@ -13,6 +13,16 @@ import { logger } from "./utils/logger.js";
 import { getMetrics, metricsRegistry } from "./utils/metrics.js";
 import { clearAllIntervals } from "./utils/intervals.js";
 import { initializeAlertService } from "./services/monitoring/alerts.js";
+import { initializeSniperExecutor } from "./services/sniper/executor.js";
+import { initializeFeeOptimizer } from "./services/sniper/feeOptimizer.js";
+import {
+  initializeSniperOrchestrator,
+  shutdownSniperOrchestrator,
+} from "./services/sniper/orchestratorInit.js";
+import {
+  initializeSourceManager,
+  shutdownSourceManager,
+} from "./services/sniper/sourceManagerInit.js";
 
 const app = Fastify({
   logger: true,
@@ -275,6 +285,26 @@ const start = async () => {
     });
     logger.info("Jito MEV Protection initialized");
 
+    // Initialize Sniper Executor
+    logger.info("Initializing Sniper Executor...");
+    initializeSniperExecutor(connection);
+    logger.info("Sniper Executor initialized");
+
+    // Initialize Fee Optimizer
+    logger.info("Initializing Fee Optimizer...");
+    initializeFeeOptimizer(connection);
+    logger.info("Fee Optimizer initialized");
+
+    // Initialize Sniper Orchestrator (integrates all sniper components)
+    logger.info("Initializing Sniper Orchestrator...");
+    initializeSniperOrchestrator(connection);
+    logger.info("Sniper Orchestrator initialized - auto-sniper ready!");
+
+    // Initialize SourceManager (pool detection via Geyser)
+    logger.info("Initializing SourceManager...");
+    initializeSourceManager(connection);
+    logger.info("SourceManager initialized");
+
     // Initialize Alert Service (Sprint 4 - Optional)
     logger.info("Initializing Alert Service...");
     const alertBotToken = process.env.ALERT_BOT_TOKEN;
@@ -285,7 +315,7 @@ const start = async () => {
       logger.info("Alert Service initialized - alerts enabled");
     } else {
       initializeAlertService(); // Initialize disabled service
-      logger.warn("Alert Service disabled - ALERT_BOT_TOKEN or ALERT_CHANNEL_ID not set");
+      logger.info("Alert Service disabled - optional feature not configured");
     }
 
     // Start Fastify server
@@ -327,6 +357,12 @@ process.on("SIGINT", async () => {
     await prisma.$disconnect();
     logger.info("Database disconnected");
 
+    // Shutdown orchestrator (stops monitoring)
+    shutdownSniperOrchestrator();
+
+    // Shutdown source manager (stops pool monitoring)
+    await shutdownSourceManager();
+
     // Close Redis connection gracefully
     await closeRedis();
     clearAllIntervals();
@@ -349,6 +385,13 @@ process.on("SIGTERM", async () => {
     await bot.stop();
     await app.close();
     await prisma.$disconnect();
+
+    // Shutdown orchestrator (stops monitoring)
+    shutdownSniperOrchestrator();
+
+    // Shutdown source manager (stops pool monitoring)
+    await shutdownSourceManager();
+
     await closeRedis();
     clearAllIntervals();
 

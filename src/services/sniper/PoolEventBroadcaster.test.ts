@@ -9,11 +9,10 @@
  * - Cleanup mechanisms
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, mock } from "bun:test";
 import {
   PoolEventBroadcaster,
   type PoolEvent,
-  type BroadcasterStats,
   initializePoolEventBroadcaster,
   getPoolEventBroadcaster,
   defaultBroadcaster,
@@ -27,8 +26,8 @@ import { redis } from "../../utils/redis.js";
 // Test Setup
 // ============================================================================
 
-// Mock Redis
-const mockRedisPublish = mock(async () => 1); // 1 subscriber
+// Mock Redis publish function with proper typing
+const mockRedisPublish = mock(async (_channel: string, _message: string) => 1); // 1 subscriber
 
 beforeEach(() => {
   redis.publish = mockRedisPublish as any;
@@ -82,7 +81,8 @@ describe("PoolEventBroadcaster - Raw Detection Publishing", () => {
 
     expect(mockRedisPublish).toHaveBeenCalledTimes(1);
 
-    const [channel, message] = mockRedisPublish.mock.calls[0];
+    const callArgs = mockRedisPublish.mock.calls[0] as [string, string];
+    const [channel, message] = callArgs;
     expect(channel).toBe("pool:detection:raw");
 
     const event = JSON.parse(message) as PoolEvent;
@@ -132,7 +132,9 @@ describe("PoolEventBroadcaster - Scored Detection Publishing", () => {
       signature: "5j7s6NiJS3JAkvgkoc18WVAsiSaci2pxB2A6ueCJP4tprA2TFg9wSyTLeYouxPBJEMzJinENTkpA52YStRW5Dia",
       slot: 123456789,
       blockTime: Math.floor(Date.now() / 1000),
-      priority: 10,
+      priorityScore: 10,
+      isFirstDetection: true,
+      alsoDetectedOn: [],
     };
 
     const result = await broadcaster.publishScoredDetection(detection);
@@ -157,17 +159,20 @@ describe("PoolEventBroadcaster - Scored Detection Publishing", () => {
       signature: "5j7s6NiJS3JAkvgkoc18WVAsiSaci2pxB2A6ueCJP4tprA2TFg9wSyTLeYouxPBJEMzJinENTkpA52YStRW5Dia",
       slot: 123456789,
       blockTime: Math.floor(Date.now() / 1000),
-      priority: 10,
+      priorityScore: 10,
+      isFirstDetection: true,
+      alsoDetectedOn: [],
     };
 
     await broadcaster.publishScoredDetection(detection);
 
-    const [channel, message] = mockRedisPublish.mock.calls[0];
+    const callArgs = mockRedisPublish.mock.calls[0] as [string, string];
+    const [channel, message] = callArgs;
     expect(channel).toBe("pool:detection:scored");
 
     const event = JSON.parse(message) as PoolEvent;
     expect(event.type).toBe("scored_detection");
-    expect((event.data as ScoredPoolDetection).priority).toBe(10);
+    expect((event.data as ScoredPoolDetection).priorityScore).toBe(10);
 
     broadcaster.stop();
   });
@@ -295,7 +300,9 @@ describe("PoolEventBroadcaster - Statistics", () => {
       ...detection,
       // Different signature to avoid deduplication
       signature: "2ZE7R7NqJ5yoP4q2b2A6ueCJP4tprA2TFg9wSyTLeYouxPBJEMzJinENTkpA52YStRW5Dia1234567890abcd",
-      priority: 10,
+      priorityScore: 10,
+      isFirstDetection: true,
+      alsoDetectedOn: [],
     };
 
     await broadcaster.publishScoredDetection(scoredDetection);
@@ -507,8 +514,10 @@ describe("PoolEventBroadcaster - Error Handling", () => {
     const result = await broadcaster.publishRawDetection(detection);
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain("Failed to publish event");
-    expect(result.error).toContain("Connection timeout");
+    if (!result.success) {
+      expect(result.error).toContain("Failed to publish event");
+      expect(result.error).toContain("Connection timeout");
+    }
 
     broadcaster.stop();
   });

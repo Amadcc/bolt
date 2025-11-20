@@ -83,6 +83,7 @@ model SniperFilterPreference {
   preset            String   @default("BALANCED") // CONSERVATIVE, BALANCED, AGGRESSIVE, CUSTOM
   customFilters     Json?    // SniperFilters JSON (if preset = CUSTOM)
   tokenOverrides    Json?    // Record<tokenMint, Partial<SniperFilters>>
+  executionSettings Json?    // ExecutionSettings JSON (buy amount, slippage, priority fee, TP/SL)
   autoSniperEnabled Boolean  @default(false)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt

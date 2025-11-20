@@ -40,6 +40,12 @@ export const METEORA_DLMM_PROGRAM: SolanaAddress = "LBUZKhRxPF3XUpBCjp4YzTKgLccj
  */
 export const PUMP_FUN_PROGRAM: SolanaAddress = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" as SolanaAddress;
 
+/**
+ * PumpSwap AMM Program
+ * DEX where Pump.fun tokens migrate after bonding curve
+ */
+export const PUMPSWAP_PROGRAM: SolanaAddress = "PSwapMdSai8tjrEXcxFeQth87xC4rRsa4VA5mhGhXkP" as SolanaAddress;
+
 // ============================================================================
 // Program Metadata
 // ============================================================================
@@ -84,6 +90,12 @@ export const DEX_PROGRAMS: Record<string, ProgramInfo> = {
     name: "Pump.fun",
     type: "BONDING_CURVE",
     priority: 5,
+  },
+  pumpswap: {
+    address: PUMPSWAP_PROGRAM,
+    name: "PumpSwap AMM",
+    type: "AMM",
+    priority: 6,
   },
 };
 

@@ -35,6 +35,9 @@ export type Page =
   | "help"
   | "sniper"
   | "sniper_config"
+  | "sniper_advanced"
+  | "filter_settings"
+  | "execution_settings"
   | "positions"
   | "position_details";
 
@@ -127,6 +130,23 @@ export interface SessionData {
   awaitingInput?: {
     type: "token" | "amount" | "password";
     page: Page;
+  };
+  awaitingSettingsInput?: {
+    type:
+      | "buy_amount"
+      | "slippage"
+      | "tp"
+      | "sl"
+      | "min_liquidity"
+      | "max_liquidity"
+      | "max_buy_tax"
+      | "max_sell_tax"
+      | "max_top10_holders"
+      | "min_holders"
+      | "max_risk_score"
+      | "min_confidence";
+    category: "execution" | "filter";
+    dialogMessageId?: number; // ID of the dialog message to delete after input
   };
   swapConversationStep?: "inputMint" | "outputMint" | "amount" | "password";
   swapConversationData?: {
@@ -820,7 +840,7 @@ export function renderHelpPage(): {
 export async function navigateToPage(
   ctx: Context,
   page: Page,
-  data?: any
+  data?: unknown
 ): Promise<void> {
   try {
     let result: { text: string; keyboard: InlineKeyboard };
@@ -829,23 +849,50 @@ export async function navigateToPage(
       case "welcome":
         result = await renderWelcomePage(ctx);
         break;
-      case "create_wallet":
-        result = renderCreateWalletPage();
-        // Set state to await password input
-        ctx.session.awaitingPasswordForWallet = true;
-        scheduleWalletPasswordTimeout(ctx);
+      case "create_wallet": {
+        // ✅ FIX: Check if user already has a wallet before showing create form
+        const userContext = await getUserContext(ctx);
+        const hasWallet = userContext.wallets.length > 0;
+
+        if (hasWallet) {
+          // User already has a wallet - redirect to main dashboard
+          result = await renderMainPage(ctx);
+
+          // Show notification via callback query answer (if from button click)
+          if (ctx.callbackQuery) {
+            await ctx.answerCallbackQuery({
+              text: "💼 You already have a wallet!",
+              show_alert: false,
+            });
+          }
+        } else {
+          // No wallet yet - show create form
+          result = renderCreateWalletPage();
+          // Set state to await password input
+          ctx.session.awaitingPasswordForWallet = true;
+          scheduleWalletPasswordTimeout(ctx);
+        }
         break;
+      }
       case "main":
         result = await renderMainPage(ctx);
         break;
       case "buy":
-        result = renderBuyPage(data);
+        result = renderBuyPage(
+          typeof data === "object" && data !== null ? data as { selectedToken?: string } : undefined
+        );
         break;
       case "sell":
-        result = renderSellPage(data);
+        result = renderSellPage(
+          typeof data === "object" && data !== null ? data as { selectedToken?: string } : undefined
+        );
         break;
       case "swap":
-        result = renderSwapPage(data);
+        result = renderSwapPage(
+          typeof data === "object" && data !== null
+            ? data as { inputToken?: string; outputToken?: string; amount?: string }
+            : undefined
+        );
         break;
       case "balance":
         result = await renderBalancePage(ctx);
@@ -878,15 +925,38 @@ export async function navigateToPage(
         result = await renderSniperConfigPage(ctx);
         break;
       }
+      case "sniper_advanced": {
+        const { renderAdvancedSniperConfigPage } = await import("./sniper.js");
+        result = await renderAdvancedSniperConfigPage();
+        break;
+      }
+      case "filter_settings": {
+        const { renderFilterSettingsPage } = await import("./sniper.js");
+        const userContext = await getUserContext(ctx);
+        result = await renderFilterSettingsPage(userContext.userId);
+        break;
+      }
+      case "execution_settings": {
+        const { renderExecutionSettingsPage } = await import("./sniper.js");
+        const userContext = await getUserContext(ctx);
+        result = await renderExecutionSettingsPage(userContext.userId);
+        break;
+      }
       case "positions": {
         const { renderPositionsPage } = await import("./sniper.js");
-        const page = data?.page ?? ctx.session.ui.sniperData?.positionsPage ?? 0;
+        const pageData = typeof data === "object" && data !== null && "page" in data
+          ? (data as { page?: number }).page
+          : undefined;
+        const page = pageData ?? ctx.session.ui.sniperData?.positionsPage ?? 0;
         result = await renderPositionsPage(ctx, page);
         break;
       }
       case "position_details": {
         const { renderPositionDetailsPage } = await import("./sniper.js");
-        const positionId = data?.positionId ?? ctx.session.ui.sniperData?.selectedPositionId;
+        const positionData = typeof data === "object" && data !== null && "positionId" in data
+          ? (data as { positionId?: string }).positionId
+          : undefined;
+        const positionId = positionData ?? ctx.session.ui.sniperData?.selectedPositionId;
         if (!positionId) {
           result = await renderMainPage(ctx);
         } else {
@@ -912,9 +982,12 @@ export async function navigateToPage(
           reply_markup: result.keyboard,
         });
         ctx.session.ui.messageId = ctx.callbackQuery.message.message_id;
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Ignore "message is not modified" error - happens when navigating to same page
-        if (error?.description?.includes("message is not modified")) {
+        const errorDesc = typeof error === "object" && error !== null && "description" in error
+          ? String((error as { description: unknown }).description)
+          : "";
+        if (errorDesc.includes("message is not modified")) {
           logger.debug("Message not modified (same content)", { page });
           // Answer callback query to remove loading indicator
           await ctx.answerCallbackQuery();
@@ -934,9 +1007,12 @@ export async function navigateToPage(
             reply_markup: result.keyboard,
           }
         );
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Ignore "message is not modified" error
-        if (error?.description?.includes("message is not modified")) {
+        const errorDesc = typeof error === "object" && error !== null && "description" in error
+          ? String((error as { description: unknown }).description)
+          : "";
+        if (errorDesc.includes("message is not modified")) {
           logger.debug("Message not modified (same content)", { page });
         } else {
           throw error;

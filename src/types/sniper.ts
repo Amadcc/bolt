@@ -22,7 +22,8 @@ export type PoolSource =
   | "raydium_clmm"      // Raydium Concentrated Liquidity
   | "orca_whirlpool"    // Orca Whirlpool (CLMM)
   | "meteora"           // Meteora DLMM (has anti-sniper!)
-  | "pump_fun";         // Pump.fun (bonding curve)
+  | "pump_fun"          // Pump.fun (bonding curve)
+  | "pumpswap";         // PumpSwap AMM (pump.fun migration)
 
 // ============================================================================
 // Meteora Anti-Sniper Types

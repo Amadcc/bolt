@@ -9,10 +9,25 @@
  * - Important successes (exits, large P&L)
  *
  * This allows operators to respond quickly to issues and monitor bot health.
+ *
+ * NOTE: This service is optional and will gracefully disable if no bot is provided.
  */
 
-import { Telegraf } from "telegraf";
 import { logger } from "../../utils/logger.js";
+
+// ============================================================================
+// Minimal Telegram Bot Interface (to avoid external dependencies)
+// ============================================================================
+
+export interface TelegramBot {
+  telegram: {
+    sendMessage(
+      chatId: string,
+      text: string,
+      options?: { parse_mode?: string; disable_web_page_preview?: boolean }
+    ): Promise<unknown>;
+  };
+}
 
 // ============================================================================
 // Alert Types
@@ -24,7 +39,7 @@ export interface AlertEvent {
   severity: AlertSeverity;
   title: string;
   message: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, string | number | boolean>;
   timestamp: Date;
 }
 
@@ -33,21 +48,39 @@ export interface AlertEvent {
 // ============================================================================
 
 export class AlertService {
-  private bot: Telegraf | null = null;
+  private bot: TelegramBot | null = null;
   private alertChannelId: string | null = null;
   private enabled: boolean = false;
 
-  constructor(botToken?: string, channelId?: string) {
-    if (botToken && channelId) {
-      this.bot = new Telegraf(botToken);
-      this.alertChannelId = channelId;
-      this.enabled = true;
+  /**
+   * Constructor accepts either a bot instance directly or a token+channelId.
+   * If you want to use the main bot, pass it directly.
+   */
+  constructor(botOrToken?: TelegramBot | string, channelId?: string) {
+    // Case 1: Bot instance provided directly
+    if (botOrToken && typeof botOrToken === "object" && "telegram" in botOrToken) {
+      this.bot = botOrToken;
+      this.alertChannelId = channelId ?? null;
+      this.enabled = !!this.alertChannelId;
 
-      logger.info("AlertService initialized", {
-        channelId: this.maskChannelId(channelId),
-      });
-    } else {
-      logger.warn("AlertService disabled - no bot token or channel ID provided");
+      if (this.enabled) {
+        logger.info("AlertService initialized with bot instance", {
+          channelId: this.maskChannelId(this.alertChannelId!),
+        });
+      }
+    }
+    // Case 2: Token provided (but we can't create bot without telegraf)
+    else if (typeof botOrToken === "string" && channelId) {
+      logger.warn(
+        "AlertService: Bot token provided but Telegraf not available. " +
+          "Please pass a bot instance directly or install 'telegraf' package."
+      );
+      this.enabled = false;
+    }
+    // Case 3: Nothing provided
+    else {
+      logger.debug("AlertService disabled - no bot or credentials provided");
+      this.enabled = false;
     }
   }
 
@@ -194,7 +227,9 @@ export class AlertService {
       severity: failoverTo ? "WARNING" : "CRITICAL",
       title: "RPC Endpoint Failure",
       message,
-      metadata: { endpoint, failoverTo },
+      metadata: failoverTo
+        ? { endpoint, failoverTo }
+        : { endpoint },
       timestamp: new Date(),
     });
   }
@@ -248,11 +283,11 @@ export class AlertService {
 let alertService: AlertService | null = null;
 
 export function initializeAlertService(
-  botToken?: string,
+  botOrToken?: TelegramBot | string,
   channelId?: string
 ): AlertService {
   if (!alertService) {
-    alertService = new AlertService(botToken, channelId);
+    alertService = new AlertService(botOrToken, channelId);
   }
   return alertService;
 }

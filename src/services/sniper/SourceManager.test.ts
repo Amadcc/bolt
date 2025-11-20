@@ -566,6 +566,7 @@ describe("SourceManager - Meteora Anti-Sniper Filtering", () => {
       alphaVault: {
         isActive: true,
         endsAt: Math.floor(Date.now() / 1000) + 86400, // Ends in 24 hours
+        reservedSupplyPct: 50, // 50% reserved supply
       },
     };
 

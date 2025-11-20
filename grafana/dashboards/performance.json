@@ -1,0 +1,427 @@
+{
+  "dashboard": {
+    "title": "Sniper Bot - Performance Monitoring",
+    "uid": "performance",
+    "version": 1,
+    "tags": ["performance", "benchmarks", "day14"],
+    "timezone": "browser",
+    "refresh": "10s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "type": "graph",
+        "title": "Component Latency (p95)",
+        "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket[5m])) by (component, le))",
+            "legendFormat": "{{component}} p95",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "ms",
+            "label": "Latency (ms)"
+          }
+        ],
+        "thresholds": [
+          {
+            "value": 500,
+            "colorMode": "custom",
+            "op": "gt",
+            "fill": true,
+            "line": true,
+            "yaxis": "left",
+            "fillColor": "rgba(255, 193, 7, 0.2)",
+            "lineColor": "rgb(255, 193, 7)"
+          },
+          {
+            "value": 1000,
+            "colorMode": "custom",
+            "op": "gt",
+            "fill": true,
+            "line": true,
+            "yaxis": "left",
+            "fillColor": "rgba(244, 67, 54, 0.2)",
+            "lineColor": "rgb(244, 67, 54)"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "type": "graph",
+        "title": "Success Rate by Component",
+        "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "benchmark_success_rate",
+            "legendFormat": "{{component}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "percent",
+            "label": "Success Rate",
+            "min": 0,
+            "max": 100
+          }
+        ],
+        "thresholds": [
+          {
+            "value": 90,
+            "colorMode": "custom",
+            "op": "lt",
+            "fill": true,
+            "line": true,
+            "yaxis": "left",
+            "fillColor": "rgba(255, 193, 7, 0.2)",
+            "lineColor": "rgb(255, 193, 7)"
+          },
+          {
+            "value": 70,
+            "colorMode": "custom",
+            "op": "lt",
+            "fill": true,
+            "line": true",
+            "yaxis": "left",
+            "fillColor": "rgba(244, 67, 54, 0.2)",
+            "lineColor": "rgb(244, 67, 54)"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "type": "graph",
+        "title": "Full Sniper Flow Latency",
+        "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(benchmark_duration_ms_bucket{component=\"FULL_FLOW\"}[5m])) by (le))",
+            "legendFormat": "p50",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket{component=\"FULL_FLOW\"}[5m])) by (le))",
+            "legendFormat": "p95",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(benchmark_duration_ms_bucket{component=\"FULL_FLOW\"}[5m])) by (le))",
+            "legendFormat": "p99",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "ms",
+            "label": "Latency (ms)"
+          }
+        ],
+        "thresholds": [
+          {
+            "value": 4000,
+            "colorMode": "custom",
+            "op": "gt",
+            "fill": false,
+            "line": true,
+            "yaxis": "left",
+            "lineColor": "rgb(255, 193, 7)"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "type": "graph",
+        "title": "Throughput by Component",
+        "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "benchmark_throughput_ops",
+            "legendFormat": "{{component}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "ops",
+            "label": "Ops/Second"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "type": "graph",
+        "title": "Memory Usage",
+        "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "benchmark_memory_mb",
+            "legendFormat": "{{component}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "mbytes",
+            "label": "Memory (MB)"
+          }
+        ],
+        "thresholds": [
+          {
+            "value": 500,
+            "colorMode": "custom",
+            "op": "gt",
+            "fill": true,
+            "line": true,
+            "yaxis": "left",
+            "fillColor": "rgba(255, 193, 7, 0.2)",
+            "lineColor": "rgb(255, 193, 7)"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "type": "graph",
+        "title": "CPU Usage",
+        "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "benchmark_cpu_percent",
+            "legendFormat": "{{component}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "percent",
+            "label": "CPU %",
+            "min": 0,
+            "max": 100
+          }
+        ],
+        "thresholds": [
+          {
+            "value": 80,
+            "colorMode": "custom",
+            "op": "gt",
+            "fill": true,
+            "line": true,
+            "yaxis": "left",
+            "fillColor": "rgba(255, 193, 7, 0.2)",
+            "lineColor": "rgb(255, 193, 7)"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "type": "stat",
+        "title": "Detection Latency (p95)",
+        "gridPos": { "x": 0, "y": 24, "w": 6, "h": 4 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket{component=\"DETECTION\"}[5m])) by (le))",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "area",
+          "textMode": "value_and_name",
+          "colorMode": "value"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ms",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 500, "color": "yellow" },
+                { "value": 1000, "color": "red" }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 8,
+        "type": "stat",
+        "title": "Honeypot Check (p95)",
+        "gridPos": { "x": 6, "y": 24, "w": 6, "h": 4 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket{component=\"HONEYPOT\"}[5m])) by (le))",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "area",
+          "textMode": "value_and_name",
+          "colorMode": "value"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ms",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 2000, "color": "yellow" },
+                { "value": 3000, "color": "red" }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 9,
+        "type": "stat",
+        "title": "Execution Time (p95)",
+        "gridPos": { "x": 12, "y": 24, "w": 6, "h": 4 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket{component=\"EXECUTION\"}[5m])) by (le))",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "area",
+          "textMode": "value_and_name",
+          "colorMode": "value"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ms",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 1500, "color": "yellow" },
+                { "value": 2500, "color": "red" }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 10,
+        "type": "stat",
+        "title": "Full Flow (p95)",
+        "gridPos": { "x": 18, "y": 24, "w": 6, "h": 4 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket{component=\"FULL_FLOW\"}[5m])) by (le))",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "area",
+          "textMode": "value_and_name",
+          "colorMode": "value"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "unit": "ms",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 4000, "color": "yellow" },
+                { "value": 6000, "color": "red" }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 11,
+        "type": "graph",
+        "title": "Load Test Concurrency",
+        "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "load_test_concurrency",
+            "legendFormat": "{{scenario}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "short",
+            "label": "Concurrent Requests"
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "type": "graph",
+        "title": "Load Test Request Rate",
+        "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "sum(rate(load_test_requests_total[5m])) by (scenario, status)",
+            "legendFormat": "{{scenario}} ({{status}})",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "reqps",
+            "label": "Requests/Second"
+          }
+        ]
+      },
+      {
+        "id": 13,
+        "type": "table",
+        "title": "Performance Targets Compliance",
+        "gridPos": { "x": 0, "y": 36, "w": 24, "h": 8 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(benchmark_duration_ms_bucket[5m])) by (component, le))",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {},
+              "indexByName": {},
+              "renameByName": {
+                "component": "Component",
+                "Value": "p95 Latency (ms)"
+              }
+            }
+          }
+        ],
+        "options": {
+          "showHeader": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "center"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": null, "color": "green" },
+                { "value": 500, "color": "yellow" },
+                { "value": 2000, "color": "red" }
+              ]
+            }
+          },
+          "overrides": []
+        }
+      }
+    ]
+  }
+}

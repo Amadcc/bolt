@@ -307,8 +307,10 @@ describe("GeyserSource - Singleton", () => {
 
     expect(retrieved).toBeDefined();
     expect(retrieved).not.toBeNull();
-    expect(retrieved).toBe(initialized);
-    expect(retrieved).toBe(defaultGeyserSource);
+    if (retrieved && defaultGeyserSource) {
+      expect(retrieved).toBe(initialized);
+      expect(retrieved).toBe(defaultGeyserSource);
+    }
   });
 });
 

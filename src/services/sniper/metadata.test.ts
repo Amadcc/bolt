@@ -377,10 +377,10 @@ describe("TokenMetadataService - Prefetch", () => {
     const mint = asTokenMint("DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263");
 
     // Mock Metaplex to fail
-    
+
     service["fetchFromMetaplex" as keyof typeof service] = mock(async () => {
-      throw new Error("Prefetch failed") as any;
-    });
+      throw new Error("Prefetch failed");
+    }) as any;
 
     // Should not throw even if fetch fails
     expect(() => service.prefetchMetadata(mint)).not.toThrow();
@@ -471,10 +471,10 @@ describe("TokenMetadataService - Error Recovery", () => {
     redis.get = mockRedisGet;
 
     // Mock Metaplex to fail
-    
+
     service["fetchFromMetaplex" as keyof typeof service] = mock(async () => {
-      throw new Error("Metaplex down") as any;
-    });
+      throw new Error("Metaplex down");
+    }) as any;
 
     const result = await service.fetchMetadata(mint, { useCache: true });
 

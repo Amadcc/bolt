@@ -890,6 +890,80 @@ export function recordPrivacyObfuscation(
   privacyObfuscationApplied.labels(pattern).inc();
 }
 
+// DAY 14: Performance Optimization & Testing Metrics
+
+const benchmarkDuration = new client.Histogram({
+  name: "benchmark_duration_ms",
+  help: "Benchmark latency by component",
+  labelNames: ["component"],
+  buckets: [10, 50, 100, 250, 500, 1000, 1500, 2000, 3000, 5000, 10000],
+  registers: [register],
+});
+
+const benchmarkSuccessRate = new client.Gauge({
+  name: "benchmark_success_rate",
+  help: "Benchmark success rate by component (0-100%)",
+  labelNames: ["component"],
+  registers: [register],
+});
+
+const benchmarkThroughput = new client.Gauge({
+  name: "benchmark_throughput_ops",
+  help: "Benchmark throughput (operations per second)",
+  labelNames: ["component"],
+  registers: [register],
+});
+
+const benchmarkMemory = new client.Gauge({
+  name: "benchmark_memory_mb",
+  help: "Peak memory usage during benchmark",
+  labelNames: ["component"],
+  registers: [register],
+});
+
+const benchmarkCpu = new client.Gauge({
+  name: "benchmark_cpu_percent",
+  help: "Peak CPU usage during benchmark",
+  labelNames: ["component"],
+  registers: [register],
+});
+
+const benchmarkTotal = new client.Counter({
+  name: "benchmark_total",
+  help: "Total benchmarks run",
+  labelNames: ["component"],
+  registers: [register],
+});
+
+const benchmarkErrors = new client.Counter({
+  name: "benchmark_errors_total",
+  help: "Benchmark errors by type",
+  labelNames: ["component", "error_type"],
+  registers: [register],
+});
+
+const loadTestRequests = new client.Counter({
+  name: "load_test_requests_total",
+  help: "Total load test requests",
+  labelNames: ["scenario", "status"], // status: success, failure
+  registers: [register],
+});
+
+const loadTestDuration = new client.Histogram({
+  name: "load_test_duration_ms",
+  help: "Load test request latency",
+  labelNames: ["scenario"],
+  buckets: [50, 100, 250, 500, 1000, 2000, 5000, 10000, 30000],
+  registers: [register],
+});
+
+const loadTestConcurrency = new client.Gauge({
+  name: "load_test_concurrency",
+  help: "Current load test concurrency level",
+  labelNames: ["scenario"],
+  registers: [register],
+});
+
 // Metrics object for direct access (used by privacy layer)
 export const metrics = {
   privacyLayerDuration,
@@ -899,6 +973,114 @@ export const metrics = {
   privacyWalletRotations,
   privacyObfuscationApplied,
 };
+
+// DAY 14: Benchmark Metrics
+
+export function recordBenchmarkDuration(
+  component: string,
+  durationMs: number
+): void {
+  benchmarkDuration.labels(component).observe(durationMs);
+  benchmarkTotal.labels(component).inc();
+}
+
+export function recordBenchmarkSuccess(
+  component: string,
+  successRate: number
+): void {
+  benchmarkSuccessRate.labels(component).set(successRate);
+}
+
+export function recordBenchmarkThroughput(
+  component: string,
+  opsPerSecond: number
+): void {
+  benchmarkThroughput.labels(component).set(opsPerSecond);
+}
+
+export function setBenchmarkMemory(component: string, memoryMB: number): void {
+  benchmarkMemory.labels(component).set(memoryMB);
+}
+
+export function setBenchmarkCpu(component: string, cpuPercent: number): void {
+  benchmarkCpu.labels(component).set(cpuPercent);
+}
+
+export function recordBenchmarkError(
+  component: string,
+  errorType = "unknown"
+): void {
+  benchmarkErrors.labels(component, errorType).inc();
+}
+
+export function recordLoadTestRequest(
+  scenario: string,
+  status: "success" | "failure",
+  durationMs: number
+): void {
+  loadTestRequests.labels(scenario, status).inc();
+  loadTestDuration.labels(scenario).observe(durationMs);
+}
+
+export function setLoadTestConcurrency(scenario: string, count: number): void {
+  loadTestConcurrency.labels(scenario).set(count);
+}
+
+// ============================================================================
+// Orchestrator Metrics (Integration Layer)
+// ============================================================================
+
+const orchestratorSniperRequests = new client.Counter({
+  name: "orchestrator_sniper_requests_total",
+  help: "Total sniper requests via orchestrator",
+  registers: [register],
+});
+
+const orchestratorSniperSuccess = new client.Counter({
+  name: "orchestrator_sniper_success_total",
+  help: "Successful orchestrated snipes",
+  registers: [register],
+});
+
+const orchestratorSniperFailures = new client.Counter({
+  name: "orchestrator_sniper_failures_total",
+  help: "Failed orchestrated snipes",
+  labelNames: ["reason"],
+  registers: [register],
+});
+
+const orchestratorDuration = new client.Histogram({
+  name: "orchestrator_duration_ms",
+  help: "Total orchestrator execution time",
+  buckets: [100, 500, 1000, 2000, 3000, 5000, 10000, 30000],
+  registers: [register],
+});
+
+const orchestratorIntegrationFailures = new client.Counter({
+  name: "orchestrator_integration_failures_total",
+  help: "Integration failures (non-critical)",
+  labelNames: ["integration"], // position_monitor, rug_monitor, privacy_layer
+  registers: [register],
+});
+
+export function recordOrchestratorSniperStart(): void {
+  orchestratorSniperRequests.inc();
+}
+
+export function recordOrchestratorSniperSuccess(durationMs: number): void {
+  orchestratorSniperSuccess.inc();
+  orchestratorDuration.observe(durationMs);
+}
+
+export function recordOrchestratorSniperFailure(reason: string): void {
+  orchestratorSniperFailures.labels(reason).inc();
+}
+
+export function recordOrchestratorIntegrationFailure(
+  integration: "POSITION_MONITOR" | "RUG_MONITOR" | "PRIVACY_LAYER"
+): void {
+  orchestratorIntegrationFailures.labels(integration).inc();
+}
 
 export async function getMetrics(): Promise<string> {
   return register.metrics();

@@ -51,6 +51,10 @@ import {
   handleExitAllCommand,
   executeExitAll,
 } from "./commands/sniper/index.js";
+import {
+  handleTestSniperCommand,
+  handleTestIntegrationCommand,
+} from "./commands/testSniper.js";
 
 type MyContext = ViewContext & {
   state: {
@@ -349,6 +353,20 @@ bot.command("exitall", async (ctx) => {
   }
 });
 
+/**
+ * /test_sniper - Show orchestrator status and architecture
+ */
+bot.command("test_sniper", async (ctx) => {
+  await handleTestSniperCommand(ctx);
+});
+
+/**
+ * /test_integration - Show detailed integration flow
+ */
+bot.command("test_integration", async (ctx) => {
+  await handleTestIntegrationCommand(ctx);
+});
+
 bot.command("help", async (ctx) => {
   // Delete the command message
   try {
@@ -434,6 +452,31 @@ bot.on("callback_query:data", async (ctx) => {
         await handleSniperConfigCallback(ctx, params[0], params.slice(1));
         break;
 
+      case "adv_settings":
+        // Advanced settings navigation: adv_settings:filters, adv_settings:execution
+        if (params[0] === "filters") {
+          await ctx.answerCallbackQuery();
+          await navigateToPage(ctx, "filter_settings");
+        } else if (params[0] === "execution") {
+          await ctx.answerCallbackQuery();
+          await navigateToPage(ctx, "execution_settings");
+        } else {
+          await ctx.answerCallbackQuery("❌ Unknown advanced settings action");
+        }
+        break;
+
+      case "filter_edit":
+        // Filter editing: filter_edit:liquidity, filter_edit:tax, etc
+        const { handleFilterEditCallback } = await import("./handlers/sniperCallbacks.js");
+        await handleFilterEditCallback(ctx, params[0], params.slice(1));
+        break;
+
+      case "exec_edit":
+        // Execution settings editing: exec_edit:buy_amount, exec_edit:slippage, etc
+        const { handleExecEditCallback } = await import("./handlers/sniperCallbacks.js");
+        await handleExecEditCallback(ctx, params[0], params.slice(1));
+        break;
+
       case "position":
         // Position management: position:details:id, position:settp:id
         await handlePositionCallback(ctx, params[0], params.slice(1));
@@ -442,6 +485,15 @@ bot.on("callback_query:data", async (ctx) => {
       case "positions":
         // Positions pagination: positions:page:N
         await handlePositionsCallback(ctx, params[0], params.slice(1));
+        break;
+
+      case "test":
+        // Test commands: test:status
+        if (params[0] === "status") {
+          await handleTestSniperCommand(ctx);
+        } else {
+          await ctx.answerCallbackQuery("❌ Unknown test action");
+        }
         break;
 
       default:
@@ -744,6 +796,14 @@ bot.on("message:text", async (ctx, next) => {
       }
     }
 
+    return;
+  }
+
+  // Handle settings input (execution settings or filter settings)
+  if (ctx.session.awaitingSettingsInput) {
+    const input = ctx.message.text;
+    const { processSettingsInput } = await import("./handlers/sniperCallbacks.js");
+    await processSettingsInput(ctx, input);
     return;
   }
 

@@ -44,8 +44,11 @@ import {
   ORCA_WHIRLPOOL_PROGRAM,
   METEORA_DLMM_PROGRAM,
   PUMP_FUN_PROGRAM,
+  PUMPSWAP_PROGRAM,
 } from "../../config/programs.js";
 import type { PoolSource } from "../../types/sniper.js";
+import { TokenMetadataService } from "./metadata.js";
+import type { TokenMint } from "../../types/common.js";
 
 // ============================================================================
 // Types
@@ -182,6 +185,11 @@ export class GeyserSource {
    */
   private connection: Connection;
 
+  /**
+   * Metadata service for fetching token symbols
+   */
+  private metadataService: TokenMetadataService;
+
   constructor(config: GeyserConfig, connection: Connection) {
     this.connection = connection;
     this.config = {
@@ -193,8 +201,11 @@ export class GeyserSource {
       tls: config.tls ?? true,
       autoReconnect: config.autoReconnect ?? true,
       maxReconnectAttempts: config.maxReconnectAttempts ?? 5,
-      reconnectDelay: config.reconnectDelay ?? 1000,
+      reconnectDelay: config.reconnectDelay ?? 5000, // 5s base delay to avoid concurrent stream limits
     };
+
+    // Initialize metadata service for symbol fetching
+    this.metadataService = new TokenMetadataService(connection);
 
     // Initialize DEX parsers for each program
     this.initializeDexParsers();
@@ -252,6 +263,14 @@ export class GeyserSource {
       this.dexParsers.set(PUMP_FUN_PROGRAM, parser);
       this.programToSource.set(PUMP_FUN_PROGRAM, "pump_fun");
       logger.debug("Initialized Pump.fun parser", { programId: PUMP_FUN_PROGRAM });
+    }
+
+    // PumpSwap AMM (uses Raydium-like AMM structure)
+    if (this.config.programIds.includes(PUMPSWAP_PROGRAM)) {
+      const parser = new RaydiumV4Source(this.connection);
+      this.dexParsers.set(PUMPSWAP_PROGRAM, parser);
+      this.programToSource.set(PUMPSWAP_PROGRAM, "pumpswap");
+      logger.debug("Initialized PumpSwap parser", { programId: PUMPSWAP_PROGRAM });
     }
 
     logger.info("DEX parsers initialized", {
@@ -401,7 +420,7 @@ export class GeyserSource {
         this.config.endpoint,
         this.config.token,
         {
-          "grpc.max_receive_message_length": 1024 * 1024 * 100, // 100MB
+          "grpc.max_receive_message_length": 1024 * 1024 * 1024 * 4, // 4GB - large blocks/transactions
           "grpc.max_send_message_length": 1024 * 1024 * 100, // 100MB
         }
       );
@@ -429,11 +448,12 @@ export class GeyserSource {
     }
 
     try {
-      logger.debug("Subscribing to account updates", {
+      logger.debug("Subscribing to transaction updates", {
         programIds: this.config.programIds,
       });
 
       // Build subscription request
+      // Chainstack Geyser blocks account subscriptions, use transaction subscription instead
       const request: SubscribeRequest = {
         accounts: {},
         slots: {},
@@ -447,33 +467,46 @@ export class GeyserSource {
         ping: undefined,
       };
 
-      // Add account filter for each DEX program
+      // Add transaction filter for each DEX program
+      // This subscribes to all transactions that interact with the program
       this.config.programIds.forEach((programId, index) => {
-        request.accounts[`dex_${index}`] = {
-          account: [],
-          owner: [programId], // Filter by program owner
-          filters: [],
+        request.transactions[`dex_${index}`] = {
+          vote: false, // Exclude vote transactions (Chainstack requires explicit boolean)
+          failed: false, // Only successful transactions
+          accountInclude: [programId], // Filter transactions involving this program
+          accountExclude: [],
+          accountRequired: [],
         };
       });
 
-      // Add fromSlot if specified
-      if (this.config.fromSlot) {
-        request.accounts["dex_0"]!.filters = [
-          {
-            memcmp: undefined,
-            datasize: undefined,
-            tokenAccountState: undefined,
-          },
-        ];
-      }
+      // NOTE: Blocks subscription disabled - causes RESOURCE_EXHAUSTED errors
+      // Blocks with includeTransactions=true can be >1GB, exceeding gRPC limits
+      // Transaction-only subscription is sufficient for pool detection
+
+      // fromSlot not applicable for transaction subscriptions
+      // Transaction stream is real-time only
 
       // Subscribe to stream
-      // Note: Client.subscribe() is not properly typed in @triton-one/yellowstone-grpc
-      // Safe to cast as the method exists and returns AsyncIterable
-      this.stream = await (this.client.subscribe as (req: SubscribeRequest) => Promise<AsyncIterable<any>>)(request);
+      // ClientDuplexStream - bidirectional stream for gRPC
+      const stream = await this.client.subscribe();
+
+      // Write subscription request to the stream
+      await new Promise<void>((resolve, reject) => {
+        stream.write(request, (err: Error | null | undefined) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+
+      this.stream = stream;
 
       logger.info("Geyser subscription created", {
         programIds: this.config.programIds,
+        transactionFilters: Object.keys(request.transactions),
+        blockFilters: Object.keys(request.blocks),
       });
 
       // Process stream in background
@@ -508,22 +541,43 @@ export class GeyserSource {
 
     logger.info("Processing Geyser stream");
 
-    for await (const update of this.stream) {
-      if (!this.isRunning) {
-        break;
-      }
+    let eventCount = 0;
 
-      try {
+    try {
+      for await (const update of this.stream) {
+        if (!this.isRunning) {
+          break;
+        }
+
+        try {
         const startTime = Date.now();
+
+        eventCount++;
+
+        // Log every 100 events or first 10 events
+        if (eventCount <= 10 || eventCount % 100 === 0) {
+          logger.info("Geyser event received", {
+            eventNumber: eventCount,
+            hasAccount: !!update.account,
+            hasTransaction: !!update.transaction,
+            hasBlock: !!update.block,
+            hasPing: !!update.ping,
+          });
+        }
 
         // Handle account update
         if (update.account) {
           await this.handleAccountUpdate(update.account, onDetection);
         }
 
-        // Handle transaction update (alternative approach)
+        // Handle transaction update (direct transaction stream)
         if (update.transaction) {
           await this.handleTransactionUpdate(update.transaction, onDetection);
+        }
+
+        // Handle block update (contains transactions via blocks filter)
+        if (update.block) {
+          await this.handleBlockUpdate(update.block, onDetection);
         }
 
         // Track latency
@@ -534,14 +588,40 @@ export class GeyserSource {
         if (this.stats.latencies.length > 100) {
           this.stats.latencies.shift();
         }
-      } catch (error) {
-        logger.error("Geyser update processing error", {
-          error: error instanceof Error ? error.message : String(error),
+        } catch (error) {
+          logger.error("Geyser update processing error", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    } catch (streamError) {
+      // Catch stream-level errors (like Z_BUF_ERROR from gRPC decompression)
+      logger.error("Geyser stream error", {
+        error: streamError instanceof Error ? streamError.message : String(streamError),
+        eventCount,
+      });
+      geyserErrorsTotal.inc({ error_type: "stream_error" });
+
+      // Trigger reconnect immediately on stream error
+      if (this.isRunning && this.config.autoReconnect) {
+        logger.warn("Geyser stream error, attempting reconnect", {
+          error: streamError instanceof Error ? streamError.message : String(streamError),
         });
+        this.attemptReconnect(onDetection);
+        return; // Don't continue to the normal end-of-stream handling
       }
     }
 
-    logger.info("Geyser stream ended");
+    logger.info("Geyser stream ended", {
+      eventCount,
+      isRunning: this.isRunning,
+    });
+
+    // If stream ended but we're still supposed to be running, trigger reconnect
+    if (this.isRunning && this.config.autoReconnect) {
+      logger.warn("Geyser stream ended unexpectedly, attempting reconnect");
+      this.attemptReconnect(onDetection);
+    }
   }
 
   /**
@@ -669,8 +749,17 @@ export class GeyserSource {
       let detectedParser: BasePoolSource | null = null;
 
       for (const accountKey of accountKeys) {
-        // Convert account key to string (may be PublicKey or Buffer)
-        const accountKeyStr = accountKey.toString ? accountKey.toString() : bs58.encode(accountKey);
+        // Convert account key to base58 string
+        // Geyser sends account keys as Uint8Array/Buffer, not strings
+        let accountKeyStr: string;
+        if (accountKey instanceof Uint8Array || Buffer.isBuffer(accountKey)) {
+          accountKeyStr = bs58.encode(accountKey);
+        } else if (typeof accountKey === 'string') {
+          accountKeyStr = accountKey;
+        } else {
+          // Fallback for other types
+          accountKeyStr = bs58.encode(Buffer.from(accountKey));
+        }
 
         // Check if this matches any of our monitored programs
         if (this.dexParsers.has(accountKeyStr as SolanaAddress)) {
@@ -733,14 +822,33 @@ export class GeyserSource {
       // Emit detection event
       onDetection(pool);
 
-      logger.info("Geyser pool detected", {
-        poolAddress: pool.poolAddress,
-        tokenMintA: pool.tokenMintA,
-        tokenMintB: pool.tokenMintB,
-        source: pool.source,
-        signature: signatureBase58,
-        latencyMs: latency,
-      });
+      // Fetch metadata for symbol logging (async, non-blocking)
+      this.metadataService.fetchMetadata(pool.tokenMintA as TokenMint)
+        .then((result) => {
+          const symbol = result.success ? result.value.symbol : "???";
+          const name = result.success ? result.value.name : "Unknown";
+
+          logger.info("🚀 NEW POOL DETECTED", {
+            symbol,
+            name,
+            tokenMint: pool.tokenMintA,
+            poolAddress: pool.poolAddress,
+            source: pool.source,
+            signature: signatureBase58,
+            latencyMs: latency,
+          });
+        })
+        .catch(() => {
+          // Fallback log without symbol
+          logger.info("Geyser pool detected", {
+            poolAddress: pool.poolAddress,
+            tokenMintA: pool.tokenMintA,
+            tokenMintB: pool.tokenMintB,
+            source: pool.source,
+            signature: signatureBase58,
+            latencyMs: latency,
+          });
+        });
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.error("Transaction update handling error", {
@@ -750,6 +858,53 @@ export class GeyserSource {
 
       const latency = Date.now() - startTime;
       geyserLatencyHistogram.observe({ operation: "parse_transaction" }, latency);
+    }
+  }
+
+  /**
+   * Handle block update from Geyser
+   *
+   * Extracts transactions from block and processes them
+   */
+  private async handleBlockUpdate(
+    blockUpdate: any,
+    onDetection: (pool: RawPoolDetection) => void
+  ): Promise<void> {
+    const startTime = Date.now();
+
+    try {
+      geyserMessagesReceivedTotal.inc({ message_type: "block" });
+
+      // Extract transactions from block
+      const transactions = blockUpdate.transactions;
+      if (!transactions || transactions.length === 0) {
+        logger.debug("Block update has no transactions");
+        return;
+      }
+
+      logger.debug("Block update received", {
+        slot: blockUpdate.slot,
+        transactionCount: transactions.length,
+        blockhash: blockUpdate.blockhash,
+      });
+
+      // Process each transaction in the block
+      for (const tx of transactions) {
+        // Wrap transaction in the same structure as direct transaction updates
+        await this.handleTransactionUpdate({ transaction: tx }, onDetection);
+      }
+
+      const latency = Date.now() - startTime;
+      geyserLatencyHistogram.observe({ operation: "parse_block" }, latency);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.error("Block update handling error", {
+        error: errorMsg,
+      });
+      geyserErrorsTotal.inc({ error_type: "block_processing_error" });
+
+      const latency = Date.now() - startTime;
+      geyserLatencyHistogram.observe({ operation: "parse_block" }, latency);
     }
   }
 

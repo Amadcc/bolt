@@ -150,15 +150,26 @@ function initializeRedisClient(): void {
   setRedisConnectionStatus(false);
 
   // Patch sendCommand for metrics tracking
-  const originalSendCommand = client.sendCommand.bind(client);
-  client.sendCommand = function patchedSendCommand(command: any, ...args: any[]) {
-    const commandName =
-      (command?.name as string | undefined)?.toLowerCase() ?? "unknown";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const originalSendCommand = client.sendCommand.bind(client) as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  client.sendCommand = function patchedSendCommand(...args: any[]): any {
+    const command = args[0] as unknown;
+    let commandName = "unknown";
+
+    if (typeof command === "string") {
+      commandName = command.toLowerCase();
+    } else if (typeof command === "object" && command !== null && "name" in command) {
+      const name = (command as { name: unknown }).name;
+      if (typeof name === "string") {
+        commandName = name.toLowerCase();
+      } else if (name && Buffer.isBuffer(name)) {
+        commandName = name.toString().toLowerCase();
+      }
+    }
+
     const start = Date.now();
-    const result = originalSendCommand(
-      command,
-      ...args
-    ) as Promise<unknown>;
+    const result = originalSendCommand(...args) as Promise<unknown>;
 
     result
       .then(() => {
@@ -179,9 +190,9 @@ function initializeRedisClient(): void {
 
 // Export for backward compatibility
 export const redis = new Proxy({} as Redis, {
-  get(_, prop) {
+  get(_, prop: string | symbol) {
     const client = getRedisClient();
-    const value = (client as any)[prop];
+    const value = client[prop as keyof Redis];
     return typeof value === 'function' ? value.bind(client) : value;
   },
 });
