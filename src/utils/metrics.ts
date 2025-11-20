@@ -145,6 +145,28 @@ const honeypotFallbackChain = new client.Counter({
   registers: [register],
 });
 
+const sniperPoolsDetected = new client.Counter({
+  name: "sniper_pools_detected_total",
+  help: "Total detected pools grouped by DEX",
+  labelNames: ["dex"],
+  registers: [register],
+});
+
+const sniperPoolDetectionDuplicates = new client.Counter({
+  name: "sniper_pool_detection_duplicates_total",
+  help: "Duplicate detection events prevented",
+  labelNames: ["dex"],
+  registers: [register],
+});
+
+const sniperPoolDetectionLatency = new client.Histogram({
+  name: "sniper_pool_detection_latency_ms",
+  help: "Latency between block time and detection emission",
+  labelNames: ["dex"],
+  buckets: [10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+  registers: [register],
+});
+
 // ---------------------------------------------------------------------------
 // Helper Functions
 // ---------------------------------------------------------------------------
@@ -258,6 +280,18 @@ export function recordHoneypotFallbackChain(
   attempts: number
 ): void {
   honeypotFallbackChain.labels(successfulProvider, attempts.toString()).inc();
+}
+
+export function recordPoolDetection(dex: string): void {
+  sniperPoolsDetected.labels(dex).inc();
+}
+
+export function recordPoolDetectionDuplicate(dex: string): void {
+  sniperPoolDetectionDuplicates.labels(dex).inc();
+}
+
+export function observePoolDetectionLatency(dex: string, latencyMs: number): void {
+  sniperPoolDetectionLatency.labels(dex).observe(Math.max(latencyMs, 0));
 }
 
 export async function getMetrics(): Promise<string> {

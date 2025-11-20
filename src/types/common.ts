@@ -84,6 +84,21 @@ export function asSolanaAddress(value: string): SolanaAddress {
   }
 }
 
+/**
+ * Unsafe version - accepts any valid PublicKey including PDAs (off-curve)
+ * Use for parsing where addresses may be PDAs
+ */
+export function asSolanaAddressUnsafe(value: string): SolanaAddress {
+  try {
+    new PublicKey(value); // Just validate it's a valid pubkey
+    return value as SolanaAddress;
+  } catch (error) {
+    throw new TypeError(
+      `Invalid Solana address: ${value} - ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
 export function asTokenMint(value: string): TokenMint {
   try {
     const pubkey = new PublicKey(value);
@@ -98,10 +113,36 @@ export function asTokenMint(value: string): TokenMint {
   }
 }
 
+/**
+ * Unsafe version - accepts any valid PublicKey including PDAs
+ * Use for parsing where mints may be PDAs
+ */
+export function asTokenMintUnsafe(value: string): TokenMint {
+  try {
+    new PublicKey(value);
+    return value as TokenMint;
+  } catch (error) {
+    throw new TypeError(
+      `Invalid token mint: ${value} - ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
 export function asTransactionSignature(value: string): TransactionSignature {
   // Basic validation: base58 string, ~87-88 chars
   if (!/^[1-9A-HJ-NP-Za-km-z]{87,88}$/.test(value)) {
     throw new TypeError(`Invalid transaction signature: ${value}`);
+  }
+  return value as TransactionSignature;
+}
+
+/**
+ * Unsafe version - accepts any non-empty string as signature
+ * Use for parsing where signature format may vary
+ */
+export function asTransactionSignatureUnsafe(value: string): TransactionSignature {
+  if (!value || value.length === 0) {
+    throw new TypeError("Transaction signature cannot be empty");
   }
   return value as TransactionSignature;
 }
